@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Read-only token: no step can push, comment or create releases.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_DENY_VERSION: 0.20.2
+  CARGO_AUDIT_VERSION: 0.22.2
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit SHA (v7.0.1); tags can be moved, SHAs cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # Installs the exact toolchain, components and musl target
+      # from rust-toolchain.toml.
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Install cargo-deny and cargo-audit
+        run: |
+          cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+          cargo install --locked cargo-audit --version "$CARGO_AUDIT_VERSION"
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: Release build
+        run: cargo build --release
+
+      # Phase 0 acceptance: the binary must be static.
+      - name: Check static binary
+        run: |
+          bin=target/x86_64-unknown-linux-musl/release/crystal
+          file "$bin"
+          file "$bin" | grep -q 'static-pie linked'

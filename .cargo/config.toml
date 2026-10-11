@@ -1,0 +1,3 @@
+[build]
+# Static binary by default (DESIGN.md: release profile).
+target = "x86_64-unknown-linux-musl"

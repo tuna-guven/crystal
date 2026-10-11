@@ -1,0 +1,9 @@
+[package]
+name = "zalloc"
+version = "0.1.0"
+edition = "2024"
+description = "Zeroizing global allocator for Crystal; the only crate allowed to use unsafe"
+license = "GPL-3.0-only"
+publish = false
+
+[dependencies]

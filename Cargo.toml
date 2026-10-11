@@ -1,0 +1,23 @@
+[package]
+name = "crystal"
+version = "0.1.0"
+edition = "2024"
+description = "Encrypted Markdown vault in a TUI"
+license = "GPL-3.0-only"
+readme = "README.md"
+publish = false
+
+[workspace]
+members = ["crates/zalloc"]
+# Plain `cargo test` / `cargo clippy` at the root check every crate.
+default-members = [".", "crates/zalloc"]
+
+[dependencies]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+overflow-checks = true
+# Keep unwinding so Drop impls (zeroizing) still run on panic.
+panic = "unwind"
