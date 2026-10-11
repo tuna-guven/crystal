@@ -224,7 +224,7 @@ Hardening happens in a fixed order: protections that cost nothing go first, unlo
 
 1. Install the panic hook (restore terminal, print location only).
 2. `setrlimit(RLIMIT_CORE, 0)`, `prctl(PR_SET_DUMPABLE, 0)`, `prctl(PR_SET_NO_NEW_PRIVS, 1)`, `umask(0o077)`.
-3. Scrub the environment down to `TERM`, `COLORTERM` and locale variables; never read `EDITOR`, `PAGER` or similar.
+3. Environment allowlist: read only `TERM`, `COLORTERM` and locale variables, through one function; never read `EDITOR`, `PAGER` or similar. The process environment is not modified (`remove_var` is `unsafe` in edition 2024 and the crate forbids `unsafe`); instead, the only child process, the age plugin, is spawned with `env_clear()` plus the allowlist.
 4. `mlockall`; refuse to continue if it fails, with a message about `RLIMIT_MEMLOCK`.
 5. Require a real tty; open `/dev/tty` directly for input and output.
 6. Parse args (vault path, `--init`, `--lock-after`).

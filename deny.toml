@@ -9,8 +9,8 @@ yanked = "deny"
 
 [licenses]
 # GPL-3.0-compatible only. Add a license here only when a reviewed
-# dependency needs it.
-allow = ["MIT", "Apache-2.0"]
+# dependency needs it. Every crate in the tree so far offers MIT.
+allow = ["MIT"]
 confidence-threshold = 0.93
 
 [licenses.private]
