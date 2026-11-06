@@ -1,8 +1,10 @@
 //! Vault I/O: on-disk format, Padmé padding, generation counter and the
-//! atomic writer. Handles only ciphertext, except `codec`: it turns notes
-//! into the plaintext bytes that `crypto` encrypts (and back), in
-//! zeroizing buffers, and never touches a file.
+//! atomic writer. Writes only ciphertext, or the fixed public `VERSION` and
+//! `*.gen` formats (`atomic::PublicBytes`). `codec` turns notes into the
+//! plaintext bytes that `crypto` encrypts (and back), in zeroizing
+//! buffers, and never touches a file.
 
+mod atomic;
 mod codec;
 mod padme;
 

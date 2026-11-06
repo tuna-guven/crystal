@@ -12,7 +12,16 @@ with `|`, which splits cells in many renderers.
 
 | Syscall | Used by | Why | Restriction |
 | --- | --- | --- | --- |
-| *(none yet)* | | | |
+| `getdents64` | `vault::atomic_write` (sweep, rustix `Dir`) | List the target's directory to find `.<name>.tmp-<16 hex>` files a killed writer left behind | fd for `.` in the target's directory |
+| `openat` | `vault::atomic_write` (sweep) | A separate fd for `.` to list the directory, so the caller's directory fd keeps no read position | target's directory fd, `.`; flags `O_RDONLY`, `O_DIRECTORY`, `O_CLOEXEC` |
+| `unlinkat` | `vault::atomic_write` | Remove stale temp files of the same name, and the temp file when a step before the rename fails | target's directory fd, a temp name only; flags 0 |
+| `getrandom` | `crypto::fill_random`, from `vault::atomic_write` | 64 random bits for the temp file name | 8-byte buffer, flags 0 |
+| `openat` | `vault::atomic_write` | Create the temp file in the target's own directory, so the rename needs no Landlock `REFER` (SANDBOXING.md 5.2); `O_EXCL` and `O_NOFOLLOW` never open an existing file or follow a link | target's directory fd, `.<name>.tmp-<16 hex>`; flags `O_WRONLY`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_CLOEXEC`; mode 0600 |
+| `write` | `vault::atomic_write` | Write the ciphertext (or `VERSION` / `*.gen`) to the temp file; retried on short writes and `EINTR` | temp file fd |
+| `fsync` | `vault::atomic_write` | Temp file data on disk before the rename, so the rename never exposes a half-written file after a power loss | temp file fd |
+| `renameat2` | `vault::atomic_write` (rustix `renameat_with`, which always uses `renameat2`; plain `renameat` is the old `renameat` syscall on x86_64) | Replace the target with the temp file: the commit point. A symlink at the target name is replaced, not followed | same directory fd for both sides; flags 0 |
+| `fsync` | `vault::atomic_write` | Make the rename itself durable | target's directory fd |
+| `close` | `vault::atomic_write` | Release the temp file and listing fds | none |
 
 ## Pre-sandbox only
 

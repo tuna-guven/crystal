@@ -11,7 +11,10 @@ use rustix::rand::{GetRandomFlags, getrandom};
 /// EINTR and on short reads.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "random ids for new notes and vaults (#10, #14)")
+    expect(
+        dead_code,
+        reason = "random ids (#10, #14) and atomic_write temp names"
+    )
 )]
 pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
     let mut filled = 0;
@@ -23,6 +26,29 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
         }
     }
     Ok(())
+}
+
+/// Bytes produced by age encryption. The field is private and the only
+/// constructors live in this module, so code outside `crypto` cannot label
+/// arbitrary bytes as ciphertext and hand them to `vault::atomic_write`.
+#[cfg_attr(not(test), expect(dead_code, reason = "built by age encryption (#8)"))]
+pub struct Ciphertext(Vec<u8>);
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "written by the save path (#10, #14)")
+)]
+impl Ciphertext {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Tests in other modules need ciphertext before age encryption exists
+    /// (#8). Test builds only: the real program has no way in.
+    #[cfg(test)]
+    pub fn for_test(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
 }
 
 #[cfg(test)]

@@ -390,7 +390,8 @@ Read docs/DESIGN.md before any change. Work on one phase at a time.
 - Note content only lives in `NoteText` (Zeroizing<String>). Never derive or
   implement Debug, Display or Serialize for it. Never put note text in
   errors, logs, panics or format! strings.
-- Never write files except through vault::atomic_write or backup::store, and only ciphertext.
+- Never write files except through vault::atomic_write or backup::store, and only
+  ciphertext, or the fixed public formats `VERSION` and `*.gen` (`PublicBytes`).
 - Never spawn processes, except the age plugin during unlock, before the sandbox.
 - Any new syscall needs a line in docs/SYSCALLS.md explaining why.
 - Never weaken Landlock, seccomp or hardening to make a test pass.
