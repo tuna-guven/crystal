@@ -10,7 +10,7 @@ Crystal is a single static Rust binary that opens an age-encrypted Markdown vaul
 
 - Obsidian-like core: a vault of Markdown notes, `[[wikilinks]]`, backlinks, tags, a fuzzy note finder and full-text search
 - Two modes per note: rendered view and in-process editor
-- One static musl binary, no runtime dependencies, no network code at all
+- One static musl binary, installed per user in `~/.local/bin` without root, no runtime dependencies, no network code at all
 - Confidentiality and integrity of notes and their titles at rest, including against whoever stores or syncs the files
 
 **Non-goals (v1)**
@@ -32,7 +32,7 @@ Crystal is a single static Rust binary that opens an age-encrypted Markdown vaul
 
 Crystal defends notes at rest and during use against storage, sync, theft and malicious content; it does not defend against root, kernel compromise or a hostile terminal emulator.
 
-**Assets:** note content; note metadata (titles, links, tags, note count, sizes); the vault identity key; the user's passphrase or hardware key.
+**Assets:** note content; note metadata (titles, links, tags, note count, sizes); the config file (vault names, locations, pinned ids); the vault identity key; the user's passphrase or hardware key.
 
 | Adversary | Capability | Scope | Primary defense |
 | --- | --- | --- | --- |
@@ -40,12 +40,12 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 | A2 Device thief, machine off | Full disk read | In | No plaintext ever written; full-disk encryption assumed as a second layer |
 | A3 Malicious note content (imported, synced, pasted) | Terminal escape injection, parser bugs | In | Sanitizer on every text node, fuzzed parser and renderer, sandbox limits impact |
 | A4 Supply chain (malicious or compromised crate) | Arbitrary code in the process | In | Minimal deps, cargo-vet, cargo-deny, sandbox blocks network and exec |
-| A5 Same-user malware, vault locked | Read files, log keystrokes | Partial | Notes stay encrypted; hardware key with touch defeats passphrase logging |
+| A5 Same-user malware, vault locked | Read files, log keystrokes, replace or shadow `~/.local/bin/crystal`, write `config.age` | Partial | Notes stay encrypted; hardware key with touch defeats passphrase logging; optional immutable binary (Installation); config paths checked as untrusted (Config file) |
 | A6 Same-user malware, vault unlocked | ptrace, /proc reads, screen capture | Partial | Non-dumpable process blocks ptrace and /proc/pid/mem; screen capture not preventable |
 | A7 Root, kernel exploit, cold boot, evil maid | Everything | Out | Handled at OS level (verified boot, TPM, hardened kernel) |
 | A8 Shoulder surfing, screen recording | Sees the screen | Out | Idle auto-lock reduces exposure |
 
-**Trust boundaries:** the kernel; the terminal emulator (it receives every rendered character); the age crate; the compiled binary and its build chain.
+**Trust boundaries:** the kernel; the terminal emulator (it receives every rendered character); the age crate; the compiled binary and its build chain; the installed copy in `~/.local/bin`, which is user-writable unless marked immutable (Installation).
 
 **Security properties Crystal guarantees**
 
@@ -106,7 +106,7 @@ One process, one crypto boundary: everything above the age layer handles plainte
                                      v
                   +------------------------------------+
                   | Vault directory                    |
-                  | vault.age and identity.age only    |
+                  | vault.age and identity*.age only   |
                   +------------------------------------+
                                      |  copied, never decrypted
                                      v
@@ -120,17 +120,30 @@ The unlock step runs before the sandbox because age plugins are separate binarie
 
 **On-disk layout**
 
-All vaults live under one fixed root, `~/Vaults` (mode 0700), one directory per vault, opened by name. There is no config file and no way to point Crystal elsewhere: a fixed root lets SELinux ship one static label for it, and nothing a same-user process writes can widen the sandbox.
+Vaults are opened by name. An encrypted per-device config file, `~/.config/crystal/config.age`, maps each name to a vault directory and holds other metadata. `crystal --init NAME` creates the vault in `~/Vaults/<name>` by default. With `--at DIR` it can go elsewhere, for example a synced folder. Every path in the config is checked at startup as if it were attacker-written (see **Config file**), so the config can point Crystal at a vault but cannot widen the sandbox beyond one checked, private directory.
 
 ```text
-~/Vaults/<name>/
+~/.config/crystal/            mode 0700, local only, never synced
+  config.age     vault names, paths, pinned vault_ids, settings; padded and encrypted
+~/Vaults/<name>/              default vault location, mode 0700 (any checked path via --at)
   VERSION        plaintext: format version only
-  identity.age   vault X25519 identity, encrypted to your passphrase and/or hardware key(s)
+  identity.age   vault X25519 identity, encrypted to your passphrase or to your hardware key(s)
+  identity.backup.age  the same identity, encrypted to the offline backup recipient(s)
   vault.age      the entire vault: every note, title, link and tag, padded and encrypted
 ~/.local/state/crystal/<vault_id>.gen   last seen vault generation (local only, never synced)
+~/.local/state/crystal/config.gen       last seen config generation
 ```
 
-**Key design.** `crystal --init` generates a random vault X25519 identity and encrypts it to one or more unlock recipients: a scrypt passphrase, a YubiKey or TPM plugin recipient, and an offline backup recipient. `vault.age` is encrypted to the vault recipient. Changing the passphrase or adding a key rewrites only `identity.age`.
+**Config file.** The config is local to one device, because paths differ between machines; a vault directory stays self-contained and syncable without it. If the config is lost, nothing is lost: `crystal --add NAME DIR` registers an existing vault again.
+
+- *Contents (postcard, then Padmé-padded, then age):* format version, `generation` (u64, +1 per write), default `lock_after`, and per vault: name, absolute path, pinned `vault_id` (filled in at first unlock), optional `lock_after`; from Phase 7, the backup drive markers. It holds nothing that loosens security: no sandbox switches, no executable paths, no editor, no environment.
+- *Encryption:* encrypted with the `age` crate, never by shelling out to `rage`, to one unlock method only. The choices are a scrypt passphrase or a hardware-key plugin recipient. age allows a scrypt stanza only as the sole recipient, and the config needs no backup recipient because it can be rebuilt. With a passphrase, Crystal prompts once. It decrypts `config.age`, then the vault's `identity.age`, with the same passphrase held in a `Zeroizing` buffer, then wipes the buffer. With a plugin, each file costs one touch.
+- *Integrity limits:* age authenticates the content but not who wrote it. Under a scrypt passphrase, only the passphrase holder can produce a config that decrypts. Under a public-key or plugin recipient, anyone who knows the recipient can write a valid `config.age`. So Crystal never trusts the config for a security decision. Each vault path must be absolute, with no `..`. It is opened one component at a time from `/` with `O_NOFOLLOW`. Every directory on the way must be owned by root or by you and must not be group- or world-writable. The vault directory itself must be yours, mode 0700, and contain `VERSION`. It must not be `$HOME`, an ancestor of the config or state directory, or inside either. The pinned `vault_id` detects a swapped vault directory, but only as strongly as the config is authenticated.
+- *Rollback:* `config.gen` in the state directory rejects an older config, the same way as for vaults.
+- *Writes:* only `--init`, `--add` and `--remove` rewrite the config, through `vault::atomic_write`, and then exit. A normal session reads the config before the sandbox and has no write access to `~/.config/crystal` afterwards.
+- *SELinux:* the policy labels `~/Vaults` statically. A vault at any other path needs a one-time `semanage fcontext` rule (docs/SANDBOXING.md). Without the rule, that vault runs without the SELinux layer, and `--sandbox-status` says so.
+
+**Key design.** `crystal --init` generates a random vault X25519 identity and stores it twice. `identity.age` holds it for daily unlock, encrypted either to a scrypt passphrase alone or to one or more YubiKey or TPM plugin recipients. `identity.backup.age` holds it for recovery, encrypted to the offline backup recipient(s). Two files are needed because age accepts a scrypt stanza only as the sole recipient of a file, so a passphrase and a backup key cannot share one. `vault.age` is encrypted to the vault recipient. Changing the passphrase or adding a hardware key rewrites only `identity.age`; rotating the backup key rewrites only `identity.backup.age`.
 
 **Vault contents (postcard, then Padmé-padded and encrypted):** format version, `vault_id` (32 random bytes), `generation` (u64, +1 per save), and every note with its id, title, tags, created, modified and Markdown body.
 
@@ -255,14 +268,14 @@ The terminal guard and every `Drop` impl (zeroizing, from Phase 5) run only when
 Hardening happens in a fixed order: protections that cost nothing go first, unlock happens while exec is still possible (for hardware-key plugins), and the sandbox locks down before any note is decrypted or rendered. The detailed sandbox design (Landlock rules, seccomp policy, SELinux module, bubblewrap launcher, verification) is in docs/SANDBOXING.md.
 
 1. Install the panic hook (restore terminal, print location only).
-2. `setrlimit(RLIMIT_CORE, 0)`, `prctl(PR_SET_DUMPABLE, 0)`, `prctl(PR_SET_NO_NEW_PRIVS, 1)`, `umask(0o077)`.
-3. Environment allowlist: read only `HOME` (must be absolute; locates the state directory), `TERM`, `COLORTERM` and locale variables, through `harden::env_var`, which takes an `EnvVar` enum with one variant per allowed variable; never read `EDITOR`, `PAGER`, `XDG_STATE_HOME` or similar. Clippy's `disallowed-methods` (clippy.toml) makes any other `std::env` read a build error. The process environment is not modified (`remove_var` is `unsafe` in edition 2024 and the crate forbids `unsafe`); instead, the only child process, the age plugin, is spawned with `env_clear()` plus the allowlist.
+2. `setrlimit(RLIMIT_CORE, 0)`, `prctl(PR_SET_DUMPABLE, 0)`, `prctl(PR_SET_NO_NEW_PRIVS, 1)`, `umask(0o077)`. Then refuse to start if any fd above 2 is open (read from `/proc/self/fd`). Landlock does not restrict fds opened before it and seccomp allows `read` and `write`, so an inherited socket or directory fd would bypass the sandbox, and the age plugin would inherit it too. Crystal cannot close an fd it does not own without `unsafe` (rustix has no safe `close_range`), so it fails closed.
+3. Environment allowlist: read only `HOME` (must be absolute; locates the config, state and default vault directories), `TERM`, `COLORTERM` and locale variables, through `harden::env_var`, which takes an `EnvVar` enum with one variant per allowed variable; never read `EDITOR`, `PAGER`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` or similar. Clippy's `disallowed-methods` (clippy.toml) makes any other `std::env` read a build error. The process environment is not modified (`remove_var` is `unsafe` in edition 2024 and the crate forbids `unsafe`); instead, the only child process, the age plugin, is spawned with `env_clear()` plus the allowlist.
 4. `mlockall` with `MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT`, after raising the soft `RLIMIT_MEMLOCK` to the hard limit. Refuse to continue if the hard limit is below 256 MiB (a smaller budget can run out mid-session, and the failed allocation aborts without zeroizing or saving) or if `mlockall` fails, with a message pointing to docs/SETUP.md.
 5. Require a real tty; open `/dev/tty` directly for input and output.
-6. Parse args in the `cli` module: one vault name (1 to 64 characters from `A-Z a-z 0-9 - _`, starting with a letter or digit, so no `/`, `..`, hidden names or option look-alikes), `--init`, `--lock-after MINUTES` (default 5, range 1 to 1440), `-h`/`--help`; from Phase 6 also `--sandbox-status`. Anything else is refused. Errors are fixed messages that never echo an argument, since a mistyped argument could be a passphrase; lexopt's own errors are discarded because they quote the argument.
-7. Open `~/Vaults` as a directory fd with `O_DIRECTORY` and `O_NOFOLLOW` and check it is ours and mode 0700; it is created (0700) only by `--init`, never as a side effect of opening. Open the vault relative to that fd with `openat(root, name, O_DIRECTORY | O_NOFOLLOW)`, and open the state directory the same way as the root. The vault and state fds are later reused as the Landlock rule fds; the root fd is not, so other vaults stay unreachable during a session. Then enter raw mode and the alternate screen on the `/dev/tty` fd (terminal guard).
-8. Unlock: decrypt `identity.age` with a passphrase or an age plugin. Plugins are external binaries, so this is the last moment `execve` is allowed.
-9. Apply Landlock (docs/SANDBOXING.md section 5) through the `landlock` crate, up to ABI 9: read and write only beneath the vault, state and external backup directories; deny TCP bind and connect; block pathname Unix sockets (`RESOLVE_UNIX`); scope signals and abstract Unix sockets. The ruleset uses the crate's hard-requirement mode, so a right the kernel cannot enforce is an error. Below ABI 9, or without Landlock, Crystal refuses to start; there is no weaker mode and no override flag.
+6. Parse args in the `cli` module: one vault name (1 to 64 characters from `A-Z a-z 0-9 - _`, starting with a letter or digit, so no `/`, `..`, hidden names or option look-alikes), `--init` (with optional `--at DIR`), `--add NAME DIR`, `--remove NAME`, `--lock-after MINUTES` (default from the config, else 5; range 1 to 1440), `-h`/`--help`; from Phase 6 also `--sandbox-status`. Anything else is refused. Errors are fixed messages that never echo an argument, since a mistyped argument could be a passphrase; lexopt's own errors are discarded because they quote the argument.
+7. Open `~/.config/crystal` and the state directory as directory fds with `O_DIRECTORY` and `O_NOFOLLOW`, and check that each is ours and mode 0700. The state directory is reached one component at a time from `HOME` with `O_NOFOLLOW`; `.local` and `state` must be ours and not group- or world-writable. The config directory is created (0700) only by `--init` or `--add`, never as a side effect of opening. Then enter raw mode and the alternate screen on the `/dev/tty` fd (terminal guard), so the passphrase prompt is drawn there.
+8. Unlock: decrypt `config.age` with a passphrase or an age plugin, and reject it if its generation is older than `config.gen`. Look up the vault name, and open the vault path with the checks under **Config file** (the vault directory itself must be ours and mode 0700, even inside `~/Vaults`). Decrypt that vault's `identity.age` (same passphrase, or another plugin touch). Close the config fd. The vault and state fds are later reused as the Landlock rule fds, so other vaults and the config stay unreachable during a session. Plugins are external binaries, so this is the last moment `execve` is allowed.
+9. Apply Landlock (docs/SANDBOXING.md section 5) through the `landlock` crate, up to ABI 9: read and write only beneath the vault, state and external backup directories (never the config directory); deny TCP bind and connect; block pathname Unix sockets (`RESOLVE_UNIX`); scope signals and abstract Unix sockets. The ruleset uses the crate's hard-requirement mode, so a right the kernel cannot enforce is an error. Below ABI 9, or without Landlock, Crystal refuses to start; there is no weaker mode and no override flag.
 10. Apply seccomp (allowlist, below; docs/SANDBOXING.md section 6), with kill-process as the default action. The log action exists only in builds with the `sandbox-audit` feature, never in release.
 11. Decrypt the vault, build the index, enter the TUI.
 
@@ -274,6 +287,25 @@ Develop with the `sandbox-audit` feature (log action), run every feature, and co
 
 **System-level recommendations:** encrypted swap or zram only, hibernation disabled, Yama `ptrace_scope` at 1 or higher, full-disk encryption, and a terminal emulator without disk-backed scrollback.
 
+## Installation
+
+Crystal is a per-user executable at `~/.local/bin/crystal`. Installing or updating it needs no root, and nothing goes into `/usr/local` (`/var/usrlocal` on secureblue) or the OS image.
+
+```sh
+cargo build --locked --release
+install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
+```
+
+**What this gives up.** Every process running as you can write to `~/.local/bin`, so same-user malware (A5) can replace or shadow the binary. Every protection inside Crystal would then protect the fake, and the fake can ask for your passphrase. A passphrase phished this way works forever; with a hardware key, a fake gets only the unlocks you confirm by touch.
+
+**Optional immutability.** `run0 chattr +i ~/.local/bin/crystal`. Setting or clearing the flag needs `CAP_LINUX_IMMUTABLE`, so no process running as you can overwrite, delete, rename or replace the file. To update, run `run0 chattr -i`, then `install` and `restorecon`, then `run0 chattr +i`; `install` fails on an immutable target, which is the point, and the label must be set before the flag, since an immutable file cannot be relabeled. The flag does not stop the parent directory from being renamed and recreated (`mv ~/.local/bin ~/.local/bin.old; mkdir ~/.local/bin`). For the full guarantee, also run `run0 chattr +i ~/.local/bin`, which blocks every other per-user install into that directory too.
+
+**Shadowing.** Directories earlier in `PATH` (such as `~/.cargo/bin`) and shell startup files can still run a different `crystal`. Use an absolute-path alias (`alias crystal="$HOME/.local/bin/crystal"`) in a `~/.bashrc` that is itself immutable.
+
+**No self-check.** Crystal does not check its own immutable flag or hash at startup: a replaced binary would simply skip the check, so it would prove nothing.
+
+**SELinux.** The policy labels `~/.local/bin/crystal` as `crystal_exec_t`. A new install creates a new file with the default label, so relabel after every install (docs/SANDBOXING.md); otherwise Crystal runs outside `crystal_t`.
+
 ## Backups
 
 Crystal backs up automatically and fully offline by copying ciphertext only, so backups never need the key and never hold plaintext.
@@ -282,7 +314,7 @@ Crystal backs up automatically and fully offline by copying ciphertext only, so 
 | --- | --- | --- | --- |
 | Local snapshots | `vault/.snapshots/` on the same disk | After every save | Accidental edits and deletes, bad sync merges |
 | External drive | A drive you plug in, marked by an encrypted `crystal-backup.age` file bound to the `vault_id` | On unlock, on lock, and by a udev or systemd user trigger when the drive is mounted | Disk failure, theft, a wiped laptop |
-| Key backup | `identity.age` also encrypted to an offline backup recipient (paper key or a second YubiKey) | At init and after every key rotation | Losing the passphrase or hardware key |
+| Key backup | `identity.backup.age`: the vault identity encrypted to an offline backup recipient (paper key or a second YubiKey) | At init and after every key rotation | Losing the passphrase or hardware key |
 
 **Store format.** Each backup location holds `snapshots/<UTC timestamp>-<sha256 prefix>.age`, byte-for-byte copies of `vault.age`, plus a `SHA256SUMS` file. A text vault of a thousand notes is a few MB, so full copies are cheap; add delta storage only if the vault grows large.
 
@@ -304,8 +336,8 @@ Nine phases, each ending in a commit with passing acceptance tests; security lay
    - Accept: `file crystal` reports a static binary; CI is green.
 2. **Phase 1: Hardening bootstrap and terminal guard.** Steps 1 to 7 of the startup order; alt screen, raw mode, panic hook, signal handling.
    - Accept: `gdb -p` fails; `VmLck` is non-zero; a forced panic leaves a clean, cleared terminal.
-3. **Phase 2: Crypto and vault format.** `crystal --init` (including the offline backup recipient), unlock, `identity.age`, single vault blob, Padmé padding, atomic writer, generation counter in the state directory.
-   - Accept: round-trip property tests; tamper suite refuses foreign, truncated, bit-flipped and rolled-back vaults.
+3. **Phase 2: Crypto, vault format and config.** `crystal --init` (including `identity.backup.age` for the offline backup recipient), `--add`, `--remove`, unlock, `identity.age`, encrypted `config.age`, single vault blob, Padmé padding, atomic writer, generation counters for vaults and config in the state directory.
+   - Accept: round-trip property tests; tamper suite refuses foreign, truncated, bit-flipped and rolled-back vaults and configs; a config pointing at a symlinked path, a group-writable parent, `$HOME`, `~/.ssh` (no `VERSION`), or the config or state directory is refused.
 4. **Phase 3: Read-only viewer.** Fuzzy finder over titles, renderer and sanitizer, wikilink navigation, backlinks pane.
    - Accept: the escape-injection corpus renders as inert text; renderer fuzzing runs clean for an hour.
 5. **Phase 4: Editor.** `tui-textarea` integration, save, new, rename, delete, Syncthing conflict detection with per-note merge.
@@ -316,7 +348,7 @@ Nine phases, each ending in a commit with passing acceptance tests; security lay
    - Accept: the checks in docs/SANDBOXING.md section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied.
 8. **Phase 7: Backups.** Local snapshot store, external drive marker, headless mode with udev trigger, retention, verify, restore.
    - Accept: delete the vault, restore from the drive, every note matches; a tampered snapshot is refused; a headless run copies a new vault.age without the key.
-9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), passphrase change and key rotation, explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`.
+9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), passphrase change and key rotation, explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`, per-user install to `~/.local/bin` with the optional immutable flag (Installation).
    - Accept: two clean builds produce identical hashes; the signature verifies.
 
 A usable daily driver exists after Phase 4; Phases 5 and 6 are what make it meaningfully more secure than gocryptfs plus an editor.
@@ -363,9 +395,11 @@ Read docs/DESIGN.md before any change. Work on one phase at a time.
 - Never weaken Landlock, seccomp or hardening to make a test pass.
 
 ## Before finishing a task
+- cargo fmt --all --check
 - cargo clippy --all-targets -- -D warnings
 - cargo test
 - cargo deny check
+- cargo audit
 - List what changed and which acceptance criteria now pass.
 ```
 

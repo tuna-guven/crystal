@@ -126,35 +126,37 @@ Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.
 ### 7.1 Types
 
 - `crystal_t`: process domain.
-- `crystal_exec_t`: label for `/usr/local/bin/crystal`, root-owned, so only `run0` can replace it. On secureblue `/usr/local` is `/var/usrlocal`, outside the verified composefs image, and the policy maps `/var/usrlocal` to `/usr/local`, so one rule covers both paths. Installing a new build creates a new file with the default label, so every install MUST be followed by `run0 restorecon /usr/local/bin/crystal`; otherwise Crystal silently runs outside `crystal_t` (docs/SETUP.md, Installing).
+- `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install (DESIGN.md, Installation). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` (docs/SETUP.md, Installing). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
 - `crystal_vault_t`: label for `~/Vaults` and everything under it, and for the external backup directory.
 - `crystal_state_t`: label for `~/.local/state/crystal`.
+- `crystal_config_t`: label for `~/.config/crystal` (the encrypted `config.age`). `crystal_t` reads it before the sandbox; only `--init`, `--add` and `--remove` write it.
 
 ### 7.2 Policy intent
 
 - Domain transition `unconfined_t` -> `crystal_t` on exec of `crystal_exec_t`.
 - Allow: manage files and dirs of `crystal_vault_t` and `crystal_state_t`; create `crystal_state_t` dirs under `~/.local/state`; read/write the user TTY/PTY (`user_tty_device_t`, `user_devpts_t`); read locale and timezone files.
-- Phase 8 only: execute the age plugin binary for hardware-key unlock, as narrowly as possible (one plugin type, no transition to anything broader).
+- Phase 8 only: execute the age plugin binary for hardware-key unlock, as narrowly as possible (one plugin type, no transition to anything broader). Crystal sets `PR_SET_NO_NEW_PRIVS` in startup step 2, before the plugin runs, so a transition from `crystal_t` to a plugin domain needs `allow crystal_t <plugin>_t:process2 nnp_transition;` or a bounded plugin domain. Otherwise run the plugin in `crystal_t` with no transition.
 - Deny by omission: all network classes, `execute` on anything else, access to other `user_home_t` content, D-Bus, X11/Wayland sockets, `ptrace`, `userns_create`.
 - Do not use `unconfined_domain()` or broad `*_home_t` manage macros.
 
 ### 7.3 File contexts (`crystal.fc`)
 
 ```
-/usr/local/bin/crystal                    --  gen_context(system_u:object_r:crystal_exec_t,s0)
+HOME_DIR/\.local/bin/crystal              --  gen_context(system_u:object_r:crystal_exec_t,s0)
+HOME_DIR/\.config/crystal(/.*)?               gen_context(system_u:object_r:crystal_config_t,s0)
 HOME_DIR/Vaults(/.*)?                         gen_context(system_u:object_r:crystal_vault_t,s0)
 HOME_DIR/\.local/state/crystal(/.*)?          gen_context(system_u:object_r:crystal_state_t,s0)
 ```
 
-All vaults live under the fixed root `~/Vaults`, so the static rule above covers every vault; no per-vault `semanage` is needed. Label the backup drive with a `context=` mount option or the same `semanage` command for its mount point (Phase 7).
+The static rule covers every vault in the default location `~/Vaults`. A vault created with `--init NAME --at DIR` or registered with `--add` elsewhere needs a one-time rule: `run0 semanage fcontext -a -t crystal_vault_t 'DIR(/.*)?'` then `restorecon -Rv DIR`. Without it, that vault runs without the SELinux layer (Landlock and seccomp still apply), and `--sandbox-status` reports it. Label the backup drive with a `context=` mount option or the same `semanage` command for its mount point (Phase 7).
 
 ### 7.4 Development workflow
 
 ```sh
-sepolicy generate --application /usr/local/bin/crystal -n crystal   # starting template only
+sepolicy generate --application ~/.local/bin/crystal -n crystal    # starting template only
 make -f /usr/share/selinux/devel/Makefile crystal.pp
 run0 semodule -i crystal.pp
-run0 restorecon -Rv /usr/local/bin/crystal ~/.local/state/crystal ~/Vaults
+run0 restorecon -Rv ~/.local/bin/crystal ~/.config/crystal ~/.local/state/crystal ~/Vaults
 run0 semanage permissive -a crystal_t           # domain-level permissive while developing
 # exercise a full session, then:
 run0 ausearch -m AVC -c crystal | audit2allow -R
@@ -180,23 +182,27 @@ case $name in                                       # same rule as Crystal's; ch
 esac                                                # too, so a bad name binds nothing
 vault=$HOME/Vaults/$name
 state=$HOME/.local/state/crystal
+config=$HOME/.config/crystal
+bin=$HOME/.local/bin/crystal
 mkdir -p -m 700 "$state"                            # must exist to be bound
 exec bwrap \
   --unshare-all --die-with-parent \
   --clearenv \
   --setenv HOME "$HOME" --setenv TERM "$TERM" \
-  --ro-bind /usr/local/bin/crystal /usr/local/bin/crystal \
+  --ro-bind "$bin" "$bin" \
+  --ro-bind "$config" "$config" \
   --proc /proc --dev /dev --tmpfs /tmp \
   --ro-bind-try /etc/localtime /etc/localtime \
   --perms 0700 --dir "$HOME/Vaults" \
   --bind "$vault" "$vault" \
   --bind "$state" "$state" \
-  /usr/local/bin/crystal "$@" "$name"
+  "$bin" "$@" "$name"
 ```
 
 - `--clearenv` plus `--setenv` mirrors Crystal's own environment allowlist (`HOME`, `TERM`).
 - Only the one vault is bound; `--perms 0700 --dir` recreates an empty `~/Vaults` so Crystal's owner and mode check on the root passes. The other vaults do not exist inside the sandbox.
 - The launcher opens existing vaults only; run `crystal --init NAME` directly to create one.
+- The config is encrypted, so the launcher cannot look up a vault's path: it supports vaults in the default location `~/Vaults/<name>` only. A vault registered at another path runs without the bwrap layer. The config is bound read-only, so `--add` and `--remove` must also run directly.
 - Do not bind D-Bus, Wayland, X11 or PulseAudio/PipeWire sockets.
 - `--new-session` is not used: it breaks TUI job control, and `TIOCSTI` is blocked by seccomp (section 6).
 - `RLIMIT_MEMLOCK` is inherited, so the docs/SETUP.md limit still applies.

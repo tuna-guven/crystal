@@ -9,32 +9,64 @@ SUID privilege-escalation bugs. On other distributions `sudo` works the same.
 
 ## Installing
 
-Crystal is installed root-owned in `/usr/local/bin`, so only `run0` can
-replace it. A binary in `~/.local/bin` could be swapped silently by any
-program running as you, and every protection inside Crystal would then
-protect the fake. On secureblue `/usr/local` is `/var/usrlocal`: mutable
-machine state, outside the verified OS image, so installing there never
-touches the image or a UKI.
+Crystal is a per-user executable in `~/.local/bin`; installing and updating
+need no root (DESIGN.md, Installation).
 
 ```sh
 cargo build --locked --release
-run0 install -m 0755 -o root -g root \
-  target/x86_64-unknown-linux-musl/release/crystal /usr/local/bin/crystal
-run0 restorecon /usr/local/bin/crystal    # after every install, once the SELinux module exists
+install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
+restorecon -v ~/.local/bin/crystal    # once the SELinux module exists; run0 if relabeling is denied
 ```
+
+**Trade-off.** Any program running as you can write to `~/.local/bin`, so
+it could replace Crystal with a fake that asks for your passphrase. Every
+protection inside Crystal would then protect the fake.
+
+**Optional: make it immutable.** Setting or clearing the immutable flag needs
+root, so nothing running as you can overwrite, delete or rename the file:
+
+```sh
+run0 chattr +i ~/.local/bin/crystal
+lsattr ~/.local/bin/crystal          # shows ----i---------
+```
+
+To update: `run0 chattr -i ~/.local/bin/crystal`, then the `install` and
+`restorecon` lines above, then `run0 chattr +i ~/.local/bin/crystal`.
+Relabel before setting the flag: an immutable file's SELinux label cannot
+be changed either.
+
+The flag protects the file, not the directory: `~/.local/bin` itself can
+still be renamed and recreated with a fake inside. To close that too, run
+`run0 chattr +i ~/.local/bin`; other per-user installs into it then need
+the same `chattr -i` / `chattr +i` dance.
 
 **Add an absolute-path alias** to `~/.bashrc`:
 
 ```bash
-alias crystal=/usr/local/bin/crystal
+alias crystal="$HOME/.local/bin/crystal"
 ```
 
-Why: `~/.cargo/bin` and `~/.local/bin` are writable by any program running
-as you and come before `/usr/local/bin` in `PATH`, so a planted
-`crystal` there would run instead of the real one. Bash checks aliases
-before `PATH`. This only protects you if `~/.bashrc` itself cannot be
-changed without root (on this machine it carries the immutable flag;
+Why: `~/.cargo/bin` or any other directory earlier in `PATH` could hold a
+planted `crystal`. Bash checks aliases before `PATH`. This only protects you
+if `~/.bashrc` itself cannot be changed without root (mark it immutable too;
 check with `lsattr ~/.bashrc`).
+
+## Inherited file descriptors
+
+Crystal refuses to start when the program that launched it left a file
+descriptor above 2 open:
+
+```text
+crystal: 1 open file descriptor(s) inherited from the program that started Crystal, lowest 5; ...
+```
+
+An inherited descriptor would stay usable inside the sandbox (Landlock only
+checks files opened after it is applied), and Crystal cannot close a
+descriptor it does not own without `unsafe` code. Plain terminal shells do
+not leak descriptors; IDE terminals, some launchers and wrapper scripts
+sometimes do. Start Crystal from a plain shell, or close the descriptor in
+the command: `crystal diary 5>&-`. List what is open with
+`ls -l /proc/$$/fd` in the same shell.
 
 ## Vaults
 
