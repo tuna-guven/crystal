@@ -14,7 +14,7 @@ default-members = [".", "crates/zalloc"]
 
 [dependencies]
 lexopt = "0.3.2"
-rustix = { version = "1.1.5", features = ["event", "fs", "mm", "pipe", "process", "termios", "thread"] }
+rustix = { version = "1.1.5", features = ["event", "fs", "mm", "pipe", "process", "rand", "termios", "thread"] }
 signal-hook = "0.4.5"
 # Phase 2 (#4). Exact pins: crypto and the on-disk codec change only by review.
 # age is the rage library. No default features: X25519 and scrypt are always

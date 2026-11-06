@@ -1,5 +1,9 @@
 //! Vault I/O: on-disk format, Padmé padding, generation counter and the
-//! atomic writer. Only ever handles ciphertext.
+//! atomic writer. Handles only ciphertext, except `codec`: it turns notes
+//! into the plaintext bytes that `crypto` encrypts (and back), in
+//! zeroizing buffers, and never touches a file.
+
+mod codec;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;

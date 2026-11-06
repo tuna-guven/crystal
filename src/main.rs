@@ -2,7 +2,11 @@
 //!
 //! See docs/DESIGN.md for the architecture and threat model.
 
-#![forbid(unsafe_code)]
+// The real program has no unsafe code, and nothing can switch this off.
+#![cfg_attr(not(test), forbid(unsafe_code))]
+// Test builds only: still an error by default, but a #[cfg(test)] function
+// that checks memory (zeroization) may allow it, with a SAFETY comment.
+#![cfg_attr(test, deny(unsafe_code))]
 
 mod backup;
 mod cli;
