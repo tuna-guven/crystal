@@ -77,28 +77,59 @@ directory ([On-disk layout](../design/storage.md#on-disk-layout)).
 
 ```text
 crystal [--lock-after MINUTES] NAME   open the vault NAME
-crystal --init NAME [--at DIR]        create a vault in ~/Vaults/NAME or in DIR
-crystal --add NAME DIR                register an existing vault as NAME
-crystal --remove NAME                 forget NAME; its files are kept
+crystal init NAME [--at DIR]          create a vault in ~/Vaults/NAME or in DIR
+crystal add NAME DIR                  register an existing vault as NAME
+crystal remove NAME                   forget NAME; its files are kept
 ```
 
 `~/.config/crystal` must be yours and mode 0700, and `~/.config` must be
 yours and not writable by group or others; neither may be a symlink.
 Crystal checks this at every start and never fixes a mode itself. Only
-`--init` and `--add` create the directory; a normal run refuses to start
+`crystal init` and `crystal add` create the directory; a normal run refuses to start
 without it:
 
 ```text
 crystal: ~/.config/crystal does not exist; see docs/guide/setup.md
 ```
 
-`--init`, `--add` and `--remove` are still being built (Phase 2) and
-currently refuse with "not implemented yet". Until they exist, create the
-config directory by hand to try the startup checks:
+### Creating a vault
 
 ```sh
-mkdir -m 700 -p ~/.config/crystal && chmod 700 ~/.config/crystal
+crystal init diary                  # ~/Vaults/diary
+crystal init work --at ~/Sync/work  # the directory itself; must not exist
 ```
+
+`crystal init` first checks where the vault will go: the directory must not
+exist, and its parent must be owned by root or you, not writable by group
+or others, and reached without symlinks. Then it asks for:
+
+1. **The passphrase.** On a device without a config, a new one, twice; it
+   protects both the config and the vault's `identity.age`. On a device
+   with a config, the config's passphrase.
+2. **One or more backup recipients**: `age1…` public keys of keys you keep
+   offline, such as a paper key made with `age-keygen` or a second
+   hardware key. They go into `identity.backup.age`, which recovers the
+   vault if you lose the passphrase. An empty line ends the list. Keep the
+   matching secret key off this machine.
+
+Only then is anything created: `~/Vaults` (mode 0700) if needed, the vault
+directory (0700) and its four files (0600). If a step fails, what was
+created is removed again.
+
+### Registering and forgetting vaults
+
+`crystal add NAME DIR` registers a vault that already exists, for example one
+made by `crystal init` on another device and synced here. It asks for the
+config's passphrase, or for a new one if this device has no config yet;
+the vault's `identity.age` must open with the same passphrase. `crystal
+remove NAME` forgets a vault and leaves its files alone.
+
+### Opening a vault
+
+`crystal NAME` asks for the passphrase once and unlocks the vault. Until
+the viewer exists (Phase 3), it only shows how many notes the vault holds;
+any key locks it again and quits. The first unlock of a vault on a device
+says so: rollback detection starts from that point.
 
 ## Memory locking (required)
 
@@ -148,6 +179,17 @@ of RAM. On a single-user desktop this is a minor denial-of-service risk; it
 does not let anything read Crystal's memory.
 
 **Undo:** `run0 rm /etc/security/limits.d/90-crystal.conf`, then reboot.
+
+**More memory, stronger passphrase files.** The passphrase is stretched
+with scrypt, which needs a lot of memory, and that memory is locked too.
+Crystal lets scrypt use up to half of your limit
+([decision 0025](../decisions/0025-scrypt-budget.md)). age's own default
+takes about one second, which on a fast machine needs 256 MiB, so at the
+256 MiB floor Crystal uses a smaller factor (128 MiB). For age's full
+default, set the limit to at least 1 GiB (1048576 KiB); a larger limit,
+up to what your machine can spare (for example 16777216 KiB = 16 GiB), is
+fine and changes nothing else. A passphrase file that needs more than your
+limit allows is refused with a message pointing here, never a crash.
 
 ## ptrace and SELinux `deny_ptrace`
 

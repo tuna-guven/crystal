@@ -1,7 +1,7 @@
 # 0014 scrypt work factor: age's default, capped on decrypt
 
 - **Date:** 2026-11-06 (#8)
-- **Status:** Accepted
+- **Status:** Superseded by [0025](0025-scrypt-budget.md)
 
 ## Context
 

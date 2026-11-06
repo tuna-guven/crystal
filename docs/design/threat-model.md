@@ -21,7 +21,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 
 - Confidentiality of note content and titles at rest
 - Integrity of each note and of the vault as a set (no swapped, injected or deleted notes go unnoticed)
-- Rollback detection relative to the newest state this device has seen
+- Rollback detection relative to the newest state this device has seen ([Storage, Rollback](storage.md#rollback)); a same-user process (A5) can lower the plaintext counters, which is accepted
 - No plaintext persisted by Crystal itself, including on crash
 
 **Accepted leaks:** the vault's Padmé size bucket and when it was last saved. Note count, note sizes and which note changed stay hidden.

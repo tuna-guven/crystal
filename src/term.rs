@@ -434,10 +434,6 @@ impl LineEditor {
     }
 }
 
-#[cfg_attr(
-    not(debug_assertions),
-    expect(dead_code, reason = "--init (#14) and unlock (#15)")
-)]
 impl TerminalGuard {
     /// Asks for a passphrase on the alternate screen. Nothing is echoed,
     /// not even asterisks, which would show the length. Enter accepts,
@@ -456,7 +452,7 @@ impl TerminalGuard {
         result
     }
 
-    /// For --init: asks twice and accepts only matching entries, compared
+    /// For `crystal init`: asks twice and accepts only matching entries, compared
     /// in constant time.
     pub fn read_new_passphrase(
         &mut self,
@@ -473,6 +469,12 @@ impl TerminalGuard {
         }
     }
 
+    /// Clears the alternate screen and writes `text`, which must be fixed
+    /// text or numbers, never note content (Phase 2's placeholder screen).
+    pub fn show_status(&mut self, text: &str) -> Result<(), PromptError> {
+        self.show(text.as_bytes())
+    }
+
     /// Clears the alternate screen and writes `text` at the top left.
     fn show(&mut self, text: &[u8]) -> Result<(), PromptError> {
         let write = |tty: &mut File, bytes| tty.write_all(bytes);
@@ -481,12 +483,9 @@ impl TerminalGuard {
             .map_err(|e| PromptError::Write(e.kind()))
     }
 
-    /// Reads keys until Enter or a cancel. Each read lands in a small
-    /// stack buffer that is wiped on drop; bytes after Enter in the same
-    /// read are discarded with it.
-    fn read_line(&mut self, signals: &Signals) -> Result<Passphrase, PromptError> {
-        let mut line = LineEditor::new();
-        let mut chunk = Zeroizing::new([0u8; 64]);
+    /// Waits for keys or an exit signal and reads up to `chunk.len()` keys
+    /// into `chunk`. An exit signal cancels; a closed terminal is `Closed`.
+    fn next_keys(&mut self, signals: &Signals, chunk: &mut [u8]) -> Result<usize, PromptError> {
         loop {
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
@@ -504,16 +503,27 @@ impl TerminalGuard {
             if !key {
                 continue;
             }
-            let n = match self.tty.read(&mut chunk[..]) {
-                Ok(0) => return Err(PromptError::Closed),
-                Ok(n) => n,
+            return match self.tty.read(chunk) {
+                Ok(0) => Err(PromptError::Closed),
+                Ok(n) => Ok(n),
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 // A hung-up terminal reads as EIO.
                 Err(e) if e.raw_os_error() == Some(Errno::IO.raw_os_error()) => {
-                    return Err(PromptError::Closed);
+                    Err(PromptError::Closed)
                 }
-                Err(e) => return Err(PromptError::Read(e.kind())),
+                Err(e) => Err(PromptError::Read(e.kind())),
             };
+        }
+    }
+
+    /// Reads keys until Enter or a cancel. Each read lands in a small
+    /// stack buffer that is wiped on drop; bytes after Enter in the same
+    /// read are discarded with it.
+    fn read_line(&mut self, signals: &Signals) -> Result<Passphrase, PromptError> {
+        let mut line = LineEditor::new();
+        let mut chunk = Zeroizing::new([0u8; 64]);
+        loop {
+            let n = self.next_keys(signals, &mut chunk[..])?;
             for &byte in &chunk[..n] {
                 match line.feed(byte) {
                     Feed::More => {}
@@ -524,11 +534,128 @@ impl TerminalGuard {
             }
         }
     }
+
+    /// Asks for one line of public text, such as an age recipient, and
+    /// echoes it: printable ASCII without spaces only, at most
+    /// `MAX_PUBLIC_LINE` characters, so nothing typed can be a terminal
+    /// control sequence. Enter returns the line (possibly empty);
+    /// Backspace and Ctrl+U edit; Ctrl+C, Esc or an exit signal cancels.
+    /// Never use it for anything secret.
+    pub fn read_public_line(
+        &mut self,
+        signals: &Signals,
+        prompt: &str,
+    ) -> Result<String, PromptError> {
+        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
+        self.show(prompt.as_bytes())?;
+        let mut line = PublicLine::default();
+        let mut chunk = [0u8; 64];
+        let mut echo = Vec::new();
+        let result = loop {
+            let n = self.next_keys(signals, &mut chunk)?;
+            let mut done = None;
+            for &byte in &chunk[..n] {
+                match line.feed(byte, &mut echo) {
+                    Feed::More => {}
+                    Feed::Enter => {
+                        done = Some(Ok(line.0.clone()));
+                        break;
+                    }
+                    Feed::Cancel => {
+                        done = Some(Err(PromptError::Cancelled));
+                        break;
+                    }
+                    Feed::TooLong => {
+                        done = Some(Err(PromptError::TooLong));
+                        break;
+                    }
+                }
+            }
+            self.tty
+                .write_all(&echo)
+                .map_err(|e| PromptError::Write(e.kind()))?;
+            echo.clear();
+            if let Some(done) = done {
+                break done;
+            }
+        };
+        self.show(b"")?;
+        result
+    }
+}
+
+/// The longest public line `read_public_line` accepts. An age X25519
+/// recipient is 62 characters; plugin recipients (Phase 8) are longer.
+pub const MAX_PUBLIC_LINE: usize = 256;
+
+/// The line being typed at a public prompt, and what to echo for each key.
+#[derive(Default)]
+struct PublicLine(String);
+
+impl PublicLine {
+    fn feed(&mut self, byte: u8, echo: &mut Vec<u8>) -> Feed {
+        match byte {
+            b'\r' | b'\n' => Feed::Enter,
+            DELETE | BACKSPACE => {
+                if self.0.pop().is_some() {
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+                Feed::More
+            }
+            CTRL_U => {
+                for _ in 0..self.0.len() {
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+                self.0.clear();
+                Feed::More
+            }
+            CTRL_C | ESC => Feed::Cancel,
+            0x21..=0x7e if self.0.len() == MAX_PUBLIC_LINE => Feed::TooLong,
+            0x21..=0x7e => {
+                self.0.push(char::from(byte));
+                echo.push(byte);
+                Feed::More
+            }
+            // Spaces, other control bytes and non-ASCII are ignored.
+            _ => Feed::More,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn public(keys: &[u8]) -> (String, Vec<u8>, Vec<Feed>) {
+        let mut line = PublicLine::default();
+        let mut echo = Vec::new();
+        let feeds = keys.iter().map(|b| line.feed(*b, &mut echo)).collect();
+        (line.0, echo, feeds)
+    }
+
+    #[test]
+    fn public_line_editing_and_echo() {
+        let (text, echo, _) = public(b"age1xyz");
+        assert_eq!(
+            (text.as_str(), echo.as_slice()),
+            ("age1xyz", &b"age1xyz"[..])
+        );
+        let (text, echo, _) = public(b"ab\x7fc");
+        assert_eq!(text, "ac");
+        assert_eq!(echo, b"ab\x08 \x08c");
+        let (text, _, _) = public(b"junk\x15age1");
+        assert_eq!(text, "age1");
+        // Spaces, controls and non-ASCII are neither kept nor echoed: an
+        // escape sequence can never be written back to the terminal.
+        let (text, echo, _) = public("a b\tc\x07ü".as_bytes());
+        assert_eq!((text.as_str(), echo.as_slice()), ("abc", &b"abc"[..]));
+        assert_eq!(public(b"x\r").2[1], Feed::Enter);
+        assert_eq!(public(b"\r").2[0], Feed::Enter, "an empty line is returned");
+        assert_eq!(public(b"x\x03").2[1], Feed::Cancel);
+        assert_eq!(public(b"x\x1b").2[1], Feed::Cancel);
+        let long = vec![b'a'; MAX_PUBLIC_LINE + 1];
+        assert_eq!(public(&long).2[MAX_PUBLIC_LINE], Feed::TooLong);
+    }
 
     fn typed(keys: &[u8]) -> (LineEditor, Vec<Feed>) {
         let mut line = LineEditor::new();

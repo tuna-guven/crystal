@@ -14,10 +14,6 @@ use crate::crypto::{Ciphertext, fill_random};
 
 /// What `atomic_write` writes. Every caller must say which kind it has, and
 /// neither kind can be built from arbitrary bytes outside its module.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first callers: #10, #11, #13, #14")
-)]
 pub enum Payload<'a> {
     Ciphertext(&'a Ciphertext),
     Public(&'a PublicBytes),
@@ -27,25 +23,23 @@ pub enum Payload<'a> {
 /// `VERSION` (format version) and the `*.gen` generation counters. The
 /// field is private; the two encoders are added here with their formats
 /// (#10, #11), and nothing else may construct one.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "built by the VERSION and .gen encoders (#10, #11)"
-    )
-)]
 pub struct PublicBytes(Vec<u8>);
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "built by the VERSION and .gen encoders (#10, #11)"
-    )
-)]
 impl PublicBytes {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// The `VERSION` file: the vault format number in ASCII decimal and a
+    /// newline, for example `1\n`. Nothing else.
+    pub fn version() -> Self {
+        Self(format!("{}\n", super::codec::FORMAT).into_bytes())
+    }
+
+    /// A `*.gen` counter: the last generation seen on this device, in
+    /// ASCII decimal and a newline, for example `42\n`. Nothing else.
+    pub fn generation(seen: u64) -> Self {
+        Self(format!("{seen}\n").into_bytes())
     }
 
     /// Test builds only, until the real encoders exist.
@@ -62,10 +56,6 @@ impl PublicBytes {
 #[derive(Debug, PartialEq, Eq)]
 pub struct FileName(String);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first callers: #10, #11, #13, #14")
-)]
 impl FileName {
     /// 255 (NAME_MAX) minus the temp file's extra characters: 1 for the
     /// leading `.`, 5 for `.tmp-`, 16 for the random hex.
@@ -102,7 +92,7 @@ pub enum Step {
 /// content. Before `Rename` fails, the target still holds its old content;
 /// a `DirFsync` error means the new content is in place but may not
 /// survive a power loss.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct WriteError {
     pub step: Step,
     pub errno: Errno,
@@ -139,10 +129,6 @@ impl std::error::Error for WriteError {}
 /// 5. `fsync(dir)`, so the rename itself is on disk.
 ///
 /// If a step before the rename fails, the temp file is unlinked.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first callers: #10, #11, #13, #14")
-)]
 pub fn atomic_write(dir: &OwnedFd, name: &FileName, data: Payload<'_>) -> Result<(), WriteError> {
     let bytes = match data {
         Payload::Ciphertext(c) => c.as_bytes(),

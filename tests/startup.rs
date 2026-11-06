@@ -8,36 +8,18 @@
 //! never create or touch the real ~/.config/crystal or
 //! ~/.local/state/crystal.
 
+mod common;
+
+use common::*;
 use std::io::{Read, Write};
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const BIN: &str = env!("CARGO_BIN_EXE_crystal");
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
-/// A fresh, empty HOME for one test.
-fn fresh_home(test: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(test);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn set_mode(path: &Path, mode: u32) {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-}
-
-fn mode(path: &Path) -> u32 {
-    std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
-}
-
-/// Creates HOME/.config/crystal, both levels 0700, as docs/guide/setup.md tells
-/// users to until --init exists. Until unlock exists (#15), a run with it
-/// reaches the terminal guard for any valid vault name.
+/// Creates HOME/.config/crystal, both levels 0700, without a config.age:
+/// enough for startup steps 1 to 7. Tests of those steps, signals and the
+/// terminal guard pass the debug-only `--skip-unlock-for-test`, so they
+/// reach the guard without a vault; tests/vault.rs covers unlock.
 fn make_config(home: &Path) {
     let config = home.join(".config");
     std::fs::create_dir_all(config.join("crystal")).unwrap();
@@ -92,13 +74,14 @@ fn pty(cmd: &str, home: Option<&Path>, keys: &[u8]) -> (bool, String) {
 
 /// Step 5: with no controlling terminal, Crystal refuses to start.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_without_terminal() {
     let home = fresh_home("no_terminal");
     make_config(&home);
     // New session: no controlling terminal, even when `cargo test` itself
     // runs in an interactive shell.
     let out = Command::new("setsid")
-        .args(["--wait", BIN, "diary"])
+        .args(["--wait", BIN, "--skip-unlock-for-test", "diary"])
         .env("HOME", &home)
         .output()
         .unwrap();
@@ -113,10 +96,14 @@ fn refuses_without_terminal() {
 /// Step 5: inside a terminal, Crystal starts even with stdin and stdout
 /// redirected, because it reads and writes /dev/tty directly.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn starts_in_terminal_with_redirected_stdio() {
     let home = fresh_home("redirected_stdio");
     make_config(&home);
-    let (ok, output) = run_in_pty("diary </dev/null >/dev/null", Some(&home));
+    let (ok, output) = run_in_pty(
+        "--skip-unlock-for-test diary </dev/null >/dev/null",
+        Some(&home),
+    );
     assert!(ok, "{output}");
 }
 
@@ -148,10 +135,11 @@ fn rejects_unsafe_vault_name() {
 /// Step 2: an fd inherited from whatever started Crystal would survive
 /// Landlock and seccomp, so Crystal refuses to start with one open.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_inherited_file_descriptor() {
     let home = fresh_home("inherited_fd");
     make_config(&home);
-    let (ok, output) = run_in_pty("diary 5</dev/null", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary 5</dev/null", Some(&home));
     assert!(
         !ok && output.contains("1 open file descriptor(s) inherited")
             && output.contains("lowest 5"),
@@ -169,11 +157,12 @@ fn refuses_inherited_file_descriptor() {
 /// no new privileges, umask 077. Unlike a missing core file, these fail on
 /// any host where the hardening is missing, whatever its core_pattern.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn running_binary_is_hardened() {
     let home = fresh_home("hardened");
     make_config(&home);
     let cmd = format!(
-        "'{BIN}' diary & p=$!; sleep 1; echo; \
+        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; echo; \
          echo environ_owner=$(stat -c %u /proc/$p/environ); \
          grep -E '^(VmLck|NoNewPrivs|Umask):' /proc/$p/status; \
          grep 'Max core file size' /proc/$p/limits; \
@@ -206,11 +195,12 @@ fn running_binary_is_hardened() {
 /// root to set up; the vault unit test foreign_owned_directories_are_refused
 /// covers that check.)
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn config_dir_checks() {
     let home = fresh_home("config_dir");
     let config = home.join(".config/crystal");
 
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("~/.config/crystal does not exist"),
         "{output}"
@@ -223,7 +213,7 @@ fn config_dir_checks() {
 
     make_config(&home);
     set_mode(&config, 0o755);
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("~/.config/crystal has mode 755, need 700"),
         "{output}"
@@ -235,7 +225,7 @@ fn config_dir_checks() {
     std::fs::rename(&config, &elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, &config).unwrap();
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("~/.config/crystal is a symlink or not a directory"),
         "{output}"
@@ -247,7 +237,7 @@ fn config_dir_checks() {
     std::fs::remove_file(real_config.join("crystal")).unwrap();
     std::fs::rename(&elsewhere, real_config.join("crystal")).unwrap();
     symlink(&real_config, home.join(".config")).unwrap();
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("a parent of ~/.config/crystal is a symlink"),
         "{output}"
@@ -258,29 +248,31 @@ fn config_dir_checks() {
 
 /// Step 7: a fresh state directory is created with every level 0700.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn creates_state_dir_with_mode_0700() {
     let home = fresh_home("state_dir_fresh");
     make_config(&home);
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(ok, "{output}");
     for dir in [".local", ".local/state", ".local/state/crystal"] {
         assert_eq!(mode(&home.join(dir)), 0o700, "{dir}");
     }
     // A second start accepts the directory it created.
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(ok, "{output}");
 }
 
 /// Step 7: an existing state directory with a looser mode is refused,
 /// not silently fixed.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_state_dir_with_loose_mode() {
     let home = fresh_home("state_dir_loose");
     make_config(&home);
     let state = home.join(".local/state/crystal");
     std::fs::create_dir_all(&state).unwrap();
     set_mode(&state, 0o755);
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(!ok && output.contains("mode 755, need 700"), "{output}");
     assert!(output.contains("chmod 700"), "{output}");
     assert_eq!(
@@ -292,6 +284,7 @@ fn refuses_state_dir_with_loose_mode() {
 
 /// Step 7: a symlink in place of the state directory is refused.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_state_dir_symlink() {
     let home = fresh_home("state_dir_symlink");
     make_config(&home);
@@ -300,7 +293,7 @@ fn refuses_state_dir_symlink() {
     std::fs::create_dir(&elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, home.join(".local/state/crystal")).unwrap();
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("is a symlink or not a directory"),
         "{output}"
@@ -311,6 +304,7 @@ fn refuses_state_dir_symlink() {
 /// nothing can redirect where the generation counter is kept. Nothing is
 /// created at the symlink's target.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_state_dir_parent_symlink() {
     let home = fresh_home("state_parent_symlink");
     make_config(&home);
@@ -319,7 +313,7 @@ fn refuses_state_dir_parent_symlink() {
     std::fs::create_dir(&elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, home.join(".local/state")).unwrap();
-    let (ok, output) = run_in_pty("diary", Some(&home));
+    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("a parent of ~/.local/state/crystal is a symlink"),
         "{output}"
@@ -329,9 +323,10 @@ fn refuses_state_dir_parent_symlink() {
 
 /// Steps 3 and 7: HOME must be set and absolute.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_missing_or_relative_home() {
     for home in [None, Some(Path::new("relative/home"))] {
-        let (ok, output) = run_in_pty("diary", home);
+        let (ok, output) = run_in_pty("--skip-unlock-for-test diary", home);
         assert!(
             !ok && output.contains("HOME is unset or not an absolute path"),
             "{output}"
@@ -339,32 +334,200 @@ fn refuses_missing_or_relative_home() {
     }
 }
 
-/// Until #13 and #14, --init, --add and --remove say so plainly and create
-/// nothing: no config directory, no ~/Vaults, no state directory.
+/// Phase 2 end to end: `crystal init` creates the documented layout, the backup
+/// key alone recovers the vault, and the vault can be removed from and
+/// added back to the config. The passphrase never appears in the output.
 #[test]
-fn config_commands_are_not_implemented_yet() {
-    let home = fresh_home("config_commands");
-    for (args, flag) in [
-        ("--init newvault", "--init"),
-        ("--init newvault --at /tmp/x", "--init"),
-        ("--add newvault /tmp/x", "--add"),
-        ("--remove newvault", "--remove"),
-    ] {
-        let (ok, output) = run_in_pty(args, Some(&home));
-        let want = format!("{flag} is not implemented yet");
-        assert!(!ok && output.contains(&want), "{args}: {output}");
-        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0, "{args}");
+fn init_remove_add_end_to_end() {
+    use std::str::FromStr;
+    let home = private_home("init_e2e");
+    let backup = age::x25519::Identity::generate();
+    let recipient = backup.to_public().to_string();
+
+    let (ok, output) = dialog(
+        &format!("'{BIN}' init diary"),
+        &home,
+        &init_steps(&recipient),
+    );
+    assert!(ok, "{output}");
+    assert!(!output.contains(PASS), "passphrase shown: {output:?}");
+
+    // Acceptance: the layout matches docs/design/storage.md.
+    let vault = home.join("Vaults/diary");
+    assert_eq!((mode(&home.join("Vaults")), mode(&vault)), (0o700, 0o700));
+    let mut files: Vec<String> = std::fs::read_dir(&vault)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "VERSION",
+            "identity.age",
+            "identity.backup.age",
+            "vault.age"
+        ]
+    );
+    for file in &files {
+        assert_eq!(mode(&vault.join(file)), 0o600, "{file}");
     }
+    assert_eq!(std::fs::read(vault.join("VERSION")).unwrap(), b"1\n");
+    assert_eq!(mode(&home.join(".config/crystal/config.age")), 0o600);
+    let state: Vec<String> = std::fs::read_dir(home.join(".local/state/crystal"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(state.len(), 2, "{state:?}");
+    assert!(state.iter().any(|f| f == "config.gen"), "{state:?}");
+    assert!(
+        state.iter().any(|f| f.len() == 64 + 4
+            && f.ends_with(".gen")
+            && f[..64]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+        "<vault_id hex>.gen: {state:?}"
+    );
+
+    // Acceptance: identity.backup.age recovers the vault without the
+    // passphrase, and holds the same identity as identity.age.
+    let from_backup = age_decrypt(&backup, &vault.join("identity.backup.age"));
+    let recovered =
+        age::x25519::Identity::from_str(std::str::from_utf8(&from_backup).unwrap()).unwrap();
+    age_decrypt(&recovered, &vault.join("vault.age"));
+    let scrypt = age::scrypt::Identity::new(PASS.to_owned().into());
+    assert_eq!(
+        age_decrypt(&scrypt, &vault.join("identity.age")),
+        from_backup
+    );
+
+    // The same target again is refused before any prompt.
+    let (ok, output) = run_in_pty("init diary", Some(&home));
+    assert!(
+        !ok && output.contains("the vault directory already exists"),
+        "{output}"
+    );
+
+    // The same name elsewhere passes the target checks, then is refused
+    // once the config is unlocked.
+    let other = home.join("other");
+    let steps = vec![(PROMPT, format!("{PASS}\r").into_bytes())];
+    let (ok, output) = dialog(
+        &format!("'{BIN}' init diary --at '{}'", other.display()),
+        &home,
+        &steps,
+    );
+    assert!(!ok && output.contains("already registered"), "{output}");
+    assert!(!other.exists());
+
+    // `crystal remove` keeps the vault's files; `crystal add` registers it again.
+    let (ok, output) = dialog(&format!("'{BIN}' remove diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 4);
+    let config = home.join(".config/crystal/config.age");
+    let decrypted = age_decrypt(&scrypt, &config);
+    assert!(
+        !decrypted.windows(5).any(|w| w == b"diary"),
+        "still registered"
+    );
+
+    let (ok, output) = dialog(
+        &format!("'{BIN}' add diary '{}'", vault.display()),
+        &home,
+        &steps,
+    );
+    assert!(ok, "{output}");
+    let decrypted = age_decrypt(&scrypt, &config);
+    assert!(
+        decrypted.windows(5).any(|w| w == b"diary"),
+        "not registered"
+    );
+}
+
+/// Every interruption before creation leaves nothing behind: cancelling at
+/// the passphrase, the repeat or the backup prompt creates no vault and no
+/// config.age.
+#[test]
+fn init_cancelled_leaves_no_vault() {
+    let recipient = age::x25519::Identity::generate().to_public().to_string();
+    let all = init_steps(&recipient);
+    for cut in 0..3 {
+        let home = private_home(&format!("init_cancel_{cut}"));
+        let mut steps = all[..cut].to_vec();
+        steps.push((all[cut].0, b"abc\x03".to_vec()));
+        let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
+        assert!(!ok && output.contains("cancelled"), "step {cut}: {output}");
+        assert!(!home.join("Vaults").exists(), "step {cut}");
+        assert!(
+            !home.join(".config/crystal/config.age").exists(),
+            "step {cut}"
+        );
+    }
+}
+
+/// `crystal add` checks the directory before asking for any passphrase: a vault
+/// below a world-writable directory is refused at once, and no config.age
+/// is written. (Only the config and state directories are created.)
+#[test]
+fn add_refuses_unsafe_path_before_prompting() {
+    let home = fresh_home("add_unsafe");
+    let vault = home.join("shared/v");
+    std::fs::create_dir_all(&vault).unwrap();
+    set_mode(&home, 0o700);
+    set_mode(&home.join("shared"), 0o777);
+    set_mode(&vault, 0o700);
+    std::fs::write(vault.join("VERSION"), b"1\n").unwrap();
+
+    let (ok, output) = run_in_pty(&format!("add v '{}'", vault.display()), Some(&home));
+    assert!(!ok, "{output}");
+    assert!(output.contains("writable by group or others"), "{output}");
+    assert!(!output.contains("assphrase"), "prompted first: {output}");
+    assert!(!home.join(".config/crystal/config.age").exists());
+}
+
+/// `crystal add` of a directory that does not exist fails without a prompt.
+#[test]
+fn add_refuses_missing_directory() {
+    let home = fresh_home("add_missing");
+    set_mode(&home, 0o700);
+    let (ok, output) = run_in_pty("add v ./no-such-dir", Some(&home));
+    assert!(
+        !ok && output.contains("cannot resolve the vault directory"),
+        "{output}"
+    );
+    assert!(!home.join(".config/crystal/config.age").exists());
+}
+
+/// `crystal remove` never creates anything: without a config directory it fails
+/// like a normal run; with one but no config.age, the name is unknown.
+#[test]
+fn remove_without_config() {
+    let home = fresh_home("remove_none");
+    let (ok, output) = run_in_pty("remove v", Some(&home));
+    assert!(
+        !ok && output.contains("~/.config/crystal does not exist"),
+        "{output}"
+    );
+    assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
+
+    make_config(&home);
+    let (ok, output) = run_in_pty("remove v", Some(&home));
+    assert!(
+        !ok && output.contains("no vault with that name is registered"),
+        "{output}"
+    );
+    assert!(!home.join(".config/crystal/config.age").exists());
 }
 
 /// Step 7: the guard enters the alternate screen, clears it before leaving,
 /// and restores the exact terminal settings it found.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn terminal_guard_restores_terminal() {
     let home = fresh_home("terminal_guard");
     make_config(&home);
     // echo: Crystal prints no newline, so separate its output from stty's.
-    let cmd = format!("stty -g; '{BIN}' diary; echo; stty -g");
+    let cmd = format!("stty -g; '{BIN}' --skip-unlock-for-test diary; echo; stty -g");
     let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
     assert!(ok, "{output}");
 
@@ -387,6 +550,7 @@ fn terminal_guard_restores_terminal() {
 /// Phase 1 acceptance: a forced panic leaves a clean, restored terminal,
 /// prints only the location, on the normal screen, and never the message.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn forced_panic_leaves_clean_terminal() {
     let home = fresh_home("forced_panic");
     make_config(&home);
@@ -451,6 +615,7 @@ fn assert_no_core_file(home: &Path, context: &str) {
 /// leave no core file. A panic inside Drop aborts only after the panic
 /// hook ran, so it does restore the terminal.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn abort_paths_print_no_secret_and_leave_no_core() {
     // (kind, exit code, terminal restored): 134 = SIGABRT, 139 = SIGSEGV;
     // on musl, Rust's stack guard kills with SIGSEGV and prints nothing.
@@ -489,12 +654,13 @@ fn abort_paths_print_no_secret_and_leave_no_core() {
 /// wrapper shell ignores SIGHUP only to survive and record the exit code;
 /// Crystal installs its own handler regardless.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn terminal_hangup_exits_cleanly() {
     let home = fresh_home("hangup");
     make_config(&home);
     let status = home.join("status");
     let cmd = format!(
-        "trap '' HUP; '{BIN}' diary; echo $? > '{}'",
+        "trap '' HUP; '{BIN}' --skip-unlock-for-test diary; echo $? > '{}'",
         status.display()
     );
     let mut script = Command::new("script")
@@ -526,13 +692,14 @@ fn terminal_hangup_exits_cleanly() {
 /// nothing behind that Crystal wrote; from Phase 4 on this covers temp
 /// files during a save. SIGKILL never dumps core.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn kill_9_leaves_no_new_files() {
     let home = fresh_home("kill_9");
     make_config(&home);
     let listing = |name: &str| home.with_extension(name);
     let (before, after) = (listing("before"), listing("after"));
     let cmd = format!(
-        "'{BIN}' diary & p=$!; sleep 1; find . | sort > '{}'; kill -9 $p; wait $p; s=$?; \
+        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; find . | sort > '{}'; kill -9 $p; wait $p; s=$?; \
          find . | sort > '{}'; echo; echo exit=$s",
         before.display(),
         after.display()
@@ -556,6 +723,7 @@ fn kill_9_leaves_no_new_files() {
 /// musl's first free one, 64 the last. No key is typed and stdin stays
 /// open, so a clean exit can only come from the signal handler.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn exit_signals_restore_terminal() {
     let signals = [
         "TERM", "HUP", "INT", "QUIT", "USR1", "USR2", "ALRM", "VTALRM", "PROF", "XCPU", "XFSZ",
@@ -573,7 +741,7 @@ fn exit_signal_restores_terminal(signal: &str) {
     let home = fresh_home(&format!("signal_{signal}"));
     make_config(&home);
     let cmd = format!(
-        "stty -g; '{BIN}' diary & p=$!; sleep 1; kill -{signal} $p; wait $p; s=$?; \
+        "stty -g; '{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; kill -{signal} $p; wait $p; s=$?; \
          echo; echo exit=$s; stty -g"
     );
     let (ok, output) = pty(&cmd, Some(&home), b"");
@@ -600,11 +768,12 @@ fn exit_signal_restores_terminal(signal: &str) {
 /// T and the terminal is fully restored; SIGCONT re-enters raw mode and the
 /// alternate screen; SIGTERM then exits cleanly. No key is typed.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn suspend_restores_terminal_and_resume_reenters() {
     let home = fresh_home("suspend");
     make_config(&home);
     let cmd = format!(
-        "stty -g; '{BIN}' diary & p=$!; sleep 1; kill -TSTP $p; sleep 0.5; \
+        "stty -g; '{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; kill -TSTP $p; sleep 0.5; \
          echo; echo state=$(cut -d' ' -f3 /proc/$p/stat); stty -g; \
          kill -CONT $p; sleep 0.5; kill -TERM $p; wait $p; s=$?; echo; echo exit=$s; stty -g"
     );
@@ -636,88 +805,6 @@ fn suspend_restores_terminal_and_resume_reenters() {
     assert!(settings.iter().all(|s| *s == settings[0]), "{settings:?}");
 }
 
-/// Runs `cmd` in a new pseudo-terminal, in `home`. For each step, waits
-/// until `wait_for` appears in the output (after the previous step's
-/// match), then types `keys`; then collects the rest. Waiting matters:
-/// keys typed before Crystal enters raw mode would be echoed by the
-/// terminal itself. A reader thread lets each wait time out instead of
-/// hanging the test run.
-fn pty_dialog(cmd: &str, home: &Path, steps: &[(&str, &[u8])]) -> (bool, String) {
-    use std::sync::mpsc;
-    use std::time::{Duration, Instant};
-
-    /// Kills `script` if the test panics, so the pty hangs up and Crystal
-    /// exits instead of waiting at a prompt forever.
-    struct KillOnDrop(std::process::Child);
-    impl Drop for KillOnDrop {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-
-    let mut child = KillOnDrop(
-        Command::new("script")
-            .args(["-qec", cmd, "/dev/null"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .env("HOME", home)
-            .current_dir(home)
-            .spawn()
-            .unwrap(),
-    );
-    let mut stdin = child.0.stdin.take().unwrap();
-    let mut stdout = child.0.stdout.take().unwrap();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        while let Ok(n @ 1..) = stdout.read(&mut buf) {
-            if tx.send(buf[..n].to_vec()).is_err() {
-                break;
-            }
-        }
-    });
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let next = |output: &mut Vec<u8>| -> bool {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(chunk) => {
-                output.extend(chunk);
-                true
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => false,
-            Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out: {:?}", text(output)),
-        }
-    };
-    let mut output = Vec::new();
-    let mut seen = 0;
-    for (wait_for, keys) in steps {
-        // An empty `wait_for` types at once.
-        while !wait_for.is_empty() {
-            let found = output[seen..]
-                .windows(wait_for.len())
-                .position(|w| w == wait_for.as_bytes());
-            if let Some(pos) = found {
-                seen += pos + wait_for.len();
-                break;
-            }
-            assert!(
-                next(&mut output),
-                "exited before {wait_for:?}: {:?}",
-                text(&output)
-            );
-        }
-        stdin.write_all(keys).unwrap();
-        stdin.flush().unwrap();
-    }
-    while next(&mut output) {}
-    drop(stdin);
-    (child.0.wait().unwrap().success(), text(&output))
-}
-
-const PROMPT: &str = "Passphrase: ";
-const REPEAT: &str = "Repeat passphrase: ";
-
 /// One `--prompt-for-test` run in a fresh HOME that reaches the prompt.
 fn prompt_run(test: &str, kind: &str, steps: &[(&str, &[u8])]) -> (bool, String) {
     let home = fresh_home(test);
@@ -730,6 +817,7 @@ fn prompt_run(test: &str, kind: &str, steps: &[(&str, &[u8])]) -> (bool, String)
 /// asterisks. Backspace and Ctrl+U edit it; only its length is printed
 /// (debug hook). The prompt is drawn on the alternate screen.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_reads_passphrase_without_echo() {
     let keys = b"garbage\x15hunter2xx\x7f\x7f\r";
     let (ok, output) = prompt_run("prompt_read", "read", &[(PROMPT, keys)]);
@@ -748,6 +836,7 @@ fn prompt_reads_passphrase_without_echo() {
 /// Crystal even starts) were echoed by the terminal; they are discarded,
 /// not taken as the start of the passphrase.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_discards_keys_typed_before_it() {
     let home = fresh_home("prompt_typeahead");
     make_config(&home);
@@ -758,9 +847,10 @@ fn prompt_discards_keys_typed_before_it() {
     assert!(output.contains("len=2"), "{output:?}");
 }
 
-/// --init's variant: two matching entries are accepted, different ones
+/// `crystal init`'s variant: two matching entries are accepted, different ones
 /// refused.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_confirm_requires_matching_entries() {
     let same: [(&str, &[u8]); 2] = [(PROMPT, b"abc\r"), (REPEAT, b"abc\r")];
     let (ok, output) = prompt_run("prompt_confirm", "confirm", &same);
@@ -777,6 +867,7 @@ fn prompt_confirm_requires_matching_entries() {
 
 /// Ctrl+C and Esc cancel; the error names no typed byte.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_cancel_prints_nothing_typed() {
     for (test, key) in [("prompt_ctrl_c", b'\x03'), ("prompt_esc", b'\x1b')] {
         let keys = [b"hunter2".as_slice(), &[key]].concat();
@@ -795,6 +886,7 @@ fn prompt_cancel_prints_nothing_typed() {
 
 /// Over 1024 bytes is refused, not truncated.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_refuses_overlong_input() {
     let keys = [vec![b'a'; 1100], b"\r".to_vec()].concat();
     let (ok, output) = prompt_run("prompt_overlong", "read", &[(PROMPT, &keys)]);
@@ -810,6 +902,7 @@ fn prompt_refuses_overlong_input() {
 /// so zeroized). `exec` keeps the shell's pid, which the background job
 /// signals.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_exit_signal_cancels() {
     let home = fresh_home("prompt_signal");
     make_config(&home);

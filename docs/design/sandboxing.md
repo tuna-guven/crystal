@@ -129,7 +129,7 @@ Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.
 - `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install ([Installation](../guide/installation.md)). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` ([Setup, Installing](../guide/setup.md#installing)). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
 - `crystal_vault_t`: label for `~/Vaults` and everything under it, and for the external backup directory.
 - `crystal_state_t`: label for `~/.local/state/crystal`.
-- `crystal_config_t`: label for `~/.config/crystal` (the encrypted `config.age`). `crystal_t` reads it before the sandbox; only `--init`, `--add` and `--remove` write it.
+- `crystal_config_t`: label for `~/.config/crystal` (the encrypted `config.age`). `crystal_t` reads it before the sandbox; only `crystal init`, `crystal add` and `crystal remove` write it.
 
 ### 7.2 Policy intent
 
@@ -148,7 +148,7 @@ HOME_DIR/Vaults(/.*)?                         gen_context(system_u:object_r:crys
 HOME_DIR/\.local/state/crystal(/.*)?          gen_context(system_u:object_r:crystal_state_t,s0)
 ```
 
-The static rule covers every vault in the default location `~/Vaults`. A vault created with `--init NAME --at DIR` or registered with `--add` elsewhere needs a one-time rule: `run0 semanage fcontext -a -t crystal_vault_t 'DIR(/.*)?'` then `restorecon -Rv DIR`. Without it, that vault runs without the SELinux layer (Landlock and seccomp still apply), and `--sandbox-status` reports it. Label the backup drive with a `context=` mount option or the same `semanage` command for its mount point (Phase 7).
+The static rule covers every vault in the default location `~/Vaults`. A vault created with `crystal init NAME --at DIR` or registered with `crystal add` elsewhere needs a one-time rule: `run0 semanage fcontext -a -t crystal_vault_t 'DIR(/.*)?'` then `restorecon -Rv DIR`. Without it, that vault runs without the SELinux layer (Landlock and seccomp still apply), and `--sandbox-status` reports it. Label the backup drive with a `context=` mount option or the same `semanage` command for its mount point (Phase 7).
 
 ### 7.4 Development workflow
 
@@ -201,8 +201,8 @@ exec bwrap \
 
 - `--clearenv` plus `--setenv` mirrors Crystal's own environment allowlist (`HOME`, `TERM`).
 - Only the one vault is bound; `--perms 0700 --dir` recreates an empty `~/Vaults` so Crystal's owner and mode check on the root passes. The other vaults do not exist inside the sandbox.
-- The launcher opens existing vaults only; run `crystal --init NAME` directly to create one.
-- The config is encrypted, so the launcher cannot look up a vault's path: it supports vaults in the default location `~/Vaults/<name>` only. A vault registered at another path runs without the bwrap layer. The config is bound read-only, so `--add` and `--remove` must also run directly.
+- The launcher opens existing vaults only; run `crystal init NAME` directly to create one.
+- The config is encrypted, so the launcher cannot look up a vault's path: it supports vaults in the default location `~/Vaults/<name>` only. A vault registered at another path runs without the bwrap layer. The config is bound read-only, so `crystal add` and `crystal remove` must also run directly.
 - Do not bind D-Bus, Wayland, X11 or PulseAudio/PipeWire sockets.
 - `--new-session` is not used: it breaks TUI job control, and `TIOCSTI` is blocked by seccomp (section 6).
 - `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.

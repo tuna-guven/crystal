@@ -14,28 +14,28 @@ use crate::vault::VaultName;
 
 pub const USAGE: &str = "\
 usage: crystal [--lock-after MINUTES] NAME   open the vault NAME
-       crystal --init NAME [--at DIR]        create a vault in ~/Vaults/NAME or in DIR
-       crystal --add NAME DIR                register an existing vault as NAME
-       crystal --remove NAME                 forget NAME; its files are kept
-       crystal --help";
+       crystal init NAME [--at DIR]          create a vault in ~/Vaults/NAME or in DIR
+       crystal add NAME DIR                  register an existing vault as NAME
+       crystal remove NAME                   forget NAME; its files are kept
+       crystal help";
 
-const MAX_LOCK_AFTER_MINUTES: u32 = 24 * 60;
+pub const MAX_LOCK_AFTER_MINUTES: u32 = 24 * 60;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     /// `crystal NAME`: open a vault registered in config.age.
     Run(RunArgs),
-    /// `--init NAME [--at DIR]`: create a vault and register it.
+    /// `init NAME [--at DIR]`: create a vault and register it.
     Init {
         name: VaultName,
         at: Option<ArgPath>,
     },
-    /// `--add NAME DIR`: register an existing vault.
+    /// `add NAME DIR`: register an existing vault.
     Add {
         name: VaultName,
         dir: ArgPath,
     },
-    /// `--remove NAME`: drop a vault from the config; no files are deleted.
+    /// `remove NAME`: drop a vault from the config; no files are deleted.
     Remove {
         name: VaultName,
     },
@@ -55,6 +55,11 @@ pub struct RunArgs {
     /// screen and print only the resulting length. Not in release builds.
     #[cfg(debug_assertions)]
     pub prompt_for_test: Option<PromptKind>,
+    /// Debug builds only: skip unlock (step 8) and wait for a key at once,
+    /// for the tests of steps 1 to 7, signals and the terminal guard,
+    /// which need no vault. Not in release builds.
+    #[cfg(debug_assertions)]
+    pub skip_unlock_for_test: bool,
 }
 
 /// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
@@ -63,7 +68,7 @@ pub struct RunArgs {
 pub enum PromptKind {
     /// `read`: one entry, as at unlock.
     Read,
-    /// `confirm`: two entries that must match, as for --init.
+    /// `confirm`: two entries that must match, as for `crystal init`.
     Confirm,
 }
 
@@ -81,7 +86,7 @@ pub enum CrashKind {
     StackOverflow,
 }
 
-/// A directory path from argv (`--at DIR`, `--add NAME DIR`). Only its
+/// A directory path from argv (`--at DIR`, `add NAME DIR`). Only its
 /// syntax is checked here: not empty and not starting with `-`, so an
 /// option typed in the wrong place is not taken as a path. Whether it is a
 /// safe vault directory is decided when it is opened (#12).
@@ -100,6 +105,10 @@ impl ArgPath {
         let first = path.as_bytes().first()?;
         (*first != b'-').then(|| Self(PathBuf::from(path)))
     }
+
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.0
+    }
 }
 
 /// Fixed messages only; never the offending argument.
@@ -111,7 +120,6 @@ pub enum CliError {
     BadVaultName,
     BadLockAfter,
     BadPath,
-    ConflictingModes,
     AtWithoutInit,
     AddNeedsDir,
     LockAfterOnlyForRun,
@@ -124,13 +132,13 @@ impl fmt::Display for CliError {
             Self::MissingVault => "missing vault name",
             Self::ExtraArgument => "too many arguments",
             Self::BadVaultName => {
-                "vault name must be 1 to 64 letters, digits, - or _, starting with a letter or digit"
+                "vault name must be 1 to 64 letters, digits, - or _, starting with a letter or \
+                 digit, and not init, add, remove or help"
             }
             Self::BadLockAfter => "--lock-after needs whole minutes from 1 to 1440",
             Self::BadPath => "a directory must be a non-empty path that does not start with -",
-            Self::ConflictingModes => "use only one of --init, --add and --remove",
-            Self::AtWithoutInit => "--at works only with --init",
-            Self::AddNeedsDir => "--add needs a vault name and a directory",
+            Self::AtWithoutInit => "--at works only with crystal init",
+            Self::AddNeedsDir => "crystal add needs a vault name and a directory",
             Self::LockAfterOnlyForRun => "--lock-after works only when opening a vault",
         };
         write!(f, "{msg}\n{USAGE}")
@@ -139,7 +147,7 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
-/// Which command the mode flags selected; plain `crystal NAME` is `Run`.
+/// Which command the first word selected; plain `crystal NAME` is `Run`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Run,
@@ -157,19 +165,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut mode = Mode::Run;
     let mut lock_after = None;
     let mut at = None;
-    // At most two: NAME, and DIR for --add.
+    // At most two: NAME, and DIR for `add`.
     let mut positionals = Vec::with_capacity(2);
     #[cfg(debug_assertions)]
     let mut crash_for_test = None;
     #[cfg(debug_assertions)]
     let mut prompt_for_test = None;
+    #[cfg(debug_assertions)]
+    let mut skip_unlock_for_test = false;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
             Arg::Short('h') | Arg::Long("help") => return Ok(Command::Help),
-            Arg::Long("init") => set_mode(&mut mode, Mode::Init)?,
-            Arg::Long("add") => set_mode(&mut mode, Mode::Add)?,
-            Arg::Long("remove") => set_mode(&mut mode, Mode::Remove)?,
             Arg::Long("at") => {
                 // value() takes the next argument even if it starts with
                 // `-`; ArgPath::new refuses that.
@@ -206,6 +213,19 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                 };
                 prompt_for_test = Some(kind);
             }
+            #[cfg(debug_assertions)]
+            Arg::Long("skip-unlock-for-test") => skip_unlock_for_test = true,
+            // The first word may be a command; vault names cannot be one
+            // (VaultName reserves them), so this is never ambiguous.
+            Arg::Value(value) if positionals.is_empty() && mode == Mode::Run => {
+                match value.as_bytes() {
+                    b"init" => mode = Mode::Init,
+                    b"add" => mode = Mode::Add,
+                    b"remove" => mode = Mode::Remove,
+                    b"help" => return Ok(Command::Help),
+                    _ => positionals.push(value),
+                }
+            }
             Arg::Value(value) if positionals.len() < 2 => positionals.push(value),
             Arg::Value(_) => return Err(CliError::ExtraArgument),
             _ => return Err(CliError::UnknownArgument),
@@ -219,7 +239,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
         return Err(CliError::LockAfterOnlyForRun);
     }
     #[cfg(debug_assertions)]
-    if (crash_for_test.is_some() || prompt_for_test.is_some()) && mode != Mode::Run {
+    if (crash_for_test.is_some() || prompt_for_test.is_some() || skip_unlock_for_test)
+        && mode != Mode::Run
+    {
         return Err(CliError::UnknownArgument);
     }
 
@@ -241,19 +263,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             crash_for_test,
             #[cfg(debug_assertions)]
             prompt_for_test,
+            #[cfg(debug_assertions)]
+            skip_unlock_for_test,
         })),
         Mode::Init => Ok(Command::Init { name, at }),
         Mode::Remove => Ok(Command::Remove { name }),
     }
-}
-
-/// Selects a mode once; a second mode flag (even the same one) is refused.
-fn set_mode(mode: &mut Mode, new: Mode) -> Result<(), CliError> {
-    if *mode != Mode::Run {
-        return Err(CliError::ConflictingModes);
-    }
-    *mode = new;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -280,6 +295,8 @@ mod tests {
             crash_for_test: None,
             #[cfg(debug_assertions)]
             prompt_for_test: None,
+            #[cfg(debug_assertions)]
+            skip_unlock_for_test: false,
         })
     }
 
@@ -301,15 +318,16 @@ mod tests {
             name: name("v"),
             at: None,
         });
-        assert_eq!(parse_strs(&["--init", "v"]), plain);
-        assert_eq!(parse_strs(&["v", "--init"]), plain);
+        assert_eq!(parse_strs(&["init", "v"]), plain);
 
         let at = Ok(Command::Init {
             name: name("v"),
             at: Some(path("/sync/v")),
         });
-        assert_eq!(parse_strs(&["--init", "v", "--at", "/sync/v"]), at);
-        assert_eq!(parse_strs(&["--at=/sync/v", "v", "--init"]), at);
+        assert_eq!(parse_strs(&["init", "v", "--at", "/sync/v"]), at);
+        assert_eq!(parse_strs(&["init", "--at=/sync/v", "v"]), at);
+        // Options may come before the command word too.
+        assert_eq!(parse_strs(&["--at", "/sync/v", "init", "v"]), at);
     }
 
     #[test]
@@ -318,10 +336,9 @@ mod tests {
             name: name("v"),
             dir: path("/sync/v"),
         });
-        assert_eq!(parse_strs(&["--add", "v", "/sync/v"]), add);
-        assert_eq!(parse_strs(&["v", "/sync/v", "--add"]), add);
+        assert_eq!(parse_strs(&["add", "v", "/sync/v"]), add);
         assert_eq!(
-            parse_strs(&["--remove", "v"]),
+            parse_strs(&["remove", "v"]),
             Ok(Command::Remove { name: name("v") })
         );
     }
@@ -329,20 +346,48 @@ mod tests {
     #[test]
     fn help() {
         assert_eq!(parse_strs(&["--help"]), Ok(Command::Help));
+        assert_eq!(parse_strs(&["help"]), Ok(Command::Help));
         assert_eq!(parse_strs(&["-h", "v"]), Ok(Command::Help));
-        assert_eq!(parse_strs(&["--init", "v", "-h"]), Ok(Command::Help));
+        assert_eq!(parse_strs(&["init", "v", "-h"]), Ok(Command::Help));
+    }
+
+    // The old flag spellings are gone, not silently accepted.
+    #[test]
+    fn mode_flags_are_unknown() {
+        for args in [
+            &["--init", "v"][..],
+            &["--add", "v", "/d"],
+            &["--remove", "v"],
+        ] {
+            assert_eq!(parse_strs(args), Err(CliError::UnknownArgument), "{args:?}");
+        }
+    }
+
+    // Command words are reserved: never a vault name, and a command word
+    // after the first word is a (refused) name, not a second command.
+    #[test]
+    fn command_words_are_not_vault_names() {
+        for word in ["init", "add", "remove", "help"] {
+            assert!(VaultName::new(OsString::from(word)).is_none(), "{word}");
+        }
+        assert_eq!(parse_strs(&["init", "init"]), Err(CliError::BadVaultName));
+        assert_eq!(parse_strs(&["remove", "add"]), Err(CliError::BadVaultName));
+        assert_eq!(parse_strs(&["v", "init"]), Err(CliError::ExtraArgument));
+        // Names that only start with a command word are fine.
+        assert_eq!(parse_strs(&["init2"]), Ok(run("init2", None)));
+        assert_eq!(parse_strs(&["Init"]), Ok(run("Init", None)));
     }
 
     #[test]
     fn vault_name_is_required_unique_and_valid() {
         assert_eq!(parse_strs(&[]), Err(CliError::MissingVault));
-        assert_eq!(parse_strs(&["--init"]), Err(CliError::MissingVault));
-        assert_eq!(parse_strs(&["--remove"]), Err(CliError::MissingVault));
+        assert_eq!(parse_strs(&["init"]), Err(CliError::MissingVault));
+        assert_eq!(parse_strs(&["remove"]), Err(CliError::MissingVault));
         assert_eq!(parse_strs(&["a", "b"]), Err(CliError::ExtraArgument));
         assert_eq!(parse_strs(&["a", "b", "c"]), Err(CliError::ExtraArgument));
         assert_eq!(parse_strs(&["../x"]), Err(CliError::BadVaultName));
         assert_eq!(
-            parse_strs(&["--add", "../x", "/d"]),
+            parse_strs(&["add", "../x", "/d"]),
             Err(CliError::BadVaultName)
         );
     }
@@ -354,48 +399,32 @@ mod tests {
             Err(CliError::AtWithoutInit)
         );
         assert_eq!(
-            parse_strs(&["--add", "v", "/d", "--at", "/e"]),
+            parse_strs(&["add", "v", "/d", "--at", "/e"]),
             Err(CliError::AtWithoutInit)
         );
         assert_eq!(
-            parse_strs(&["--init", "v", "--at", "/d", "--at", "/e"]),
+            parse_strs(&["init", "v", "--at", "/d", "--at", "/e"]),
             Err(CliError::ExtraArgument)
         );
     }
 
     #[test]
     fn add_needs_name_and_dir() {
-        assert_eq!(parse_strs(&["--add", "v"]), Err(CliError::AddNeedsDir));
+        assert_eq!(parse_strs(&["add", "v"]), Err(CliError::AddNeedsDir));
         assert_eq!(
-            parse_strs(&["--add", "v", "/d", "/e"]),
+            parse_strs(&["add", "v", "/d", "/e"]),
             Err(CliError::ExtraArgument)
         );
-    }
-
-    #[test]
-    fn modes_cannot_be_combined() {
-        for args in [
-            &["--remove", "v", "--init"][..],
-            &["--init", "--add", "v", "/d"],
-            &["--add", "--remove", "v"],
-            &["--init", "--init", "v"],
-        ] {
-            assert_eq!(
-                parse_strs(args),
-                Err(CliError::ConflictingModes),
-                "{args:?}"
-            );
-        }
     }
 
     #[test]
     fn only_run_takes_one_name() {
         assert_eq!(
-            parse_strs(&["--init", "v", "/d"]),
+            parse_strs(&["init", "v", "/d"]),
             Err(CliError::ExtraArgument)
         );
         assert_eq!(
-            parse_strs(&["--remove", "v", "/d"]),
+            parse_strs(&["remove", "v", "/d"]),
             Err(CliError::ExtraArgument)
         );
     }
@@ -403,9 +432,9 @@ mod tests {
     #[test]
     fn lock_after_only_when_opening() {
         for args in [
-            &["--init", "v", "--lock-after", "5"][..],
-            &["--add", "v", "/d", "--lock-after", "5"],
-            &["--remove", "v", "--lock-after", "5"],
+            &["init", "v", "--lock-after", "5"][..],
+            &["add", "v", "/d", "--lock-after", "5"],
+            &["remove", "v", "--lock-after", "5"],
         ] {
             assert_eq!(
                 parse_strs(args),
@@ -420,19 +449,19 @@ mod tests {
     #[test]
     fn paths_must_not_look_like_options() {
         for args in [
-            &["--init", "v", "--at", "-d"][..],
-            &["--init", "v", "--at=-d"],
-            &["--init", "v", "--at", ""],
-            &["--init", "v", "--at"],
-            &["--add", "v", "-"],
-            &["--add", "v", "--", "-d"],
-            &["--add", "v", ""],
+            &["init", "v", "--at", "-d"][..],
+            &["init", "v", "--at=-d"],
+            &["init", "v", "--at", ""],
+            &["init", "v", "--at"],
+            &["add", "v", "-"],
+            &["add", "v", "--", "-d"],
+            &["add", "v", ""],
         ] {
             assert_eq!(parse_strs(args), Err(CliError::BadPath), "{args:?}");
         }
         // Without `--`, lexopt sees an option and it is unknown.
         assert_eq!(
-            parse_strs(&["--add", "v", "-d"]),
+            parse_strs(&["add", "v", "-d"]),
             Err(CliError::UnknownArgument)
         );
     }
@@ -457,18 +486,18 @@ mod tests {
         let attempts: [&[&str]; 14] = [
             &["--passphrase=hunter2", "v"],
             &["--passphrase", "hunter2", "v"],
-            &["--init=hunter2", "v"],
+            &["init=hunter2", "v"],
             &["--lock-after", "hunter2", "v"],
             &["v", "hunter2", "x"],
             &["hunter2/../x"],
             &["--at", "/hunter2", "v"],
-            &["--init", "v", "--at", "-hunter2"],
-            &["--init", "v", "hunter2"],
-            &["--add", "hunter2"],
-            &["--add", "v", "--", "-hunter2"],
-            &["--add", "hunter2/x", "/d"],
-            &["--remove", "v", "hunter2"],
-            &["--remove", "hunter2", "--init"],
+            &["init", "v", "--at", "-hunter2"],
+            &["init", "v", "hunter2"],
+            &["add", "hunter2"],
+            &["add", "v", "--", "-hunter2"],
+            &["add", "hunter2/x", "/d"],
+            &["remove", "v", "hunter2"],
+            &["remove", "hunter2", "--init"],
         ];
         for args in attempts {
             let err = parse_strs(args).unwrap_err();
@@ -483,9 +512,9 @@ mod tests {
     fn parsed_args_never_show_names_or_paths() {
         for args in [
             &["hunter2"][..],
-            &["--init", "hunter2", "--at", "/hunter2"],
-            &["--add", "hunter2", "hunter2"],
-            &["--remove", "hunter2"],
+            &["init", "hunter2", "--at", "/hunter2"],
+            &["add", "hunter2", "hunter2"],
+            &["remove", "hunter2"],
         ] {
             let parsed = parse_strs(args).unwrap();
             assert!(!format!("{parsed:?}").contains("hunter2"), "{parsed:?}");

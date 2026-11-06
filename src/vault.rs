@@ -4,9 +4,13 @@
 //! plaintext bytes that `crypto` encrypts (and back), in zeroizing
 //! buffers, and never touches a file.
 
-mod atomic;
-mod codec;
-mod padme;
+pub(crate) mod atomic;
+pub(crate) mod codec;
+pub(crate) mod format;
+pub(crate) mod generation;
+pub(crate) mod padme;
+pub(crate) mod public_file;
+pub(crate) mod vault_dir;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -18,15 +22,16 @@ use rustix::fs::{CWD, Mode, OFlags, fstat, mkdirat, openat};
 use rustix::io::Errno;
 use rustix::process::geteuid;
 
-const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
+pub(crate) const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
 /// A vault name: the key in config.age, and the directory name under
-/// ~/Vaults when --init creates a vault there. 1 to 64 characters from
-/// `A-Z a-z 0-9 - _`, starting with a letter or digit. No `/`, `..`,
-/// hidden names or option look-alikes can exist as a value.
+/// ~/Vaults when `crystal init` creates a vault there. 1 to 64 characters
+/// from `A-Z a-z 0-9 - _`, starting with a letter or digit, and not a
+/// command word. No `/`, `..`, hidden names or option look-alikes can
+/// exist as a value.
 #[derive(PartialEq, Eq)]
 pub struct VaultName(OsString);
 
@@ -41,6 +46,9 @@ impl fmt::Debug for VaultName {
 
 impl VaultName {
     pub const MAX_LEN: usize = 64;
+    /// The command words (`crystal init`, `add`, `remove`, `help`): a vault
+    /// with one of these names could not be opened as `crystal NAME`.
+    pub const RESERVED: [&str; 4] = ["init", "add", "remove", "help"];
 
     pub fn new(name: OsString) -> Option<Self> {
         let bytes = name.as_bytes();
@@ -48,7 +56,14 @@ impl VaultName {
         let rest_ok = bytes
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_');
-        (first_ok && rest_ok && bytes.len() <= Self::MAX_LEN).then_some(Self(name))
+        let reserved = Self::RESERVED.iter().any(|word| bytes == word.as_bytes());
+        (first_ok && rest_ok && !reserved && bytes.len() <= Self::MAX_LEN).then_some(Self(name))
+    }
+
+    /// The name as text: validation allows only ASCII letters, digits, `-`
+    /// and `_`, so it always is.
+    pub fn as_str(&self) -> &str {
+        self.0.to_str().unwrap_or_default()
     }
 }
 
@@ -165,11 +180,14 @@ fn open_private_dir(
 /// that detects rollback. Never synced. Must be ours and mode 0700, or
 /// another user could reset the counter.
 pub struct StateDir {
-    #[expect(dead_code, reason = "holds the generation counter in Phase 2")]
     fd: OwnedFd,
 }
 
 impl StateDir {
+    pub fn fd(&self) -> &OwnedFd {
+        &self.fd
+    }
+
     /// Startup step 7. Created on first use: losing it only resets the
     /// rollback baseline to what the next unlock sees.
     pub fn open_or_create(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
@@ -187,15 +205,18 @@ impl StateDir {
 
 /// ~/.config/crystal: holds config.age. Local only, never synced. Must be
 /// ours and mode 0700, or another user could swap the config. A normal run
-/// only opens it, so a mistyped command creates nothing; only --init and
-/// --add create it. Closed after unlock (step 8): the sandbox never
+/// only opens it, so a mistyped command creates nothing; only `crystal init` and
+/// `crystal add` create it. Closed after unlock (step 8): the sandbox never
 /// reaches it.
 pub struct ConfigDir {
-    #[expect(dead_code, reason = "config.age is read and written in #13")]
     fd: OwnedFd,
 }
 
 impl ConfigDir {
+    pub fn fd(&self) -> &OwnedFd {
+        &self.fd
+    }
+
     /// Startup step 7 for a normal run. A missing directory is an error.
     pub fn open(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
         Ok(Self {
@@ -203,12 +224,8 @@ impl ConfigDir {
         })
     }
 
-    /// For --init and --add only: creates missing levels with mode 0700,
+    /// For `crystal init` and `crystal add` only: creates missing levels with mode 0700,
     /// then applies the same checks as `open`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "called by --init and --add (#13, #14)")
-    )]
     pub fn create(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
         Ok(Self {
             fd: open_home_subdir(home, CONFIG_DIR, &[".config"], "crystal", Create::Yes)?,
@@ -263,9 +280,28 @@ fn create_dir(parent: &OwnedFd, name: &str) -> Result<(), Errno> {
     }
 }
 
+/// Who may own a directory on a walk to one of Crystal's directories.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Owners {
+    /// Only us: the walks inside HOME (~/.config, ~/.local/state).
+    Us,
+    /// Root or us: the walk from `/` to a vault (vault_dir), where `/`,
+    /// `/var` and similar belong to root.
+    UsOrRoot,
+}
+
+/// Whether an intermediate directory on a walk is safe: owned by an
+/// allowed owner and not writable by group or others, so nobody else can
+/// rename or replace what lies beneath it. No exception for sticky
+/// directories such as /tmp. Any stricter mode is fine (~/.local is often
+/// 0755).
+fn is_safe_parent(uid: u32, mode: u32, owners: Owners, our_uid: u32) -> bool {
+    let owner_ok = uid == our_uid || (owners == Owners::UsOrRoot && uid == 0);
+    owner_ok && mode & 0o022 == 0
+}
+
 /// Opens an intermediate directory: not a symlink, ours, and not writable
-/// by group or others. Any mode stricter than that is fine (~/.local is
-/// often 0755).
+/// by group or others (`is_safe_parent`).
 fn open_safe_parent(parent: &OwnedFd, name: &str) -> Result<OwnedFd, Problem> {
     let fd = openat(parent, name, OPEN_DIR_FLAGS, Mode::empty()).map_err(|errno| match errno {
         Errno::NOENT => Problem::Missing,
@@ -273,7 +309,7 @@ fn open_safe_parent(parent: &OwnedFd, name: &str) -> Result<OwnedFd, Problem> {
         other => Problem::Open(other),
     })?;
     let stat = fstat(&fd).map_err(Problem::Stat)?;
-    if stat.st_uid != geteuid().as_raw() || stat.st_mode & 0o022 != 0 {
+    if !is_safe_parent(stat.st_uid, stat.st_mode, Owners::Us, geteuid().as_raw()) {
         return Err(Problem::UnsafeParent);
     }
     Ok(fd)
@@ -329,7 +365,7 @@ mod tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
-    // Only --init and --add create the config directory, every level 0700;
+    // Only `crystal init` and `crystal add` create the config directory, every level 0700;
     // a second create accepts what the first one made.
     #[test]
     fn config_dir_create_makes_every_level_0700() {

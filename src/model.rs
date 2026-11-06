@@ -129,7 +129,7 @@ pub struct Note {
 pub struct VaultId([u8; 32]);
 
 impl VaultId {
-    /// A new id for a new vault (--init), from the kernel's secure
+    /// A new id for a new vault (`crystal init`), from the kernel's secure
     /// generator.
     pub fn random() -> Result<Self, Errno> {
         let mut bytes = [0; 32];
@@ -137,7 +137,7 @@ impl VaultId {
         Ok(Self(bytes))
     }
 
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 

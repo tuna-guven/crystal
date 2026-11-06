@@ -53,6 +53,12 @@ jobs:
             fi
           done
           cargo test --locked
+          # The release binary too, at the same memlock floor: an optimized
+          # build stretches passphrases far harder (scrypt), and only this
+          # run shows whether that fits in locked memory
+          # (docs/decisions/0025-scrypt-budget.md). Tests that need a
+          # debug-only hook are reported as ignored here.
+          cargo test --release --locked
 
       - name: Install cargo-deny and cargo-audit
         run: |

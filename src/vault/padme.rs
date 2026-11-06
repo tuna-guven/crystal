@@ -16,11 +16,6 @@
 //! frame with a smaller length can still look valid. age's authenticated
 //! encryption around the frame is what detects tampering.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the vault format and config (#10, #13)")
-)]
-
 use std::fmt;
 
 use zeroize::Zeroizing;

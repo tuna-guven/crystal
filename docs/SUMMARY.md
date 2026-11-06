@@ -43,6 +43,14 @@
   - [0015 age's random source must be allowed by seccomp](decisions/0015-age-getrandom.md)
   - [0016 Passphrase prompt without echo or reallocation](decisions/0016-passphrase-prompt.md)
   - [0017 Documentation as an mdBook from docs/](decisions/0017-mdbook-docs.md)
+  - [0018 Vault format 1](decisions/0018-vault-format-1.md)
+  - [0019 Generation counters for rollback detection](decisions/0019-generation-counters.md)
+  - [0020 Vault paths: walk from /, compare by inode](decisions/0020-vault-path-checks.md)
+  - [0021 Config format 1 and vault pinning](decisions/0021-config-format.md)
+  - [0022 --init: check and ask first, create last, undo on failure](decisions/0022-init.md)
+  - [0023 Unlock: one prompt, fail closed, pinned vault id](decisions/0023-unlock.md)
+  - [0024 Subcommands: crystal init, add, remove](decisions/0024-subcommands.md)
+  - [0025 scrypt within the locked-memory budget](decisions/0025-scrypt-budget.md)
 
 # Development
 

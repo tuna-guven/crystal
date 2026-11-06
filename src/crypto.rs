@@ -24,13 +24,6 @@ use crate::model::assert_not_impl;
 /// is seeded at boot instead of returning weak bytes, and never reads
 /// /dev/urandom, so it needs no file access inside the sandbox. Retries on
 /// EINTR and on short reads.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "random ids (#10, #14) and atomic_write temp names"
-    )
-)]
 pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -55,10 +48,96 @@ pub const MAX_PLAINTEXT: usize = 32 << 20;
 pub const MAX_CIPHERTEXT: usize = MAX_PLAINTEXT + MAX_PLAINTEXT / 4096 + (64 << 10);
 
 /// age's scrypt work factor (log2 N) in test builds only, so the tests run
-/// in milliseconds. Every other build uses age's own choice (about one
-/// second on this machine), and the release binary has no way to lower it.
+/// in milliseconds. Every other build uses `scrypt_policy`, and the release
+/// binary has no way to lower it.
 #[cfg(test)]
 const TEST_SCRYPT_LOG_N: u8 = 10;
+
+/// A ceiling far above any timing target (2^30 needs 1 TiB), for an
+/// unlimited RLIMIT_MEMLOCK.
+const MAX_SCRYPT_LOG_N: u8 = 30;
+
+/// scrypt work factors for this run (docs/decisions/0025-scrypt-budget.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScryptPolicy {
+    /// log2 N for new passphrase files.
+    encrypt: u8,
+    /// The largest log2 N accepted when decrypting; above it, a file is
+    /// refused as WorkFactorTooHigh before any scrypt work.
+    max_decrypt: u8,
+}
+
+/// The largest log2 N whose scrypt memory (128 * r * N bytes, r = 8 in
+/// age, so 2^(log N + 10)) fits in half of the locked-memory limit
+/// `memlock` (`None`: unlimited). Every allocation is locked (mlockall with
+/// MCL_FUTURE), so scrypt beyond the limit would abort; the other half
+/// stays free for the vault and everything else.
+fn fitting_log_n(memlock: Option<u64>) -> u8 {
+    let Some(limit) = memlock else {
+        return MAX_SCRYPT_LOG_N;
+    };
+    let half = limit / 2;
+    if half < 1 << 11 {
+        return 1;
+    }
+    let log2 = 63 - half.leading_zeros();
+    u8::try_from(log2 - 10)
+        .unwrap_or(MAX_SCRYPT_LOG_N)
+        .min(MAX_SCRYPT_LOG_N)
+}
+
+/// The work factor that takes about one second here, measured the way age
+/// measures it (age 0.11.5, `target_scrypt_work_factor`): time log N = 10,
+/// raise it until the time is measurable, then double until one second.
+/// age does not expose its own choice, so Crystal repeats the measurement.
+#[cfg(not(test))]
+fn timed_log_n() -> u8 {
+    use std::time::{Duration, Instant};
+    let measure = |log_n: u8| {
+        let mut recipient = scrypt::Recipient::new(SecretString::from(String::new()));
+        recipient.set_work_factor(log_n);
+        let start = Instant::now();
+        let _ = encrypt(iter::once(&recipient as &dyn age::Recipient), b"");
+        start.elapsed()
+    };
+    let mut log_n = 10;
+    let mut elapsed = measure(log_n);
+    while elapsed.is_zero() && log_n < MAX_SCRYPT_LOG_N {
+        log_n += 1;
+        elapsed = measure(log_n);
+    }
+    while elapsed < Duration::from_secs(1) && log_n < MAX_SCRYPT_LOG_N {
+        log_n += 1;
+        elapsed *= 2;
+    }
+    log_n
+}
+
+/// age's own policy (about one second to encrypt; files up to 16 times
+/// that accepted), each capped by what fits in locked memory. Computed once
+/// per run.
+fn scrypt_policy() -> ScryptPolicy {
+    #[cfg(test)]
+    {
+        ScryptPolicy {
+            encrypt: TEST_SCRYPT_LOG_N,
+            max_decrypt: TEST_SCRYPT_LOG_N + 4,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        static POLICY: std::sync::OnceLock<ScryptPolicy> = std::sync::OnceLock::new();
+        *POLICY.get_or_init(|| {
+            let memlock = rustix::process::getrlimit(rustix::process::Resource::Memlock).maximum;
+            let fit = fitting_log_n(memlock);
+            let target = timed_log_n();
+            ScryptPolicy {
+                encrypt: target.min(fit),
+                max_decrypt: target.saturating_add(4).min(fit),
+            }
+        })
+    }
+}
 
 /// Why encryption or decryption failed. Fixed variants only: age's error
 /// text, file contents and passphrases never reach a message.
@@ -94,7 +173,10 @@ impl fmt::Display for CryptoError {
             Self::NotForThisKey => "the file is not encrypted to this key",
             Self::Corrupt => "the encrypted file is damaged or not an age file",
             Self::TooLarge => "the encrypted file is too large",
-            Self::WorkFactorTooHigh => "the passphrase file asks for too much scrypt work",
+            Self::WorkFactorTooHigh => {
+                "the passphrase file needs more scrypt work or memory than Crystal allows here \
+                 (a higher RLIMIT_MEMLOCK allows more memory; see docs/guide/setup.md)"
+            }
             Self::NoRecipients => "no recipients to encrypt to",
             Self::EncryptFailed => "encryption failed",
         })
@@ -108,10 +190,6 @@ impl std::error::Error for CryptoError {}
 /// arbitrary bytes as ciphertext and hand them to `vault::atomic_write`.
 pub struct Ciphertext(Vec<u8>);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "written by the save path (#10, #14)")
-)]
 impl Ciphertext {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
@@ -132,10 +210,6 @@ pub struct Passphrase(Zeroizing<Vec<u8>>);
 
 assert_not_impl!(Passphrase: fmt::Debug, fmt::Display, serde::Serialize, Clone);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "built by the passphrase prompt (#9)")
-)]
 impl Passphrase {
     /// None for an empty or non-UTF-8 passphrase.
     pub fn new(bytes: Zeroizing<Vec<u8>>) -> Option<Self> {
@@ -154,7 +228,7 @@ impl Passphrase {
         SecretString::from(copy)
     }
 
-    /// Whether both passphrases are the same, for `--init`'s "type it
+    /// Whether both passphrases are the same, for `crystal init`'s "type it
     /// again". The time taken depends only on the lengths, never on where
     /// the first difference is: every byte pair is XORed and OR-folded, and
     /// black_box keeps the compiler from adding an early exit.
@@ -170,9 +244,9 @@ impl Passphrase {
         std::hint::black_box(diff) == 0
     }
 
-    /// Debug builds only: the length in bytes, for the prompt tests'
-    /// `len=<n>` line. Never the content.
-    #[cfg(debug_assertions)]
+    /// Debug and test builds only: the length in bytes, for the prompt
+    /// tests (the `len=<n>` line and the unit tests). Never the content.
+    #[cfg(any(test, debug_assertions))]
     pub fn len_for_test(&self) -> usize {
         self.0.len()
     }
@@ -190,7 +264,6 @@ pub struct VaultIdentity(Box<x25519::Identity>);
 
 assert_not_impl!(VaultIdentity: fmt::Debug, fmt::Display, serde::Serialize, Clone);
 
-#[cfg_attr(not(test), expect(dead_code, reason = "--init (#14) and unlock (#15)"))]
 impl VaultIdentity {
     /// A new random identity, from the kernel's generator (through age).
     pub fn generate() -> Self {
@@ -231,18 +304,14 @@ impl VaultIdentity {
 
 /// Encrypts `secret` to a passphrase: one scrypt stanza as the only
 /// recipient, as age requires.
-#[cfg_attr(not(test), expect(dead_code, reason = "--init (#14)"))]
 pub fn encrypt_to_passphrase(secret: &[u8], pass: &Passphrase) -> Result<Ciphertext, CryptoError> {
-    #[cfg_attr(not(test), expect(unused_mut, reason = "lowered in tests only"))]
     let mut recipient = scrypt::Recipient::new(pass.to_secret_string());
-    #[cfg(test)]
-    recipient.set_work_factor(TEST_SCRYPT_LOG_N);
+    recipient.set_work_factor(scrypt_policy().encrypt);
     encrypt(iter::once(&recipient as &dyn age::Recipient), secret)
 }
 
 /// Encrypts `secret` to X25519 recipients: the vault recipient for
 /// `vault.age`, the backup recipients for `identity.backup.age`.
-#[cfg_attr(not(test), expect(dead_code, reason = "save path (#10, #14)"))]
 pub fn encrypt_to_recipients(
     secret: &[u8],
     recipients: &[x25519::Recipient],
@@ -277,17 +346,18 @@ fn encrypt<'a>(
 /// Decrypts a passphrase-encrypted file. A file with any other stanza is
 /// `NotForThisKey` (or `Corrupt` if it mixes scrypt with other stanzas,
 /// which age forbids).
-#[cfg_attr(not(test), expect(dead_code, reason = "unlock (#15)"))]
 pub fn decrypt_with_passphrase(
     ciphertext: &[u8],
     pass: &Passphrase,
 ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-    let identity = scrypt::Identity::new(pass.to_secret_string());
+    let mut identity = scrypt::Identity::new(pass.to_secret_string());
+    // Refuse, before any scrypt work, a file asking for more than this run
+    // allows: age's own limit could exceed locked memory and abort.
+    identity.set_max_work_factor(scrypt_policy().max_decrypt);
     decrypt(ciphertext, &identity, Expect::Passphrase)
 }
 
 /// Decrypts a file encrypted to `identity` (`vault.age`).
-#[cfg_attr(not(test), expect(dead_code, reason = "unlock (#15)"))]
 pub fn decrypt_with_identity(
     ciphertext: &[u8],
     identity: &VaultIdentity,
@@ -375,6 +445,25 @@ mod tests {
         assert!(new("pässwörd".as_bytes()));
         assert!(!new(b""));
         assert!(!new(b"\xff\xfe"));
+    }
+
+    // scrypt memory is 2^(log N + 10) bytes; half the memlock limit may go
+    // to it.
+    #[test]
+    fn scrypt_fits_half_of_locked_memory() {
+        const MIB: u64 = 1 << 20;
+        assert_eq!(fitting_log_n(Some(256 * MIB)), 17, "the floor: 128 MiB");
+        assert_eq!(fitting_log_n(Some(300 * MIB)), 17);
+        assert_eq!(fitting_log_n(Some(512 * MIB)), 18, "age's default here");
+        assert_eq!(fitting_log_n(Some(4096 * MIB)), 21);
+        assert_eq!(fitting_log_n(None), MAX_SCRYPT_LOG_N);
+        assert_eq!(fitting_log_n(Some(u64::MAX)), MAX_SCRYPT_LOG_N);
+        assert_eq!(fitting_log_n(Some(1024)), 1);
+        for log_n in 2..=MAX_SCRYPT_LOG_N {
+            let limit = 2u64 << (u32::from(log_n) + 10);
+            assert_eq!(fitting_log_n(Some(limit)), log_n, "{log_n}");
+            assert_eq!(fitting_log_n(Some(limit - 1)), log_n - 1, "{log_n}");
+        }
     }
 
     #[test]
