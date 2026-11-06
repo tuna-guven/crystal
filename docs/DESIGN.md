@@ -18,7 +18,7 @@ chapter. This file is not part of the book.
 | Backups | `docs/design/backups.md` |
 | Phased build plan | `docs/development/roadmap.md` |
 | Testing and verification | `docs/development/testing.md` |
-| Working with Claude Code | `docs/development/rules.md` |
+| Working with Claude Code | Removed from the documentation |
 
 `docs/SANDBOXING.md`, `docs/SETUP.md` and `docs/SYSCALLS.md` moved to
 `docs/design/sandboxing.md`, `docs/guide/setup.md` and

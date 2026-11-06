@@ -19,7 +19,7 @@ and never writes plaintext to disk.
   allowlist is built from it.
 - **Decisions** records each important design choice, its alternatives and
   its consequences, in the order it was made.
-- **Development** has the roadmap, the test strategy and the project rules.
+- **Development** has the roadmap and the test strategy.
 
 The book is built from the `docs/` directory of the
 [repository](https://github.com/tuna-guven/crystal). Code comments and
