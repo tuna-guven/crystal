@@ -16,9 +16,10 @@ const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-/// A vault name that is safe to open relative to ~/Vaults: 1 to 64
-/// characters from `A-Z a-z 0-9 - _`, starting with a letter or digit.
-/// No `/`, `..`, hidden names or option look-alikes can exist as a value.
+/// A vault name: the key in config.age, and the directory name under
+/// ~/Vaults when --init creates a vault there. 1 to 64 characters from
+/// `A-Z a-z 0-9 - _`, starting with a letter or digit. No `/`, `..`,
+/// hidden names or option look-alikes can exist as a value.
 #[derive(PartialEq, Eq)]
 pub struct VaultName(OsString);
 
@@ -89,8 +90,8 @@ impl fmt::Display for PrivateDirError {
 
 impl std::error::Error for PrivateDirError {}
 
-const VAULTS_DIR: &str = "~/Vaults";
 const STATE_DIR: &str = "~/.local/state/crystal";
+const CONFIG_DIR: &str = "~/.config/crystal";
 
 /// HOME as an absolute path, or NoHome for `dir`.
 fn home_dir(home: Option<&OsStr>, dir: &'static str) -> Result<PathBuf, PrivateDirError> {
@@ -153,85 +154,6 @@ fn open_private_dir(
     Ok(fd)
 }
 
-/// ~/Vaults, the only place vaults live. Never created here: only --init
-/// creates it (Phase 2). Used only to open one vault, then closed, so other
-/// vaults stay unreachable for the rest of the session.
-pub struct VaultsRoot {
-    fd: OwnedFd,
-}
-
-impl VaultsRoot {
-    /// Startup step 7.
-    pub fn open(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
-        let path = home_dir(home, VAULTS_DIR)?.join("Vaults");
-        Ok(Self {
-            fd: open_private_dir(CWD, &path, VAULTS_DIR)?,
-        })
-    }
-}
-
-/// The vault directory, opened once at startup. Every later file operation
-/// is relative to this fd, so renaming or swapping the path afterwards has
-/// no effect on which directory Crystal uses.
-pub struct VaultDir {
-    #[expect(dead_code, reason = "used by the vault format in Phase 2")]
-    fd: OwnedFd,
-}
-
-/// Says which check failed, never the name: it came from argv.
-#[derive(Debug)]
-pub enum OpenVaultError {
-    NoSuchVault,
-    NotARealDirectory,
-    Other(Errno),
-    NotOwned,
-    BadMode(u32),
-}
-
-impl fmt::Display for OpenVaultError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoSuchVault => write!(f, "no vault with that name in {VAULTS_DIR}"),
-            Self::NotARealDirectory => write!(f, "vault is a symlink or not a directory"),
-            Self::Other(errno) => write!(f, "cannot open vault directory ({errno})"),
-            Self::NotOwned => write!(f, "vault directory is owned by another user"),
-            Self::BadMode(mode) => write!(
-                f,
-                "vault directory has mode {mode:o}, need 700; run: chmod 700 {VAULTS_DIR}/<name>"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for OpenVaultError {}
-
-impl VaultDir {
-    /// Startup step 7: open the vault relative to the root fd. O_NOFOLLOW
-    /// refuses a symlinked vault; with O_DIRECTORY Linux reports it as
-    /// ENOTDIR, the same as a regular file, so both share one error.
-    pub fn open(root: &VaultsRoot, name: &VaultName) -> Result<Self, OpenVaultError> {
-        let fd = openat(
-            root.fd.as_fd(),
-            name.0.as_os_str(),
-            OPEN_DIR_FLAGS,
-            Mode::empty(),
-        )
-        .map_err(|errno| match errno {
-            Errno::NOENT => OpenVaultError::NoSuchVault,
-            Errno::NOTDIR => OpenVaultError::NotARealDirectory,
-            other => OpenVaultError::Other(other),
-        })?;
-        // The 0700 root already shields it today; vaults outside ~/Vaults
-        // (Phase 2, config file) will rely on this check alone.
-        check_private(&fd).map_err(|e| match e {
-            NotPrivate::Stat(errno) => OpenVaultError::Other(errno),
-            NotPrivate::NotOwned => OpenVaultError::NotOwned,
-            NotPrivate::BadMode(mode) => OpenVaultError::BadMode(mode),
-        })?;
-        Ok(Self { fd })
-    }
-}
-
 /// ~/.local/state/crystal: local-only state such as the generation counter
 /// that detects rollback. Never synced. Must be ours and mode 0700, or
 /// another user could reset the counter.
@@ -241,30 +163,88 @@ pub struct StateDir {
 }
 
 impl StateDir {
-    /// Startup step 7. Walks from HOME one directory at a time, relative
-    /// to the previous fd, creating missing ones with mode 0700. `.local`
-    /// and `state` must be real directories, ours, and not writable by
-    /// group or others, so nobody can redirect the walk; `crystal` is then
-    /// checked like ~/Vaults. HOME itself is followed: on Fedora Atomic,
-    /// /home is a symlink to /var/home.
+    /// Startup step 7. Created on first use: losing it only resets the
+    /// rollback baseline to what the next unlock sees.
     pub fn open_or_create(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
-        let fail = |problem| PrivateDirError {
-            dir: STATE_DIR,
-            problem,
-        };
-        let home = home_dir(home, STATE_DIR)?;
-        let home_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-        let mut parent =
-            openat(CWD, &home, home_flags, Mode::empty()).map_err(|e| fail(Problem::Open(e)))?;
-        for part in [".local", "state"] {
-            create_dir(&parent, part).map_err(|e| fail(Problem::Create(e)))?;
-            parent = open_safe_parent(&parent, part).map_err(fail)?;
-        }
-        create_dir(&parent, "crystal").map_err(|e| fail(Problem::Create(e)))?;
         Ok(Self {
-            fd: open_private_dir(&parent, Path::new("crystal"), STATE_DIR)?,
+            fd: open_home_subdir(
+                home,
+                STATE_DIR,
+                &[".local", "state"],
+                "crystal",
+                Create::Yes,
+            )?,
         })
     }
+}
+
+/// ~/.config/crystal: holds config.age. Local only, never synced. Must be
+/// ours and mode 0700, or another user could swap the config. A normal run
+/// only opens it, so a mistyped command creates nothing; only --init and
+/// --add create it. Closed after unlock (step 8): the sandbox never
+/// reaches it.
+pub struct ConfigDir {
+    #[expect(dead_code, reason = "config.age is read and written in #13")]
+    fd: OwnedFd,
+}
+
+impl ConfigDir {
+    /// Startup step 7 for a normal run. A missing directory is an error.
+    pub fn open(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
+        Ok(Self {
+            fd: open_home_subdir(home, CONFIG_DIR, &[".config"], "crystal", Create::No)?,
+        })
+    }
+
+    /// For --init and --add only: creates missing levels with mode 0700,
+    /// then applies the same checks as `open`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "called by --init and --add (#13, #14)")
+    )]
+    pub fn create(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
+        Ok(Self {
+            fd: open_home_subdir(home, CONFIG_DIR, &[".config"], "crystal", Create::Yes)?,
+        })
+    }
+}
+
+/// Whether `open_home_subdir` may create missing directories.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Create {
+    Yes,
+    No,
+}
+
+/// Opens HOME/`parents`/`leaf` one directory at a time, each relative to
+/// the previous fd. The `parents` must be real directories, ours, and not
+/// writable by group or others, so nobody can redirect the walk; the
+/// `leaf` must be ours and mode 0700. With `Create::Yes`, missing levels
+/// are made with mode 0700 on the way; with `Create::No`, nothing is
+/// created and a missing level is `Missing`. HOME itself is followed: on
+/// Fedora Atomic, /home is a symlink to /var/home.
+fn open_home_subdir(
+    home: Option<&OsStr>,
+    dir: &'static str,
+    parents: &[&str],
+    leaf: &str,
+    create: Create,
+) -> Result<OwnedFd, PrivateDirError> {
+    let fail = |problem| PrivateDirError { dir, problem };
+    let home = home_dir(home, dir)?;
+    let home_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let mut parent =
+        openat(CWD, &home, home_flags, Mode::empty()).map_err(|e| fail(Problem::Open(e)))?;
+    for part in parents {
+        if create == Create::Yes {
+            create_dir(&parent, part).map_err(|e| fail(Problem::Create(e)))?;
+        }
+        parent = open_safe_parent(&parent, part).map_err(fail)?;
+    }
+    if create == Create::Yes {
+        create_dir(&parent, leaf).map_err(|e| fail(Problem::Create(e)))?;
+    }
+    open_private_dir(&parent, Path::new(leaf), dir)
 }
 
 /// mkdir with mode 0700; an existing entry is fine (it is checked when
@@ -281,6 +261,7 @@ fn create_dir(parent: &OwnedFd, name: &str) -> Result<(), Errno> {
 /// often 0755).
 fn open_safe_parent(parent: &OwnedFd, name: &str) -> Result<OwnedFd, Problem> {
     let fd = openat(parent, name, OPEN_DIR_FLAGS, Mode::empty()).map_err(|errno| match errno {
+        Errno::NOENT => Problem::Missing,
         Errno::NOTDIR => Problem::UnsafeParent,
         other => Problem::Open(other),
     })?;
@@ -323,5 +304,67 @@ mod tests {
     fn vault_name_debug_hides_the_name() {
         let shown = format!("{:?}", name("hunter2").unwrap());
         assert_eq!(shown, "VaultName(..)");
+    }
+
+    /// A fresh, empty HOME under target/ (std::env::temp_dir is banned,
+    /// and CARGO_TARGET_TMPDIR exists only for integration tests).
+    fn fresh_home(test: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target/unit-homes")
+            .join(test);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    // Only --init and --add create the config directory, every level 0700;
+    // a second create accepts what the first one made.
+    #[test]
+    fn config_dir_create_makes_every_level_0700() {
+        let home = fresh_home("config_create");
+        ConfigDir::create(Some(home.as_os_str())).unwrap();
+        for dir in [".config", ".config/crystal"] {
+            assert_eq!(mode(&home.join(dir)), 0o700, "{dir}");
+        }
+        ConfigDir::create(Some(home.as_os_str())).unwrap();
+        ConfigDir::open(Some(home.as_os_str())).unwrap();
+    }
+
+    // A normal run never creates it, not even ~/.config.
+    #[test]
+    fn config_dir_open_creates_nothing() {
+        let home = fresh_home("config_open_missing");
+        let err = ConfigDir::open(Some(home.as_os_str())).err().unwrap();
+        assert!(matches!(err.problem, Problem::Missing), "{err:?}");
+        assert!(err.to_string().contains("~/.config/crystal does not exist"));
+        assert!(!home.join(".config").exists());
+
+        std::fs::create_dir(home.join(".config")).unwrap();
+        let err = ConfigDir::open(Some(home.as_os_str())).err().unwrap();
+        assert!(matches!(err.problem, Problem::Missing), "{err:?}");
+        assert!(!home.join(".config/crystal").exists());
+    }
+
+    // Directories owned by someone else are refused, at the last level and
+    // on the way. Uses root-owned /usr and /usr/bin, so it means nothing
+    // when the tests run as root.
+    #[test]
+    fn foreign_owned_directories_are_refused() {
+        if geteuid().is_root() {
+            return;
+        }
+        let root = Some(OsStr::new("/"));
+        let leaf = open_home_subdir(root, CONFIG_DIR, &[], "usr", Create::No);
+        let err = leaf.err().unwrap();
+        assert!(matches!(err.problem, Problem::NotOwned), "{err:?}");
+
+        let parent = open_home_subdir(root, CONFIG_DIR, &["usr"], "bin", Create::No);
+        let err = parent.err().unwrap();
+        assert!(matches!(err.problem, Problem::UnsafeParent), "{err:?}");
     }
 }

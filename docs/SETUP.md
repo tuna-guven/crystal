@@ -70,14 +70,34 @@ the command: `crystal diary 5>&-`. List what is open with
 
 ## Vaults
 
-Every vault lives in `~/Vaults/<name>` and is opened by name:
-`crystal diary`. Names are 1 to 64 characters from `A-Z a-z 0-9 - _`,
-starting with a letter or digit. `~/Vaults` must be yours and mode 0700.
-`crystal --init NAME` will create both (Phase 2); until then, create them
-by hand for testing:
+Vaults are opened by name: `crystal diary`. Names are 1 to 64 characters
+from `A-Z a-z 0-9 - _`, starting with a letter or digit. The encrypted
+config file `~/.config/crystal/config.age` maps each name to its vault
+directory (DESIGN.md, "On-disk layout").
+
+```text
+crystal [--lock-after MINUTES] NAME   open the vault NAME
+crystal --init NAME [--at DIR]        create a vault in ~/Vaults/NAME or in DIR
+crystal --add NAME DIR                register an existing vault as NAME
+crystal --remove NAME                 forget NAME; its files are kept
+```
+
+`~/.config/crystal` must be yours and mode 0700, and `~/.config` must be
+yours and not writable by group or others; neither may be a symlink.
+Crystal checks this at every start and never fixes a mode itself. Only
+`--init` and `--add` create the directory; a normal run refuses to start
+without it:
+
+```text
+crystal: ~/.config/crystal does not exist; see docs/SETUP.md
+```
+
+`--init`, `--add` and `--remove` are still being built (Phase 2) and
+currently refuse with "not implemented yet". Until they exist, create the
+config directory by hand to try the startup checks:
 
 ```sh
-mkdir -m 700 -p ~/Vaults/diary && chmod 700 ~/Vaults
+mkdir -m 700 -p ~/.config/crystal && chmod 700 ~/.config/crystal
 ```
 
 ## Memory locking (required)
