@@ -1,0 +1,21 @@
+# The Crystal book: design, threat model, setup and decisions.
+# Source is docs/ itself, so nothing is duplicated. Build locally with
+# `mdbook build` (output in target/book, already ignored by git) or
+# `mdbook serve --open`; CI builds it on every push and publishes it to
+# GitHub Pages from main (.github/workflows/docs.yml).
+
+[book]
+title = "Crystal"
+description = "An encrypted Markdown vault in a terminal UI: design, threat model and decisions"
+authors = ["Autodidact"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+# A missing chapter is an error, not an empty page created on the fly.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/tuna-guven/crystal"
+site-url = "/crystal/"

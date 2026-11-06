@@ -1,4 +1,4 @@
-# DESIGN.md startup step 3: the environment is read only through
+# docs/design/startup.md, step 3: the environment is read only through
 # harden::env_var, which allows a fixed list of variables.
 disallowed-methods = [
     { path = "std::env::var", reason = "read the environment only through harden::env_var" },
@@ -7,7 +7,7 @@ disallowed-methods = [
     { path = "std::env::vars_os", reason = "read the environment only through harden::env_var" },
     { path = "std::env::home_dir", reason = "use harden::env_var(EnvVar::Home); home_dir falls back to an nscd lookup" },
     { path = "std::env::temp_dir", reason = "reads TMPDIR; Crystal never uses temp directories outside the vault" },
-    # DESIGN.md startup step 5 and the leak table: the UI reads and writes
+    # docs/design/startup.md step 5 and docs/design/leakage.md: the UI reads and writes
     # /dev/tty only. stdout or stderr may be redirected to a file, which
     # would put rendered notes on disk.
     { path = "std::io::stdin", reason = "read input only from /dev/tty (term::Tty)" },

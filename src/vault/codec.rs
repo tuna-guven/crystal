@@ -1,4 +1,4 @@
-//! Notes to bytes and back (DESIGN.md, "Vault contents"), with postcard.
+//! Notes to bytes and back (docs/design/storage.md, "Vault contents"), with postcard.
 //!
 //! `NoteText` has no `Serialize`, so the notes go through `WireNote`, a
 //! private struct that only borrows `&str` from them. Encoding writes into
@@ -169,7 +169,7 @@ mod tests {
     }
 
     proptest! {
-        // DESIGN.md "Round-trip properties": any notes, including empty and
+        // docs/development/testing.md "Round-trip properties": any notes, including empty and
         // non-ASCII text, come back exactly as they went in.
         #[test]
         fn round_trip(raw in prop::collection::vec(

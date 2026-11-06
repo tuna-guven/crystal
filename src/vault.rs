@@ -78,7 +78,7 @@ impl fmt::Display for PrivateDirError {
         let dir = self.dir;
         match self.problem {
             Problem::NoHome => write!(f, "HOME is unset or not an absolute path"),
-            Problem::Missing => write!(f, "{dir} does not exist; see docs/SETUP.md"),
+            Problem::Missing => write!(f, "{dir} does not exist; see docs/guide/setup.md"),
             Problem::Create(errno) => write!(f, "cannot create {dir} ({errno})"),
             Problem::NotARealDirectory => write!(f, "{dir} is a symlink or not a directory"),
             Problem::Open(errno) => write!(f, "cannot open {dir} ({errno})"),

@@ -10,7 +10,7 @@ SUID privilege-escalation bugs. On other distributions `sudo` works the same.
 ## Installing
 
 Crystal is a per-user executable in `~/.local/bin`; installing and updating
-need no root (DESIGN.md, Installation).
+need no root ([Installation](installation.md)).
 
 ```sh
 cargo build --locked --release
@@ -73,7 +73,7 @@ the command: `crystal diary 5>&-`. List what is open with
 Vaults are opened by name: `crystal diary`. Names are 1 to 64 characters
 from `A-Z a-z 0-9 - _`, starting with a letter or digit. The encrypted
 config file `~/.config/crystal/config.age` maps each name to its vault
-directory (DESIGN.md, "On-disk layout").
+directory ([On-disk layout](../design/storage.md#on-disk-layout)).
 
 ```text
 crystal [--lock-after MINUTES] NAME   open the vault NAME
@@ -89,7 +89,7 @@ Crystal checks this at every start and never fixes a mode itself. Only
 without it:
 
 ```text
-crystal: ~/.config/crystal does not exist; see docs/SETUP.md
+crystal: ~/.config/crystal does not exist; see docs/guide/setup.md
 ```
 
 `--init`, `--add` and `--remove` are still being built (Phase 2) and
@@ -103,14 +103,14 @@ mkdir -m 700 -p ~/.config/crystal && chmod 700 ~/.config/crystal
 ## Memory locking (required)
 
 **Why.** Crystal locks all of its memory with `mlockall` so decrypted notes
-never reach swap or a hibernation image (DESIGN.md, startup step 4). Locked
+never reach swap or a hibernation image ([startup](../design/startup.md) step 4). Locked
 memory counts against `RLIMIT_MEMLOCK`. Fedora's default is 8 MiB, which a
 large vault could exhaust mid-session; a failed allocation then aborts
 without zeroizing memory or saving edits. So Crystal requires at least
 **256 MiB** (`harden::MEMLOCK_FLOOR`) and refuses to start below that:
 
 ```text
-crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 262144 KiB to keep notes out of swap; see docs/SETUP.md
+crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 262144 KiB to keep notes out of swap; see docs/guide/setup.md
 ```
 
 **Check the current limit** (in KiB; `unlimited` is fine too):
@@ -154,7 +154,7 @@ does not let anything read Crystal's memory.
 secureblue sets the SELinux boolean `deny_ptrace` to on. It blocks all
 ptrace for normal users, including a parent tracing its own child. This is
 stronger than Yama `ptrace_scope` and protects Crystal against same-user
-malware (DESIGN.md threat A6). **Keep it on.**
+malware ([threat model](../design/threat-model.md), A6). **Keep it on.**
 
 Side effects for development:
 

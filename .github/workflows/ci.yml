@@ -34,7 +34,7 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
       # Raise this shell's memlock limit to exactly the floor Crystal
-      # requires (harden::MEMLOCK_FLOOR, docs/SETUP.md), so the test locks
+      # requires (harden::MEMLOCK_FLOOR, docs/guide/setup.md), so the test locks
       # memory for real instead of only checking the refusal path.
       - name: Test
         run: |
@@ -44,7 +44,7 @@ jobs:
           test "$(ulimit -l)" -eq 262144
           # The runner leaks open fds (142 and up) into every step; GitHub
           # treats this as by design (actions/runner-images#3391). Crystal
-          # refuses to start with any inherited fd above 2 (DESIGN.md,
+          # refuses to start with any inherited fd above 2 (docs/design/startup.md,
           # startup step 2), so close them here rather than weaken that
           # check. 255 is bash's own handle on this script (close-on-exec).
           for fd in $(ls /proc/$$/fd); do

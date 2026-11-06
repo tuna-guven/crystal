@@ -1,6 +1,7 @@
 //! Crystal: an encrypted Markdown vault in a TUI.
 //!
-//! See docs/DESIGN.md for the architecture and threat model.
+//! See the book in docs/ (docs/SUMMARY.md) for the architecture and threat
+//! model.
 
 // The real program has no unsafe code, and nothing can switch this off.
 #![cfg_attr(not(test), forbid(unsafe_code))]
@@ -46,7 +47,7 @@ fn print_usage() {
     println!("{}", cli::USAGE);
 }
 
-/// DESIGN.md startup order, steps 2 onward. Each step fails closed.
+/// docs/design/startup.md, steps 2 onward. Each step fails closed.
 /// Errors carry only step names and numbers, never note text.
 fn startup() -> Result<(), Box<dyn Error>> {
     harden::lock_down_process()?;

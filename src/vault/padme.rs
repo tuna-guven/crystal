@@ -1,4 +1,5 @@
-//! Padmé padding (DESIGN.md "Vault contents", "Accepted leaks"), for
+//! Padmé padding (docs/design/storage.md "Vault contents",
+//! docs/design/threat-model.md "Accepted leaks"), for
 //! vault.age and config.age. After padding, the ciphertext size reveals
 //! only which Padmé bucket the plaintext falls into, not its exact length.
 //!

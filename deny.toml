@@ -1,4 +1,4 @@
-# Supply-chain policy (DESIGN.md threat A4). Run: cargo deny check
+# Supply-chain policy (docs/design/threat-model.md, A4). Run: cargo deny check
 
 [graph]
 # Only judge crates that end up in our binary.
@@ -41,7 +41,7 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
-# DESIGN.md "Avoid" list, plus network/async crates (no network code at all).
+# docs/design/dependencies.md "Avoid" list, plus network/async crates (no network code at all).
 deny = [
     { name = "tokio" },
     { name = "async-std" },

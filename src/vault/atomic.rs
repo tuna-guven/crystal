@@ -1,5 +1,5 @@
 //! The atomic writer: the only way Crystal writes a file outside backups
-//! (CLAUDE.md). DESIGN.md "Save sequence": write a temp file in the same
+//! (CLAUDE.md). docs/design/storage.md "Save sequence": write a temp file in the same
 //! directory, fsync, rename over the target, fsync the directory. The
 //! rename is the commit point.
 
@@ -132,7 +132,7 @@ impl std::error::Error for WriteError {}
 ///    the live file, so this loses nothing);
 /// 2. `openat(dir, ".<name>.tmp-<16 random hex>", O_WRONLY | O_CREAT |
 ///    O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)`: a fresh file in the same
-///    directory, so the rename needs no Landlock `REFER` (SANDBOXING.md 5.2);
+///    directory, so the rename needs no Landlock `REFER` (sandboxing 5.2);
 /// 3. write everything, `fsync` it;
 /// 4. `renameat2(dir, tmp, dir, name)`: the commit point. A symlink at
 ///    `name` is replaced, never followed;

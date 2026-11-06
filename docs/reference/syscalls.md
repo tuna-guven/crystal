@@ -1,7 +1,7 @@
 # Syscalls
 
 Every syscall Crystal needs after the sandbox is applied, and why. The
-seccomp allowlist (DESIGN.md, "Process hardening and sandboxing") must match
+seccomp allowlist ([Startup order and process hardening](../design/startup.md)) must match
 this table exactly: no syscall is allowed without a row here.
 
 Add a row in the same change that first needs the syscall. Arguments that are
@@ -17,7 +17,7 @@ with `|`, which splits cells in many renderers.
 | `unlinkat` | `vault::atomic_write` | Remove stale temp files of the same name, and the temp file when a step before the rename fails | target's directory fd, a temp name only; flags 0 |
 | `getrandom` | `crypto::fill_random`, from `vault::atomic_write` | 64 random bits for the temp file name | 8-byte buffer, flags 0 |
 | `getrandom` | `crypto::encrypt_to_recipients` and `encrypt_to_passphrase`, through age's `OsRng` (`rand_core` 0.6, `getrandom` 0.2) | Every save: a new age file key, payload nonce and ephemeral X25519 key (and a scrypt salt for `identity.age`); `VaultIdentity::generate` for `--init`. `getrandom` 0.2 first probes once with a zero-length buffer; on musl, if that returns `ENOSYS` or `EPERM` it falls back to opening `/dev/urandom` (which Landlock denies), so the seccomp filter must allow this syscall, not return an errno for it | any buffer length including 0, flags 0 |
-| `openat` | `vault::atomic_write` | Create the temp file in the target's own directory, so the rename needs no Landlock `REFER` (SANDBOXING.md 5.2); `O_EXCL` and `O_NOFOLLOW` never open an existing file or follow a link | target's directory fd, `.<name>.tmp-<16 hex>`; flags `O_WRONLY`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_CLOEXEC`; mode 0600 |
+| `openat` | `vault::atomic_write` | Create the temp file in the target's own directory, so the rename needs no Landlock `REFER` (sandboxing 5.2); `O_EXCL` and `O_NOFOLLOW` never open an existing file or follow a link | target's directory fd, `.<name>.tmp-<16 hex>`; flags `O_WRONLY`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_CLOEXEC`; mode 0600 |
 | `write` | `vault::atomic_write` | Write the ciphertext (or `VERSION` / `*.gen`) to the temp file; retried on short writes and `EINTR` | temp file fd |
 | `fsync` | `vault::atomic_write` | Temp file data on disk before the rename, so the rename never exposes a half-written file after a power loss | temp file fd |
 | `renameat2` | `vault::atomic_write` (rustix `renameat_with`, which always uses `renameat2`; plain `renameat` is the old `renameat` syscall on x86_64) | Replace the target with the temp file: the commit point. A symlink at the target name is replaced, not followed | same directory fd for both sides; flags 0 |
@@ -49,7 +49,7 @@ wrapper names.
 | `mkdirat` | `vault::open_home_subdir`, from `StateDir::open_or_create` only (`ConfigDir::create` runs only for `--init`/`--add`, which exit before step 8) | Create a missing `.local`, `state` or `crystal`, each relative to its parent's fd. A normal run never creates the config directory | parent fd, one name; mode 0700 |
 | `fstat` | `vault::open_home_subdir` | Parents (`.config`, `.local`, `state`) must be ours and not group- or world-writable; each `crystal` must be ours and mode 0700. Checked on the open fd, not the path | each opened fd |
 | `geteuid` | `vault::open_home_subdir` | Compare each directory's owner with our uid | none |
-| `getrandom` | `crypto::fill_random` (rustix `rand::getrandom`), from `model::NoteId::random` and `model::VaultId::random` | Random ids for new notes and vaults from the kernel's secure generator; no flags, so it blocks until the pool is seeded instead of returning weak bytes, and needs no `/dev/urandom` file access. Not called by a normal run until #10/#14; already on the planned seccomp allowlist (DESIGN.md) | buffer of 16 or 32 bytes, flags 0 |
+| `getrandom` | `crypto::fill_random` (rustix `rand::getrandom`), from `model::NoteId::random` and `model::VaultId::random` | Random ids for new notes and vaults from the kernel's secure generator; no flags, so it blocks until the pool is seeded instead of returning weak bytes, and needs no `/dev/urandom` file access. Not called by a normal run until #10/#14; already on the planned seccomp allowlist (startup chapter) | buffer of 16 or 32 bytes, flags 0 |
 | `ioctl` | `term::Tty::open` (rustix `isatty`) | Confirm `/dev/tty` is a terminal | `TIOCGWINSZ` only |
 | `fcntl` | `term::TerminalGuard::enter` (std `File::try_clone`) | Second terminal fd, kept for `term::restore_terminal` so the panic hook can restore the terminal | `F_DUPFD_CLOEXEC` |
 | `ioctl` | `term::TerminalGuard::enter` (rustix `tcgetattr`) | Save the terminal settings to restore on exit | `TCGETS2` (rustix falls back to `TCGETS` only if `TCGETS2` returns an error) |

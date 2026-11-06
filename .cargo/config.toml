@@ -1,3 +1,3 @@
 [build]
-# Static binary by default (DESIGN.md: release profile).
+# Static binary by default (docs/design/dependencies.md: release profile).
 target = "x86_64-unknown-linux-musl"

@@ -1,7 +1,7 @@
 //! Note model: notes, titles, links and tags in zeroizing memory, plus the
 //! wikilink/backlink index and search.
 //!
-//! Type-level rule (DESIGN.md, "Plaintext leakage prevention"): note
+//! Type-level rule (docs/design/leakage.md): note
 //! content, including titles and tags, only ever exists as `NoteText`,
 //! which implements neither Debug, Display, Serialize nor Clone. The only
 //! ways out are the renderer, the editor and the vault codec, which
@@ -40,7 +40,7 @@ macro_rules! assert_not_impl {
 // Also used for the vault codec's wire types.
 pub(crate) use assert_not_impl;
 
-// The type-level rule, checked by the compiler (CLAUDE.md, DESIGN.md).
+// The type-level rule, checked by the compiler (CLAUDE.md, docs/design/leakage.md).
 // Removing any of these lines needs a reason in review.
 assert_not_impl!(NoteText: fmt::Debug, fmt::Display, serde::Serialize, Clone);
 assert_not_impl!(Note: fmt::Debug, fmt::Display, serde::Serialize, Clone);

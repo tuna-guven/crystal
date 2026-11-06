@@ -44,8 +44,9 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
 }
 
 /// The largest plaintext Crystal encrypts: 32 MiB, far beyond any text
-/// vault, and well inside the 256 MiB locked-memory minimum (DESIGN.md
-/// startup step 4) with the ciphertext and a decoded copy alongside.
+/// vault, and well inside the 256 MiB locked-memory minimum
+/// (docs/design/startup.md, step 4) with the ciphertext and a decoded
+/// copy alongside.
 pub const MAX_PLAINTEXT: usize = 32 << 20;
 
 /// The largest ciphertext Crystal decrypts: `MAX_PLAINTEXT`, plus age's 16

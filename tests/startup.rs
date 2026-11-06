@@ -1,6 +1,6 @@
-//! Child-process tests of the real binary's startup order (DESIGN.md).
+//! Child-process tests of the real binary's startup order (docs/design/startup.md).
 //!
-//! They need RLIMIT_MEMLOCK at the floor (docs/SETUP.md; CI raises it).
+//! They need RLIMIT_MEMLOCK at the floor (docs/guide/setup.md; CI raises it).
 //! Below it the binary stops at step 4 and these fail with the memlock
 //! message instead.
 //!
@@ -35,7 +35,7 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-/// Creates HOME/.config/crystal, both levels 0700, as docs/SETUP.md tells
+/// Creates HOME/.config/crystal, both levels 0700, as docs/guide/setup.md tells
 /// users to until --init exists. Until unlock exists (#15), a run with it
 /// reaches the terminal guard for any valid vault name.
 fn make_config(home: &Path) {
@@ -446,7 +446,7 @@ fn assert_no_core_file(home: &Path, context: &str) {
 }
 
 /// Abort paths skip Drop, so they cannot zeroize, and a stack overflow
-/// cannot even restore the terminal (DESIGN.md lists both as accepted).
+/// cannot even restore the terminal (docs/design/leakage.md lists both as accepted).
 /// What every one of them must still do: never print the message, and
 /// leave no core file. A panic inside Drop aborts only after the panic
 /// hook ran, so it does restore the terminal.

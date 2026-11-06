@@ -23,9 +23,9 @@ Target platform: secureblue (Fedora Atomic, SELinux enforcing). Verified 2026-10
 
 ## 3. Startup sequence (MUST follow this order)
 
-Matches the startup order in DESIGN.md ("Process hardening and sandboxing").
+Matches the [startup order](startup.md).
 
-1. Process hardening (section 4; DESIGN.md steps 1 to 4).
+1. Process hardening (section 4; [startup](startup.md) steps 1 to 4).
 2. Open `/dev/tty` directly and require a real terminal (step 5).
 3. Parse arguments (step 6): a vault name, not a path. Open `~/Vaults` and then `~/Vaults/<name>` relative to it, and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
@@ -41,7 +41,7 @@ Rules:
 
 ## 4. Process hardening
 
-Module: `harden` (DESIGN.md startup steps 1 to 4; already implemented in Phase 1).
+Module: `harden` ([startup](startup.md) steps 1 to 4; already implemented in Phase 1).
 
 - Panic hook prints the source location only, after restoring the terminal.
 - `setrlimit(RLIMIT_CORE, 0)` soft and hard: no core dumps containing plaintext.
@@ -112,7 +112,7 @@ There is no weaker mode and no flag to allow one: Crystal never runs with a part
 Module: `src/harden/seccomp.rs`. Crate: `seccompiler`.
 
 - Mode: allowlist. Default action `KillProcess` in release builds, `Log` when built with the cargo feature `sandbox-audit`. CI checks that release builds never enable `sandbox-audit`.
-- Build the allowlist from a full session (open vault, edit, save, backup, search, quit) in `sandbox-audit` mode, collecting logged syscalls with `run0 ausearch -m SECCOMP -c crystal`. This works with secureblue's `deny_ptrace` on; `strace -f -c` also works where ptrace is allowed (CI, or `deny_ptrace` off temporarily, see docs/SETUP.md). Every allowed syscall gets a row in docs/SYSCALLS.md.
+- Build the allowlist from a full session (open vault, edit, save, backup, search, quit) in `sandbox-audit` mode, collecting logged syscalls with `run0 ausearch -m SECCOMP -c crystal`. This works with secureblue's `deny_ptrace` on; `strace -f -c` also works where ptrace is allowed (CI, or `deny_ptrace` off temporarily, see [Setup](../guide/setup.md)). Every allowed syscall gets a row in [Syscalls](../reference/syscalls.md).
 - MUST deny (the allowlist omits them; tests cover each): `socket`, `socketpair`, `connect`, `bind`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `userfaultfd`, `perf_event_open`, `keyctl`, `add_key`, `mount`, `unshare`, `setns`, `personality`, `memfd_create`, `clone`, `clone3`.
 - `ioctl`: allow only by argument: `TCGETS2`, `TCSETS2`, `TCSETSF2` (the termios requests rustix actually uses; its fallback to `TCGETS` happens only on an error return, which a seccomp kill never gives), `TIOCGWINSZ`, and `FIONREAD` only if log mode proves it necessary. `TIOCSTI` and `TIOCLINUX` MUST be denied (defense in depth, even though modern kernels require `CAP_SYS_ADMIN` for them).
 - `kill`: own pid only and `SIGSTOP` only (suspend on Ctrl+Z or `SIGTSTP`: Crystal restores the terminal, then stops itself). `getpid` is allowed for the same reason.
@@ -126,7 +126,7 @@ Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.
 ### 7.1 Types
 
 - `crystal_t`: process domain.
-- `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install (DESIGN.md, Installation). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` (docs/SETUP.md, Installing). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
+- `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install ([Installation](../guide/installation.md)). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` ([Setup, Installing](../guide/setup.md#installing)). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
 - `crystal_vault_t`: label for `~/Vaults` and everything under it, and for the external backup directory.
 - `crystal_state_t`: label for `~/.local/state/crystal`.
 - `crystal_config_t`: label for `~/.config/crystal` (the encrypted `config.age`). `crystal_t` reads it before the sandbox; only `--init`, `--add` and `--remove` write it.
@@ -205,7 +205,7 @@ exec bwrap \
 - The config is encrypted, so the launcher cannot look up a vault's path: it supports vaults in the default location `~/Vaults/<name>` only. A vault registered at another path runs without the bwrap layer. The config is bound read-only, so `--add` and `--remove` must also run directly.
 - Do not bind D-Bus, Wayland, X11 or PulseAudio/PipeWire sockets.
 - `--new-session` is not used: it breaks TUI job control, and `TIOCSTI` is blocked by seccomp (section 6).
-- `RLIMIT_MEMLOCK` is inherited, so the docs/SETUP.md limit still applies.
+- `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.
 
 ## 9. Verification (acceptance criteria)
 

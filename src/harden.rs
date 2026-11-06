@@ -1,5 +1,5 @@
 //! Process hardening and sandbox: rlimits, prctl, mlockall, env allowlist,
-//! tty checks, Landlock and seccomp, applied in the order DESIGN.md fixes.
+//! tty checks, Landlock and seccomp, applied in the order docs/design/startup.md fixes.
 
 use std::fmt;
 use std::io::{self, Write};
@@ -16,7 +16,7 @@ use rustix::thread::set_no_new_privs;
 
 /// Smallest RLIMIT_MEMLOCK Crystal starts with. Below this, a large vault
 /// could exhaust locked memory mid-session, and a failed allocation aborts
-/// without zeroizing or saving. See docs/SETUP.md.
+/// without zeroizing or saving. See docs/guide/setup.md.
 pub const MEMLOCK_FLOOR: u64 = 256 * 1024 * 1024;
 
 /// A hardening step that failed. Holds only fixed step names and numbers,
@@ -45,7 +45,7 @@ impl fmt::Display for HardenError {
             Self::MemlockTooLow { hard_limit } => write!(
                 f,
                 "RLIMIT_MEMLOCK is {} KiB, need at least {} KiB to keep notes \
-                 out of swap; see docs/SETUP.md",
+                 out of swap; see docs/guide/setup.md",
                 hard_limit / 1024,
                 MEMLOCK_FLOOR / 1024
             ),
