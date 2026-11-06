@@ -156,6 +156,7 @@ Vaults are opened by name. An encrypted per-device config file, `~/.config/cryst
 **Open questions**
 
 - Post-quantum: check whether the `age` crate version you pin supports a hybrid ML-KEM recipient type. If it does, use it for the vault recipient, since synced ciphertext is exposed to harvest-now, decrypt-later. Go age 1.3+ has native ML-KEM-768 + X25519 recipients; until rage ships the same type natively, avoid unaudited third-party PQ crates, and avoid PQ via a plugin, since notes are encrypted on every save and plugins need execve.
+  - *Answer (2026-11-06, #4):* not yet; the vault recipient stays X25519. The pinned `age` 0.11.5 has only X25519, scrypt and plugin recipients. The newer 0.12 line adds `tagpq` (`mlkem768p256tag`), but it is encryption-only: decrypting needs a hardware tag through a plugin, so it cannot be the vault's own recipient. 0.12 also pulls in `p256` and `crypto-bigint` 0.5, which has a timing advisory (RUSTSEC-2026-0387), for that feature alone. Neither line has a native hybrid ML-KEM-768 + X25519 identity like Go age 1.3's. Revisit when rage ships one: upgrade `age` and re-encrypt the vault to the new recipient on the next save.
 - Per-note files versus one encrypted vault blob: decided, one vault blob. It hides note count, sizes and which note changed, at the cost of whole-vault conflicts and all notes in memory while unlocked.
 
 ## Crate selection

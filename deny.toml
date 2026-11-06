@@ -6,11 +6,31 @@ targets = ["x86_64-unknown-linux-musl"]
 
 [advisories]
 yanked = "deny"
+# Every entry names who pulls the crate in and why it cannot reach the
+# binary or our data. Remove an entry as soon as an upgrade drops the crate.
+ignore = [
+    # Unmaintained, not vulnerable. Compile time only: i18n-config, used by
+    # age's proc macros (i18n-embed-fl, i18n-embed-impl) to read age's own
+    # i18n.toml. Never linked into crystal.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml: build-time only, via age's i18n proc macros" },
+    # Unmaintained, not vulnerable. Compile time only: error reporting inside
+    # the i18n-embed-fl proc macro. Never linked into crystal.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2: build-time only, via age's i18n-embed-fl" },
+]
 
 [licenses]
 # GPL-3.0-compatible only. Add a license here only when a reviewed
-# dependency needs it. Every crate in the tree so far offers MIT.
-allow = ["MIT"]
+# dependency needs it, and name the crates that need it.
+allow = [
+    "MIT",
+    # self_cell (via age's fluent i18n stack): Apache-2.0 only, or
+    # Apache-2.0 OR GPL-2.0-only. Apache-2.0 is GPL-3.0 compatible.
+    "Apache-2.0",
+    # curve25519-dalek, x25519-dalek, subtle: age's X25519 implementation.
+    "BSD-3-Clause",
+    # tinystr, unicode-ident: Unicode data tables.
+    "Unicode-3.0",
+]
 confidence-threshold = 0.93
 
 [licenses.private]
@@ -35,6 +55,23 @@ deny = [
     { name = "syntect" },
     { name = "tui-markdown" },
     { name = "rpassword" },
+    # Thread pool: Crystal is single-threaded (seccomp denies clone).
+    { name = "rayon" },
+]
+# Two semver lines of the same crate, both inside age 0.11.5's tree: its
+# crypto uses the RustCrypto 0.10 line, its i18n stack (rust-embed) the 0.11
+# line; postcard brings thiserror 2. Each skip names one exact version, so a
+# third version or a new duplicate still fails the check.
+skip = [
+    { crate = "block-buffer@0.12.1", reason = "rust-embed-utils (age i18n)" },
+    { crate = "cpufeatures@0.3.1", reason = "sha2 0.11 (age i18n)" },
+    { crate = "crypto-common@0.2.2", reason = "digest 0.11 (age i18n)" },
+    { crate = "digest@0.11.3", reason = "sha2 0.11 (age i18n)" },
+    { crate = "sha2@0.11.1", reason = "rust-embed-utils (age i18n)" },
+    { crate = "rustc-hash@1.1.0", reason = "fluent-bundle 0.15 (age i18n)" },
+    { crate = "syn@3.0.9", reason = "proc macros in age's i18n stack, build time only" },
+    { crate = "thiserror@1.0.69", reason = "age and its i18n stack still on thiserror 1" },
+    { crate = "thiserror-impl@1.0.69", reason = "proc macro of thiserror 1" },
 ]
 
 [sources]
