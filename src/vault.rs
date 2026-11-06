@@ -4,6 +4,7 @@
 //! zeroizing buffers, and never touches a file.
 
 mod codec;
+mod padme;
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
