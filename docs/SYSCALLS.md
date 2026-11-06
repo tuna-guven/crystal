@@ -34,15 +34,11 @@ wrapper names.
 | `prlimit64` | `harden::lock_memory` (rustix `setrlimit`) | Raise the memlock soft limit to the hard limit | pid 0 (self), `RLIMIT_MEMLOCK` |
 | `mlockall` | `harden::lock_memory` | Keep all memory out of swap and hibernation | flags `MCL_CURRENT`, `MCL_FUTURE`, `MCL_ONFAULT` |
 | `openat` | `term::Tty::open` | Open the controlling terminal directly instead of trusting stdin/stdout | `AT_FDCWD`, `/dev/tty`; flags `O_RDWR`, `O_CLOEXEC`, `O_NOCTTY`, `O_NOFOLLOW` |
-| `openat` | `vault::VaultsRoot::open` | Open `~/Vaults` once, only to open one vault inside it; closed right after | `AT_FDCWD`, `~/Vaults`; flags `O_RDONLY`, `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC` |
-| `fstat` | `vault::VaultsRoot::open` | Check owner and mode of `~/Vaults` on the open fd | `~/Vaults` fd |
-| `openat` | `vault::VaultDir::open` | Open the vault relative to the root fd; later file operations are relative to this fd | `~/Vaults` fd, validated vault name from argv; flags `O_RDONLY`, `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC` |
-| `fstat` | `vault::VaultDir::open` | Check the vault directory is ours and mode 0700, not only `~/Vaults` around it | vault fd |
-| `openat` | `vault::StateDir::open_or_create` | Open `HOME`, the start of a walk one directory at a time, so no path is resolved again later; `HOME` itself may contain symlinks (`/home` is one on Fedora Atomic) | `AT_FDCWD`, `HOME`; flags `O_RDONLY`, `O_DIRECTORY`, `O_CLOEXEC` |
-| `mkdirat` | `vault::StateDir::open_or_create` | Create a missing `.local`, `state` or `crystal`, each relative to its parent's fd | parent fd, one name; mode 0700 |
-| `openat` | `vault::StateDir::open_or_create` | Open `.local`, `state`, then `crystal`, each relative to its parent's fd; `O_NOFOLLOW` refuses a symlink at any level | parent fd, one name; flags `O_RDONLY`, `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC` |
-| `fstat` | `vault::StateDir::open_or_create` | `.local` and `state` must be ours and not group- or world-writable; `crystal` must be ours and mode 0700. Checked on the open fd, not the path | each opened fd |
-| `geteuid` | `vault::StateDir::open_or_create` | Compare the state directory owner with our uid | none |
+| `openat` | `vault::open_home_subdir`, from `ConfigDir::open` (then `StateDir::open_or_create`) | Open `HOME`, the start of a walk one directory at a time, so no path is resolved again later; `HOME` itself may contain symlinks (`/home` is one on Fedora Atomic) | `AT_FDCWD`, `HOME`; flags `O_RDONLY`, `O_DIRECTORY`, `O_CLOEXEC` |
+| `openat` | `vault::open_home_subdir` | Open `.config` then `crystal` (config), or `.local`, `state`, then `crystal` (state), each relative to its parent's fd; `O_NOFOLLOW` refuses a symlink at any level | parent fd, one name; flags `O_RDONLY`, `O_DIRECTORY`, `O_NOFOLLOW`, `O_CLOEXEC` |
+| `mkdirat` | `vault::open_home_subdir`, from `StateDir::open_or_create` only (`ConfigDir::create` runs only for `--init`/`--add`, which exit before step 8) | Create a missing `.local`, `state` or `crystal`, each relative to its parent's fd. A normal run never creates the config directory | parent fd, one name; mode 0700 |
+| `fstat` | `vault::open_home_subdir` | Parents (`.config`, `.local`, `state`) must be ours and not group- or world-writable; each `crystal` must be ours and mode 0700. Checked on the open fd, not the path | each opened fd |
+| `geteuid` | `vault::open_home_subdir` | Compare each directory's owner with our uid | none |
 | `ioctl` | `term::Tty::open` (rustix `isatty`) | Confirm `/dev/tty` is a terminal | `TIOCGWINSZ` only |
 | `fcntl` | `term::TerminalGuard::enter` (std `File::try_clone`) | Second terminal fd, kept for `term::restore_terminal` so the panic hook can restore the terminal | `F_DUPFD_CLOEXEC` |
 | `ioctl` | `term::TerminalGuard::enter` (rustix `tcgetattr`) | Save the terminal settings to restore on exit | `TCGETS2` (rustix falls back to `TCGETS` only if `TCGETS2` returns an error) |
@@ -61,7 +57,7 @@ wrapper names.
 | `rt_sigreturn` | kernel, after any signal handler | Return from the handler | none |
 | `write` | `main`, panic hook | Usage text on `--help` (fd 1); error and panic messages (fd 2): fixed text, errnos and source locations only | fd 1, fd 2 |
 | `write` | `term::TerminalGuard::enter`, `term::restore_terminal` | Enter, clear and leave the alternate screen | `/dev/tty` fds |
-| `close` | `Drop` of `term::Tty`, `vault::VaultsRoot`, `vault::VaultDir`, `vault::StateDir` (and the `HOME`, `.local` and `state` fds of its walk), `term::TerminalGuard` | Release the terminal and directory fds | none |
+| `close` | `Drop` of `term::Tty`, `vault::ConfigDir`, `vault::StateDir` (and the `HOME`, `.config`, `.local` and `state` fds of their walks), `term::TerminalGuard` | Release the terminal and directory fds | none |
 
 With `MCL_FUTURE`, later `mmap` and `brk` calls are locked by the kernel
 automatically; locking adds no syscalls after the sandbox.

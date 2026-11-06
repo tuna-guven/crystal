@@ -5,7 +5,8 @@
 //! message instead.
 //!
 //! Every run gets its own HOME under cargo's test directory, so the tests
-//! never create or touch the real ~/Vaults or ~/.local/state/crystal.
+//! never create or touch the real ~/.config/crystal or
+//! ~/.local/state/crystal.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -34,13 +35,14 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-/// Creates HOME/Vaults and the vault `name` inside it, both 0700, as
-/// docs/SETUP.md tells users to until --init exists.
-fn make_vault(home: &Path, name: &str) {
-    let vaults = home.join("Vaults");
-    std::fs::create_dir_all(vaults.join(name)).unwrap();
-    set_mode(&vaults, 0o700);
-    set_mode(&vaults.join(name), 0o700);
+/// Creates HOME/.config/crystal, both levels 0700, as docs/SETUP.md tells
+/// users to until --init exists. Until unlock exists (#15), a run with it
+/// reaches the terminal guard for any valid vault name.
+fn make_config(home: &Path) {
+    let config = home.join(".config");
+    std::fs::create_dir_all(config.join("crystal")).unwrap();
+    set_mode(&config, 0o700);
+    set_mode(&config.join("crystal"), 0o700);
 }
 
 /// Runs crystal with `args` (shell words) in a new pseudo-terminal, with
@@ -92,7 +94,7 @@ fn pty(cmd: &str, home: Option<&Path>, keys: &[u8]) -> (bool, String) {
 #[test]
 fn refuses_without_terminal() {
     let home = fresh_home("no_terminal");
-    make_vault(&home, "diary");
+    make_config(&home);
     // New session: no controlling terminal, even when `cargo test` itself
     // runs in an interactive shell.
     let out = Command::new("setsid")
@@ -113,7 +115,7 @@ fn refuses_without_terminal() {
 #[test]
 fn starts_in_terminal_with_redirected_stdio() {
     let home = fresh_home("redirected_stdio");
-    make_vault(&home, "diary");
+    make_config(&home);
     let (ok, output) = run_in_pty("diary </dev/null >/dev/null", Some(&home));
     assert!(ok, "{output}");
 }
@@ -122,7 +124,7 @@ fn starts_in_terminal_with_redirected_stdio() {
 #[test]
 fn rejects_secret_argument_without_echoing_it() {
     let home = fresh_home("secret_argument");
-    make_vault(&home, "diary");
+    make_config(&home);
     let (ok, output) = run_in_pty("--passphrase hunter2 diary", Some(&home));
     assert!(!ok, "{output}");
     assert!(output.contains("unknown argument"), "{output}");
@@ -134,7 +136,7 @@ fn rejects_secret_argument_without_echoing_it() {
 #[test]
 fn rejects_unsafe_vault_name() {
     let home = fresh_home("unsafe_name");
-    make_vault(&home, "diary");
+    make_config(&home);
     for name in ["../hunter2", "hunter2/x", ".hunter2"] {
         let (ok, output) = run_in_pty(&format!("'{name}'"), Some(&home));
         assert!(!ok && output.contains("vault name must be"), "{output}");
@@ -143,56 +145,12 @@ fn rejects_unsafe_vault_name() {
     assert!(!home.join(".local").exists());
 }
 
-/// Step 7: the vault must be a real directory inside ~/Vaults.
-#[test]
-fn vault_must_be_a_real_directory() {
-    let home = fresh_home("vault_checks");
-    make_vault(&home, "real");
-    let vaults = home.join("Vaults");
-    symlink(vaults.join("real"), vaults.join("link")).unwrap();
-    std::fs::File::create(vaults.join("file")).unwrap();
-
-    let (ok, output) = run_in_pty("real", Some(&home));
-    assert!(ok, "{output}");
-
-    for name in ["link", "file"] {
-        let (ok, output) = run_in_pty(name, Some(&home));
-        assert!(
-            !ok && output.contains("vault is a symlink or not a directory"),
-            "{output}"
-        );
-    }
-
-    let (ok, output) = run_in_pty("missingvault", Some(&home));
-    assert!(
-        !ok && output.contains("no vault with that name in ~/Vaults"),
-        "{output}"
-    );
-    // The name came from argv; errors must not echo it.
-    assert!(!output.contains("missingvault"), "{output}");
-}
-
-/// Step 7: the vault directory itself must be ours and mode 0700, not only
-/// ~/Vaults around it. The error never names the vault.
-#[test]
-fn refuses_vault_with_loose_mode() {
-    let home = fresh_home("vault_loose");
-    make_vault(&home, "hunter2");
-    set_mode(&home.join("Vaults/hunter2"), 0o750);
-    let (ok, output) = run_in_pty("hunter2", Some(&home));
-    assert!(
-        !ok && output.contains("vault directory has mode 750, need 700"),
-        "{output}"
-    );
-    assert!(!output.contains("hunter2"), "{output}");
-}
-
 /// Step 2: an fd inherited from whatever started Crystal would survive
 /// Landlock and seccomp, so Crystal refuses to start with one open.
 #[test]
 fn refuses_inherited_file_descriptor() {
     let home = fresh_home("inherited_fd");
-    make_vault(&home, "diary");
+    make_config(&home);
     let (ok, output) = run_in_pty("diary 5</dev/null", Some(&home));
     assert!(
         !ok && output.contains("1 open file descriptor(s) inherited")
@@ -213,7 +171,7 @@ fn refuses_inherited_file_descriptor() {
 #[test]
 fn running_binary_is_hardened() {
     let home = fresh_home("hardened");
-    make_vault(&home, "diary");
+    make_config(&home);
     let cmd = format!(
         "'{BIN}' diary & p=$!; sleep 1; echo; \
          echo environ_owner=$(stat -c %u /proc/$p/environ); \
@@ -242,46 +200,67 @@ fn running_binary_is_hardened() {
     assert!(output.contains("exit=0"), "{output:?}");
 }
 
-/// Step 7: ~/Vaults must exist (it is never created by opening), be a real
-/// directory, and be ours with mode 0700.
+/// Step 7: a normal run needs ~/.config/crystal and never creates it, nor
+/// anything else, and never looks at ~/Vaults. It must be a real directory,
+/// ours, mode 0700, reached without a symlink. (Owned by another user needs
+/// root to set up; the vault unit test foreign_owned_directories_are_refused
+/// covers that check.)
 #[test]
-fn vaults_root_checks() {
-    let home = fresh_home("vaults_root");
+fn config_dir_checks() {
+    let home = fresh_home("config_dir");
+    let config = home.join(".config/crystal");
 
     let (ok, output) = run_in_pty("diary", Some(&home));
     assert!(
-        !ok && output.contains("~/Vaults does not exist"),
+        !ok && output.contains("~/.config/crystal does not exist"),
         "{output}"
     );
-    assert!(
-        !home.join("Vaults").exists(),
-        "opening must not create ~/Vaults"
+    assert_eq!(
+        std::fs::read_dir(&home).unwrap().count(),
+        0,
+        "a run without a config must create nothing"
     );
 
-    make_vault(&home, "diary");
-    set_mode(&home.join("Vaults"), 0o755);
+    make_config(&home);
+    set_mode(&config, 0o755);
     let (ok, output) = run_in_pty("diary", Some(&home));
     assert!(
-        !ok && output.contains("~/Vaults has mode 755, need 700"),
+        !ok && output.contains("~/.config/crystal has mode 755, need 700"),
         "{output}"
     );
+    assert_eq!(mode(&config), 0o755, "Crystal must not change the mode");
 
+    // A symlink in place of ~/.config/crystal.
     let elsewhere = home.join("elsewhere");
-    std::fs::rename(home.join("Vaults"), &elsewhere).unwrap();
+    std::fs::rename(&config, &elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
-    symlink(&elsewhere, home.join("Vaults")).unwrap();
+    symlink(&elsewhere, &config).unwrap();
     let (ok, output) = run_in_pty("diary", Some(&home));
     assert!(
-        !ok && output.contains("~/Vaults is a symlink or not a directory"),
+        !ok && output.contains("~/.config/crystal is a symlink or not a directory"),
         "{output}"
     );
+
+    // A symlink in place of ~/.config, pointing at a valid layout.
+    let real_config = home.join("real-config");
+    std::fs::rename(home.join(".config"), &real_config).unwrap();
+    std::fs::remove_file(real_config.join("crystal")).unwrap();
+    std::fs::rename(&elsewhere, real_config.join("crystal")).unwrap();
+    symlink(&real_config, home.join(".config")).unwrap();
+    let (ok, output) = run_in_pty("diary", Some(&home));
+    assert!(
+        !ok && output.contains("a parent of ~/.config/crystal is a symlink"),
+        "{output}"
+    );
+    // Refused before the state directory was touched.
+    assert!(!home.join(".local").exists());
 }
 
 /// Step 7: a fresh state directory is created with every level 0700.
 #[test]
 fn creates_state_dir_with_mode_0700() {
     let home = fresh_home("state_dir_fresh");
-    make_vault(&home, "diary");
+    make_config(&home);
     let (ok, output) = run_in_pty("diary", Some(&home));
     assert!(ok, "{output}");
     for dir in [".local", ".local/state", ".local/state/crystal"] {
@@ -297,7 +276,7 @@ fn creates_state_dir_with_mode_0700() {
 #[test]
 fn refuses_state_dir_with_loose_mode() {
     let home = fresh_home("state_dir_loose");
-    make_vault(&home, "diary");
+    make_config(&home);
     let state = home.join(".local/state/crystal");
     std::fs::create_dir_all(&state).unwrap();
     set_mode(&state, 0o755);
@@ -315,7 +294,7 @@ fn refuses_state_dir_with_loose_mode() {
 #[test]
 fn refuses_state_dir_symlink() {
     let home = fresh_home("state_dir_symlink");
-    make_vault(&home, "diary");
+    make_config(&home);
     let elsewhere = home.join("elsewhere");
     std::fs::create_dir_all(home.join(".local/state")).unwrap();
     std::fs::create_dir(&elsewhere).unwrap();
@@ -334,7 +313,7 @@ fn refuses_state_dir_symlink() {
 #[test]
 fn refuses_state_dir_parent_symlink() {
     let home = fresh_home("state_parent_symlink");
-    make_vault(&home, "diary");
+    make_config(&home);
     let elsewhere = home.join("elsewhere");
     std::fs::create_dir_all(home.join(".local")).unwrap();
     std::fs::create_dir(&elsewhere).unwrap();
@@ -360,16 +339,22 @@ fn refuses_missing_or_relative_home() {
     }
 }
 
-/// Until Phase 2, --init says so plainly and creates nothing.
+/// Until #13 and #14, --init, --add and --remove say so plainly and create
+/// nothing: no config directory, no ~/Vaults, no state directory.
 #[test]
-fn init_is_not_implemented_yet() {
-    let home = fresh_home("init_not_implemented");
-    let (ok, output) = run_in_pty("--init newvault", Some(&home));
-    assert!(
-        !ok && output.contains("--init is not implemented yet"),
-        "{output}"
-    );
-    assert!(!home.join("Vaults").exists() && !home.join(".local").exists());
+fn config_commands_are_not_implemented_yet() {
+    let home = fresh_home("config_commands");
+    for (args, flag) in [
+        ("--init newvault", "--init"),
+        ("--init newvault --at /tmp/x", "--init"),
+        ("--add newvault /tmp/x", "--add"),
+        ("--remove newvault", "--remove"),
+    ] {
+        let (ok, output) = run_in_pty(args, Some(&home));
+        let want = format!("{flag} is not implemented yet");
+        assert!(!ok && output.contains(&want), "{args}: {output}");
+        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0, "{args}");
+    }
 }
 
 /// Step 7: the guard enters the alternate screen, clears it before leaving,
@@ -377,7 +362,7 @@ fn init_is_not_implemented_yet() {
 #[test]
 fn terminal_guard_restores_terminal() {
     let home = fresh_home("terminal_guard");
-    make_vault(&home, "diary");
+    make_config(&home);
     // echo: Crystal prints no newline, so separate its output from stty's.
     let cmd = format!("stty -g; '{BIN}' diary; echo; stty -g");
     let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
@@ -404,7 +389,7 @@ fn terminal_guard_restores_terminal() {
 #[test]
 fn forced_panic_leaves_clean_terminal() {
     let home = fresh_home("forced_panic");
-    make_vault(&home, "diary");
+    make_config(&home);
     let cmd =
         format!("stty -g; '{BIN}' --crash-for-test panic diary; s=$?; echo; echo exit=$s; stty -g");
     let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
@@ -471,7 +456,7 @@ fn abort_paths_print_no_secret_and_leave_no_core() {
     // on musl, Rust's stack guard kills with SIGSEGV and prints nothing.
     for (kind, exit, restored) in [("panic-in-drop", 134, true), ("stack-overflow", 139, false)] {
         let home = fresh_home(&format!("abort_{kind}"));
-        make_vault(&home, "diary");
+        make_config(&home);
         let cmd = format!(
             "stty -g; '{BIN}' --crash-for-test {kind} diary; s=$?; echo; echo exit=$s; stty -g"
         );
@@ -506,7 +491,7 @@ fn abort_paths_print_no_secret_and_leave_no_core() {
 #[test]
 fn terminal_hangup_exits_cleanly() {
     let home = fresh_home("hangup");
-    make_vault(&home, "diary");
+    make_config(&home);
     let status = home.join("status");
     let cmd = format!(
         "trap '' HUP; '{BIN}' diary; echo $? > '{}'",
@@ -543,7 +528,7 @@ fn terminal_hangup_exits_cleanly() {
 #[test]
 fn kill_9_leaves_no_new_files() {
     let home = fresh_home("kill_9");
-    make_vault(&home, "diary");
+    make_config(&home);
     let listing = |name: &str| home.with_extension(name);
     let (before, after) = (listing("before"), listing("after"));
     let cmd = format!(
@@ -586,7 +571,7 @@ fn exit_signals_restore_terminal() {
 
 fn exit_signal_restores_terminal(signal: &str) {
     let home = fresh_home(&format!("signal_{signal}"));
-    make_vault(&home, "diary");
+    make_config(&home);
     let cmd = format!(
         "stty -g; '{BIN}' diary & p=$!; sleep 1; kill -{signal} $p; wait $p; s=$?; \
          echo; echo exit=$s; stty -g"
@@ -617,7 +602,7 @@ fn exit_signal_restores_terminal(signal: &str) {
 #[test]
 fn suspend_restores_terminal_and_resume_reenters() {
     let home = fresh_home("suspend");
-    make_vault(&home, "diary");
+    make_config(&home);
     let cmd = format!(
         "stty -g; '{BIN}' diary & p=$!; sleep 1; kill -TSTP $p; sleep 0.5; \
          echo; echo state=$(cut -d' ' -f3 /proc/$p/stat); stty -g; \

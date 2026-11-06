@@ -66,13 +66,11 @@ fn startup() -> Result<(), Box<dyn Error>> {
         }
     };
     let home = harden::env_var(harden::EnvVar::Home);
-    // The root fd lives only in this block: once the vault is open it is
-    // closed, so other vaults are unreachable for the rest of the session.
-    let _vault_dir = {
-        let vaults = vault::VaultsRoot::open(home.as_deref())?;
-        vault::VaultDir::open(&vaults, &args.name)?
-    };
-    // After the vault, so a mistyped name creates nothing.
+    // Step 7. Opening never creates the config directory (only --init and
+    // --add do). The vault is looked up by name in config.age at unlock
+    // (step 8, #15); ~/Vaults is never opened directly.
+    let _config_dir = vault::ConfigDir::open(home.as_deref())?;
+    // After the config, so a run without one creates nothing.
     let _state_dir = vault::StateDir::open_or_create(home.as_deref())?;
     // Last, so every earlier error prints on the normal screen. Dropped when
     // startup returns, before main prints any error.
