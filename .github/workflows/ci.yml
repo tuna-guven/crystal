@@ -42,6 +42,16 @@ jobs:
           # Fail here if the raise didn't apply; otherwise the test would
           # silently take its refusal branch and still pass.
           test "$(ulimit -l)" -eq 262144
+          # The runner leaks open fds (142 and up) into every step; GitHub
+          # treats this as by design (actions/runner-images#3391). Crystal
+          # refuses to start with any inherited fd above 2 (DESIGN.md,
+          # startup step 2), so close them here rather than weaken that
+          # check. 255 is bash's own handle on this script (close-on-exec).
+          for fd in $(ls /proc/$$/fd); do
+            if [ "$fd" -gt 2 ] && [ "$fd" -ne 255 ]; then
+              exec {fd}>&-
+            fi
+          done
           cargo test --locked
 
       - name: Install cargo-deny and cargo-audit
