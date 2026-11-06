@@ -635,3 +635,190 @@ fn suspend_restores_terminal_and_resume_reenters() {
     assert_eq!(settings.len(), 3, "{plain:?}");
     assert!(settings.iter().all(|s| *s == settings[0]), "{settings:?}");
 }
+
+/// Runs `cmd` in a new pseudo-terminal, in `home`. For each step, waits
+/// until `wait_for` appears in the output (after the previous step's
+/// match), then types `keys`; then collects the rest. Waiting matters:
+/// keys typed before Crystal enters raw mode would be echoed by the
+/// terminal itself. A reader thread lets each wait time out instead of
+/// hanging the test run.
+fn pty_dialog(cmd: &str, home: &Path, steps: &[(&str, &[u8])]) -> (bool, String) {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    /// Kills `script` if the test panics, so the pty hangs up and Crystal
+    /// exits instead of waiting at a prompt forever.
+    struct KillOnDrop(std::process::Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut child = KillOnDrop(
+        Command::new("script")
+            .args(["-qec", cmd, "/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .env("HOME", home)
+            .current_dir(home)
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdin = child.0.stdin.take().unwrap();
+    let mut stdout = child.0.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n @ 1..) = stdout.read(&mut buf) {
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let next = |output: &mut Vec<u8>| -> bool {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(chunk) => {
+                output.extend(chunk);
+                true
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => false,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("timed out: {:?}", text(output)),
+        }
+    };
+    let mut output = Vec::new();
+    let mut seen = 0;
+    for (wait_for, keys) in steps {
+        // An empty `wait_for` types at once.
+        while !wait_for.is_empty() {
+            let found = output[seen..]
+                .windows(wait_for.len())
+                .position(|w| w == wait_for.as_bytes());
+            if let Some(pos) = found {
+                seen += pos + wait_for.len();
+                break;
+            }
+            assert!(
+                next(&mut output),
+                "exited before {wait_for:?}: {:?}",
+                text(&output)
+            );
+        }
+        stdin.write_all(keys).unwrap();
+        stdin.flush().unwrap();
+    }
+    while next(&mut output) {}
+    drop(stdin);
+    (child.0.wait().unwrap().success(), text(&output))
+}
+
+const PROMPT: &str = "Passphrase: ";
+const REPEAT: &str = "Repeat passphrase: ";
+
+/// One `--prompt-for-test` run in a fresh HOME that reaches the prompt.
+fn prompt_run(test: &str, kind: &str, steps: &[(&str, &[u8])]) -> (bool, String) {
+    let home = fresh_home(test);
+    make_config(&home);
+    let cmd = format!("'{BIN}' --prompt-for-test {kind} diary");
+    pty_dialog(&cmd, &home, steps)
+}
+
+/// Acceptance: the passphrase never appears on screen, not even as
+/// asterisks. Backspace and Ctrl+U edit it; only its length is printed
+/// (debug hook). The prompt is drawn on the alternate screen.
+#[test]
+fn prompt_reads_passphrase_without_echo() {
+    let keys = b"garbage\x15hunter2xx\x7f\x7f\r";
+    let (ok, output) = prompt_run("prompt_read", "read", &[(PROMPT, keys)]);
+    assert!(ok, "{output:?}");
+    assert!(output.contains("len=7"), "{output:?}");
+    for leak in ["hunter2", "garbage", "*"] {
+        assert!(!output.contains(leak), "{leak:?} shown: {output:?}");
+    }
+    let enter = output.find("\x1b[?1049h").unwrap();
+    let prompt = output.find(PROMPT).unwrap();
+    let leave = output.find("\x1b[2J\x1b[?1049l").unwrap();
+    assert!(enter < prompt && prompt < leave, "{output:?}");
+}
+
+/// Keys typed before the prompt appeared (here during `sleep`, before
+/// Crystal even starts) were echoed by the terminal; they are discarded,
+/// not taken as the start of the passphrase.
+#[test]
+fn prompt_discards_keys_typed_before_it() {
+    let home = fresh_home("prompt_typeahead");
+    make_config(&home);
+    let cmd = format!("sleep 1; '{BIN}' --prompt-for-test read diary");
+    let steps: [(&str, &[u8]); 2] = [("", b"early"), (PROMPT, b"pw\r")];
+    let (ok, output) = pty_dialog(&cmd, &home, &steps);
+    assert!(ok, "{output:?}");
+    assert!(output.contains("len=2"), "{output:?}");
+}
+
+/// --init's variant: two matching entries are accepted, different ones
+/// refused.
+#[test]
+fn prompt_confirm_requires_matching_entries() {
+    let same: [(&str, &[u8]); 2] = [(PROMPT, b"abc\r"), (REPEAT, b"abc\r")];
+    let (ok, output) = prompt_run("prompt_confirm", "confirm", &same);
+    assert!(ok && output.contains("len=3"), "{output:?}");
+
+    let differ: [(&str, &[u8]); 2] = [(PROMPT, b"abc\r"), (REPEAT, b"abd\r")];
+    let (ok, output) = prompt_run("prompt_mismatch", "confirm", &differ);
+    assert!(!ok, "{output:?}");
+    assert!(
+        output.contains("crystal: the passphrases do not match"),
+        "{output:?}"
+    );
+}
+
+/// Ctrl+C and Esc cancel; the error names no typed byte.
+#[test]
+fn prompt_cancel_prints_nothing_typed() {
+    for (test, key) in [("prompt_ctrl_c", b'\x03'), ("prompt_esc", b'\x1b')] {
+        let keys = [b"hunter2".as_slice(), &[key]].concat();
+        let (ok, output) = prompt_run(test, "read", &[(PROMPT, &keys)]);
+        assert!(!ok, "{output:?}");
+        assert!(
+            output.contains("crystal: passphrase entry cancelled"),
+            "{output:?}"
+        );
+        assert!(
+            !output.contains("hunter2") && !output.contains("len="),
+            "{output:?}"
+        );
+    }
+}
+
+/// Over 1024 bytes is refused, not truncated.
+#[test]
+fn prompt_refuses_overlong_input() {
+    let keys = [vec![b'a'; 1100], b"\r".to_vec()].concat();
+    let (ok, output) = prompt_run("prompt_overlong", "read", &[(PROMPT, &keys)]);
+    assert!(!ok, "{output:?}");
+    assert!(
+        output.contains("crystal: passphrase longer than 1024 bytes"),
+        "{output:?}"
+    );
+    assert!(!output.contains("aaaa"), "{output:?}");
+}
+
+/// An exit signal during the prompt cancels it (and the buffer is dropped,
+/// so zeroized). `exec` keeps the shell's pid, which the background job
+/// signals.
+#[test]
+fn prompt_exit_signal_cancels() {
+    let home = fresh_home("prompt_signal");
+    make_config(&home);
+    let cmd = format!("(sleep 1; kill -TERM $$) & exec '{BIN}' --prompt-for-test read diary");
+    let (ok, output) = pty_dialog(&cmd, &home, &[(PROMPT, b"hunter2")]);
+    assert!(!ok, "{output:?}");
+    assert!(
+        output.contains("crystal: passphrase entry cancelled"),
+        "{output:?}"
+    );
+    assert!(!output.contains("hunter2"), "{output:?}");
+}

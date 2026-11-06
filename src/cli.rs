@@ -51,6 +51,20 @@ pub struct RunArgs {
     /// the tests of abrupt exits. Not compiled into release builds.
     #[cfg(debug_assertions)]
     pub crash_for_test: Option<CrashKind>,
+    /// Debug builds only: run the passphrase prompt on the alternate
+    /// screen and print only the resulting length. Not in release builds.
+    #[cfg(debug_assertions)]
+    pub prompt_for_test: Option<PromptKind>,
+}
+
+/// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
+#[cfg(debug_assertions)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// `read`: one entry, as at unlock.
+    Read,
+    /// `confirm`: two entries that must match, as for --init.
+    Confirm,
 }
 
 /// How `--crash-for-test KIND` ends the process. Debug builds only.
@@ -147,6 +161,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut positionals = Vec::with_capacity(2);
     #[cfg(debug_assertions)]
     let mut crash_for_test = None;
+    #[cfg(debug_assertions)]
+    let mut prompt_for_test = None;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
@@ -181,6 +197,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                 };
                 crash_for_test = Some(kind);
             }
+            #[cfg(debug_assertions)]
+            Arg::Long("prompt-for-test") => {
+                let kind = match parser.value().ok().as_deref().and_then(OsStr::to_str) {
+                    Some("read") => PromptKind::Read,
+                    Some("confirm") => PromptKind::Confirm,
+                    _ => return Err(CliError::UnknownArgument),
+                };
+                prompt_for_test = Some(kind);
+            }
             Arg::Value(value) if positionals.len() < 2 => positionals.push(value),
             Arg::Value(_) => return Err(CliError::ExtraArgument),
             _ => return Err(CliError::UnknownArgument),
@@ -194,7 +219,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
         return Err(CliError::LockAfterOnlyForRun);
     }
     #[cfg(debug_assertions)]
-    if crash_for_test.is_some() && mode != Mode::Run {
+    if (crash_for_test.is_some() || prompt_for_test.is_some()) && mode != Mode::Run {
         return Err(CliError::UnknownArgument);
     }
 
@@ -214,6 +239,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             lock_after,
             #[cfg(debug_assertions)]
             crash_for_test,
+            #[cfg(debug_assertions)]
+            prompt_for_test,
         })),
         Mode::Init => Ok(Command::Init { name, at }),
         Mode::Remove => Ok(Command::Remove { name }),
@@ -251,6 +278,8 @@ mod tests {
             lock_after,
             #[cfg(debug_assertions)]
             crash_for_test: None,
+            #[cfg(debug_assertions)]
+            prompt_for_test: None,
         })
     }
 

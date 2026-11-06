@@ -60,6 +60,10 @@ wrapper names.
 | `sendto` | signal-hook `pipe::register` | One zero-byte probe to test whether the fd is a socket; on our pipe it fails with `ENOTSOCK`, and signal-hook uses `write` instead | pipe write end, 0 bytes, `MSG_DONTWAIT` |
 | `rt_sigaction` | signal-hook `pipe::register` | Install handlers for every catchable signal whose default kills the process (`term::EXIT_SIGNALS` and real-time signals), so each ends Crystal through the normal exit path; and `SIGTSTP` (suspend) | `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGALRM`, `SIGVTALRM`, `SIGPROF`, `SIGXCPU`, `SIGXFSZ`, `SIGIO`, `SIGPWR`, `SIGSTKFLT`, signals 32 to 64 (musl refuses 32 to 34 with `EINVAL`; those stay uncatchable), `SIGTSTP` |
 | `ppoll` | `term::TerminalGuard::run_until_exit` (rustix `poll`) | Wait for a key, an exit signal or a suspend | `/dev/tty` fd and both signal pipe read ends, no timeout |
+| `ioctl` | `term::TerminalGuard::read_passphrase` (rustix `tcflush`) | Discard keys typed before the prompt appeared: the terminal echoed them while it was not yet raw, so they must not become part of the passphrase. Unlock and `--init` only, before the sandbox; if Phase 5's re-lock prompt runs inside the sandbox, `TCFLSH` must join the ioctl allowlist | `/dev/tty` fd, `TCFLSH`, `TCIFLUSH` |
+| `ppoll` | `term::TerminalGuard::read_passphrase` (rustix `poll`) | Wait for a key or an exit signal (which cancels the prompt) | `/dev/tty` fd and the exit signal pipe read end, no timeout |
+| `read` | `term::TerminalGuard::read_passphrase` | Read passphrase keys, up to 64 bytes at a time into a stack buffer that is wiped on drop | `/dev/tty` fd |
+| `write` | `term::TerminalGuard::read_passphrase` | Clear the alternate screen and draw the fixed prompt text; nothing typed is ever written | `/dev/tty` fd |
 | `read` | `term::TerminalGuard::run_until_exit` | Read and discard keys (Ctrl+Z suspends, any other key exits) | `/dev/tty` fd |
 | `read` | `term::Signals::drain_suspend` | Empty the suspend pipe so one `SIGTSTP` suspends once | suspend pipe read end, non-blocking |
 | `getpid` | `term::TerminalGuard::suspend` | Own pid, to stop ourselves | none |

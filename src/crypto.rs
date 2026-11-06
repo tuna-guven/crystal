@@ -152,6 +152,29 @@ impl Passphrase {
         copy.push_str(text);
         SecretString::from(copy)
     }
+
+    /// Whether both passphrases are the same, for `--init`'s "type it
+    /// again". The time taken depends only on the lengths, never on where
+    /// the first difference is: every byte pair is XORed and OR-folded, and
+    /// black_box keeps the compiler from adding an early exit.
+    pub fn matches(&self, other: &Passphrase) -> bool {
+        if self.0.len() != other.0.len() {
+            return false;
+        }
+        let diff = self
+            .0
+            .iter()
+            .zip(other.0.iter())
+            .fold(0u8, |acc, (a, b)| acc | std::hint::black_box(a ^ b));
+        std::hint::black_box(diff) == 0
+    }
+
+    /// Debug builds only: the length in bytes, for the prompt tests'
+    /// `len=<n>` line. Never the content.
+    #[cfg(debug_assertions)]
+    pub fn len_for_test(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// The vault's X25519 identity. Only ever on the heap; age's key type
@@ -351,6 +374,14 @@ mod tests {
         assert!(new("pässwörd".as_bytes()));
         assert!(!new(b""));
         assert!(!new(b"\xff\xfe"));
+    }
+
+    #[test]
+    fn passphrase_matches() {
+        assert!(pass("abc").matches(&pass("abc")));
+        assert!(!pass("abc").matches(&pass("abd")));
+        assert!(!pass("abc").matches(&pass("abcd")));
+        assert!(!pass("xbc").matches(&pass("abc")));
     }
 
     #[test]

@@ -13,7 +13,12 @@ use rustix::fs::{CWD, Mode, OFlags, openat};
 use rustix::io::Errno;
 use rustix::pipe::{PipeFlags, pipe_with};
 use rustix::process::{Signal, getpid, kill_process};
-use rustix::termios::{OptionalActions, Termios, isatty, tcgetattr, tcsetattr};
+use rustix::termios::{
+    OptionalActions, QueueSelector, Termios, isatty, tcflush, tcgetattr, tcsetattr,
+};
+use zeroize::{Zeroize, Zeroizing};
+
+use crate::crypto::Passphrase;
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
@@ -309,5 +314,306 @@ impl TerminalGuard {
                 return Ok(());
             }
         }
+    }
+}
+
+/// The longest passphrase accepted, in bytes. The buffer is allocated at
+/// this size up front and a longer input is refused, so it never grows
+/// (growing would copy the passphrase and free the old buffer unwiped).
+pub const MAX_PASSPHRASE: usize = 1024;
+
+/// Clear the alternate screen, cursor to top left.
+const CLEAR_SCREEN: &[u8] = b"\x1b[2J\x1b[H";
+
+const CTRL_C: u8 = 0x03;
+const BACKSPACE: u8 = 0x08;
+const CTRL_U: u8 = 0x15;
+const ESC: u8 = 0x1b;
+const DELETE: u8 = 0x7f;
+
+/// Why a passphrase prompt ended without a passphrase. Fixed text and
+/// errnos only, never any typed byte.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PromptError {
+    /// Ctrl+C, Esc, or an exit signal.
+    Cancelled,
+    /// More than `MAX_PASSPHRASE` bytes.
+    TooLong,
+    /// Not valid UTF-8 (age's scrypt needs text).
+    NotText,
+    /// The two entries of `read_new_passphrase` differ.
+    Mismatch,
+    /// The terminal went away (hangup or end of input).
+    Closed,
+    Flush(Errno),
+    Poll(Errno),
+    Read(ErrorKind),
+    Write(ErrorKind),
+}
+
+impl fmt::Display for PromptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => write!(f, "passphrase entry cancelled"),
+            Self::TooLong => write!(f, "passphrase longer than {MAX_PASSPHRASE} bytes"),
+            Self::NotText => write!(f, "passphrase is not valid UTF-8 text"),
+            Self::Mismatch => write!(f, "the passphrases do not match"),
+            Self::Closed => write!(f, "the terminal closed during passphrase entry"),
+            Self::Flush(errno) => write!(f, "cannot discard earlier input ({errno})"),
+            Self::Poll(errno) => write!(f, "cannot wait for input ({errno})"),
+            Self::Read(kind) => write!(f, "cannot read the terminal ({kind})"),
+            Self::Write(kind) => write!(f, "cannot write to the terminal ({kind})"),
+        }
+    }
+}
+
+impl std::error::Error for PromptError {}
+
+/// What one input byte did to the line.
+#[derive(Debug, PartialEq, Eq)]
+enum Feed {
+    More,
+    Enter,
+    Cancel,
+    TooLong,
+}
+
+/// The typed passphrase, in a buffer of fixed capacity that is wiped on
+/// drop. Deleted bytes are zeroed at once, not just cut off, so the spare
+/// capacity never holds old input either.
+struct LineEditor(Zeroizing<Vec<u8>>);
+
+impl LineEditor {
+    fn new() -> Self {
+        Self(Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE)))
+    }
+
+    fn feed(&mut self, byte: u8) -> Feed {
+        match byte {
+            // Raw mode turns off CR-to-NL, so Enter arrives as CR. An
+            // empty line is ignored rather than refused.
+            b'\r' | b'\n' if self.0.is_empty() => Feed::More,
+            b'\r' | b'\n' => Feed::Enter,
+            // One whole UTF-8 character: continuation bytes (10xxxxxx),
+            // then the byte that starts it.
+            DELETE | BACKSPACE => {
+                let mut len = self.0.len();
+                while len > 0 {
+                    len -= 1;
+                    if self.0[len] & 0xc0 != 0x80 {
+                        break;
+                    }
+                }
+                self.truncate(len);
+                Feed::More
+            }
+            CTRL_U => {
+                self.truncate(0);
+                Feed::More
+            }
+            // Esc also starts arrow and function keys; any of them cancels.
+            CTRL_C | ESC => Feed::Cancel,
+            // Other control bytes (Tab, Ctrl+Z, ...) are ignored.
+            0..0x20 => Feed::More,
+            _ if self.0.len() == MAX_PASSPHRASE => Feed::TooLong,
+            _ => {
+                self.0.push(byte);
+                Feed::More
+            }
+        }
+    }
+
+    fn truncate(&mut self, len: usize) {
+        self.0[len..].zeroize();
+        self.0.truncate(len);
+    }
+
+    /// The buffer itself becomes the passphrase: no copy is made.
+    fn finish(self) -> Result<Passphrase, PromptError> {
+        Passphrase::new(self.0).ok_or(PromptError::NotText)
+    }
+}
+
+#[cfg_attr(
+    not(debug_assertions),
+    expect(dead_code, reason = "--init (#14) and unlock (#15)")
+)]
+impl TerminalGuard {
+    /// Asks for a passphrase on the alternate screen. Nothing is echoed,
+    /// not even asterisks, which would show the length. Enter accepts,
+    /// Backspace deletes a character, Ctrl+U clears, Ctrl+C or Esc (or an
+    /// exit signal) cancels. Keys typed before the prompt appeared are
+    /// discarded: the terminal echoed them while it was not yet raw.
+    pub fn read_passphrase(
+        &mut self,
+        signals: &Signals,
+        prompt: &'static str,
+    ) -> Result<Passphrase, PromptError> {
+        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
+        self.show(prompt.as_bytes())?;
+        let result = self.read_line(signals);
+        self.show(b"")?;
+        result
+    }
+
+    /// For --init: asks twice and accepts only matching entries, compared
+    /// in constant time.
+    pub fn read_new_passphrase(
+        &mut self,
+        signals: &Signals,
+        prompt: &'static str,
+        repeat: &'static str,
+    ) -> Result<Passphrase, PromptError> {
+        let first = self.read_passphrase(signals, prompt)?;
+        let second = self.read_passphrase(signals, repeat)?;
+        if first.matches(&second) {
+            Ok(first)
+        } else {
+            Err(PromptError::Mismatch)
+        }
+    }
+
+    /// Clears the alternate screen and writes `text` at the top left.
+    fn show(&mut self, text: &[u8]) -> Result<(), PromptError> {
+        let write = |tty: &mut File, bytes| tty.write_all(bytes);
+        write(&mut self.tty, CLEAR_SCREEN)
+            .and_then(|()| write(&mut self.tty, text))
+            .map_err(|e| PromptError::Write(e.kind()))
+    }
+
+    /// Reads keys until Enter or a cancel. Each read lands in a small
+    /// stack buffer that is wiped on drop; bytes after Enter in the same
+    /// read are discarded with it.
+    fn read_line(&mut self, signals: &Signals) -> Result<Passphrase, PromptError> {
+        let mut line = LineEditor::new();
+        let mut chunk = Zeroizing::new([0u8; 64]);
+        loop {
+            let mut fds = [
+                PollFd::new(&self.tty, PollFlags::IN),
+                PollFd::new(&signals.exit, PollFlags::IN),
+            ];
+            match poll(&mut fds, None) {
+                Ok(_) => {}
+                Err(Errno::INTR) => continue,
+                Err(errno) => return Err(PromptError::Poll(errno)),
+            }
+            let [key, exit] = fds.map(|fd| !fd.revents().is_empty());
+            if exit {
+                return Err(PromptError::Cancelled);
+            }
+            if !key {
+                continue;
+            }
+            let n = match self.tty.read(&mut chunk[..]) {
+                Ok(0) => return Err(PromptError::Closed),
+                Ok(n) => n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                // A hung-up terminal reads as EIO.
+                Err(e) if e.raw_os_error() == Some(Errno::IO.raw_os_error()) => {
+                    return Err(PromptError::Closed);
+                }
+                Err(e) => return Err(PromptError::Read(e.kind())),
+            };
+            for &byte in &chunk[..n] {
+                match line.feed(byte) {
+                    Feed::More => {}
+                    Feed::Enter => return line.finish(),
+                    Feed::Cancel => return Err(PromptError::Cancelled),
+                    Feed::TooLong => return Err(PromptError::TooLong),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn typed(keys: &[u8]) -> (LineEditor, Vec<Feed>) {
+        let mut line = LineEditor::new();
+        let feeds = keys.iter().map(|b| line.feed(*b)).collect();
+        (line, feeds)
+    }
+
+    fn line_after(keys: &[u8]) -> Vec<u8> {
+        typed(keys).0.0.to_vec()
+    }
+
+    #[test]
+    fn editing_keys() {
+        assert_eq!(line_after(b"hunter2"), b"hunter2");
+        assert_eq!(line_after(b"hunter2xx\x7f\x7f"), b"hunter2");
+        assert_eq!(line_after(b"ab\x08c"), b"ac");
+        assert_eq!(line_after(b"garbage\x15pw"), b"pw");
+        assert_eq!(line_after(b"\x7f\x7fa"), b"a");
+        assert_eq!(line_after(b"a\tb\x1ac"), b"abc");
+        // Backspace removes a whole character: 2, 3 and 4 bytes.
+        assert_eq!(line_after("pä\x7f".as_bytes()), b"p");
+        assert_eq!(line_after("p€\x7f".as_bytes()), b"p");
+        assert_eq!(line_after("p😀\x7fq".as_bytes()), b"pq");
+    }
+
+    #[test]
+    fn enter_and_cancel() {
+        let (_, feeds) = typed(b"\rab\r");
+        assert_eq!(feeds[0], Feed::More, "an empty Enter is ignored");
+        assert_eq!(feeds[3], Feed::Enter);
+        assert_eq!(typed(b"\n").1, [Feed::More]);
+        assert_eq!(typed(b"a\n").1[1], Feed::Enter);
+        assert_eq!(typed(b"a\x03").1[1], Feed::Cancel);
+        assert_eq!(typed(b"a\x1b").1[1], Feed::Cancel);
+    }
+
+    #[test]
+    fn finish_requires_utf8() {
+        assert!(typed(b"pw").0.finish().is_ok());
+        assert_eq!(
+            typed(b"\xff\xfe").0.finish().err(),
+            Some(PromptError::NotText)
+        );
+    }
+
+    // Acceptance: the buffer never reallocates. The 1025th byte is
+    // refused; the allocation stays the same one throughout.
+    #[test]
+    fn buffer_never_reallocates() {
+        let mut line = LineEditor::new();
+        let (ptr, cap) = (line.0.as_ptr(), line.0.capacity());
+        assert_eq!(cap, MAX_PASSPHRASE);
+        for _ in 0..MAX_PASSPHRASE {
+            assert_eq!(line.feed(b'a'), Feed::More);
+        }
+        assert_eq!(line.feed(b'a'), Feed::TooLong);
+        assert_eq!((line.0.as_ptr(), line.0.capacity()), (ptr, cap));
+        let pass = line.finish().ok().unwrap();
+        assert_eq!(pass.len_for_test(), MAX_PASSPHRASE);
+    }
+
+    // Deleted bytes are zeroed in the spare capacity right away, not only
+    // when the buffer is dropped.
+    #[test]
+    fn deleted_bytes_are_zeroed_at_once() {
+        let (mut line, _) = typed(b"secret\x7f\x7f");
+        assert_eq!(line.0[..], *b"secr");
+        assert_eq!(written_prefix(&mut line, 6), b"secr\0\0");
+        line.feed(CTRL_U);
+        assert_eq!(written_prefix(&mut line, 6), [0u8; 6]);
+    }
+
+    /// The first `n` bytes of the line's allocation, also past its length.
+    /// Call only with `n` no larger than the longest the line has been:
+    /// bytes beyond that were never written and are uninitialized.
+    #[allow(unsafe_code, reason = "test-only check of wiped memory")]
+    fn written_prefix(line: &mut LineEditor, n: usize) -> Vec<u8> {
+        assert!(n <= line.0.capacity());
+        // SAFETY:
+        // - The allocation is owned by `line` and outlives this read:
+        //   truncate keeps (does not free) the buffer.
+        // - Each of the first `n` bytes was initialized: `feed` pushed a
+        //   byte there, and truncate's zeroize later wrote 0 over it.
+        // - The pointer comes from the Vec, so its provenance covers the
+        //   whole allocation, not only the current length.
+        unsafe { std::slice::from_raw_parts(line.0.as_ptr(), n).to_vec() }
     }
 }

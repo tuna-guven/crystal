@@ -84,10 +84,34 @@ fn startup() -> Result<(), Box<dyn Error>> {
     if let Some(kind) = args.crash_for_test {
         crash_for_test(kind);
     }
+    #[cfg(debug_assertions)]
+    if let Some(kind) = args.prompt_for_test {
+        let pass = match kind {
+            cli::PromptKind::Read => terminal.read_passphrase(&signals, PROMPT)?,
+            cli::PromptKind::Confirm => terminal.read_new_passphrase(&signals, PROMPT, REPEAT)?,
+        };
+        // Leave the alternate screen first, so the line stays visible.
+        drop(terminal);
+        print_len_for_test(pass.len_for_test());
+        return Ok(());
+    }
     // Phase 1 placeholder for the TUI: Ctrl+Z suspends, any other key or
     // an exit signal returns, so the guard restores the terminal.
     terminal.run_until_exit(&signals)?;
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+const PROMPT: &str = "Passphrase: ";
+#[cfg(debug_assertions)]
+const REPEAT: &str = "Repeat passphrase: ";
+
+/// Debug builds only: the prompt tests check the length of what was
+/// entered. Never the content.
+#[cfg(debug_assertions)]
+#[expect(clippy::disallowed_macros, reason = "debug-only test output, a number")]
+fn print_len_for_test(len: usize) {
+    println!("len={len}");
 }
 
 /// Debug builds only: the abrupt exits tests/startup.rs checks. Every
