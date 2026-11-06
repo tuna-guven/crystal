@@ -1,0 +1,26 @@
+# DESIGN.md startup step 3: the environment is read only through
+# harden::env_var, which allows a fixed list of variables.
+disallowed-methods = [
+    { path = "std::env::var", reason = "read the environment only through harden::env_var" },
+    { path = "std::env::var_os", reason = "read the environment only through harden::env_var" },
+    { path = "std::env::vars", reason = "read the environment only through harden::env_var" },
+    { path = "std::env::vars_os", reason = "read the environment only through harden::env_var" },
+    { path = "std::env::home_dir", reason = "use harden::env_var(EnvVar::Home); home_dir falls back to an nscd lookup" },
+    { path = "std::env::temp_dir", reason = "reads TMPDIR; Crystal never uses temp directories outside the vault" },
+    # DESIGN.md startup step 5 and the leak table: the UI reads and writes
+    # /dev/tty only. stdout or stderr may be redirected to a file, which
+    # would put rendered notes on disk.
+    { path = "std::io::stdin", reason = "read input only from /dev/tty (term::Tty)" },
+    { path = "std::io::stdout", reason = "stdout may be a file; draw only to /dev/tty (term::Tty)" },
+    { path = "std::io::stderr", reason = "stderr may be a file; only main's error line and the panic hook may write here" },
+]
+
+# Same reason: these all write to stdout or stderr. dbg! would also print a
+# title or any other Debug value.
+disallowed-macros = [
+    { path = "std::print", reason = "stdout may be a file; draw only to /dev/tty" },
+    { path = "std::println", reason = "stdout may be a file; draw only to /dev/tty" },
+    { path = "std::eprint", reason = "only main's error line and the panic hook may write to stderr" },
+    { path = "std::eprintln", reason = "only main's error line and the panic hook may write to stderr" },
+    { path = "std::dbg", reason = "prints Debug output, which could contain titles or other note metadata" },
+]

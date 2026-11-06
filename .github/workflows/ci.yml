@@ -31,10 +31,18 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
+      # Raise this shell's memlock limit to exactly the floor Crystal
+      # requires (harden::MEMLOCK_FLOOR, docs/SETUP.md), so the test locks
+      # memory for real instead of only checking the refusal path.
       - name: Test
-        run: cargo test
+        run: |
+          sudo prlimit --pid $$ --memlock=268435456:268435456
+          # Fail here if the raise didn't apply; otherwise the test would
+          # silently take its refusal branch and still pass.
+          test "$(ulimit -l)" -eq 262144
+          cargo test --locked
 
       - name: Install cargo-deny and cargo-audit
         run: |
@@ -48,7 +56,7 @@ jobs:
         run: cargo audit
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --locked --release
 
       # Phase 0 acceptance: the binary must be static.
       - name: Check static binary

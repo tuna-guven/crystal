@@ -25,7 +25,7 @@ Crystal is a single static Rust binary that opens an age-encrypted Markdown vaul
 1. Plaintext lives only in mlocked, zeroized memory inside one process.
 2. Fail closed: any integrity mismatch refuses to open, never "repairs" silently.
 3. Boring crypto: age only, no custom primitives, no custom KDF.
-4. Deny by default: Landlock and seccomp shrink what a compromised process can do.
+4. Deny by default: Landlock and seccomp shrink what a compromised process can do; an SELinux policy module and an optional bubblewrap launcher add outer layers (docs/SANDBOXING.md).
 5. Every dependency must justify itself; the code you write is small enough to review end to end.
 
 ## Threat model
@@ -70,7 +70,7 @@ One process, one crypto boundary: everything above the age layer handles plainte
 +-- Crystal process: mlocked, non-dumpable, Landlock + seccomp ------------+
 | +----------------------------------------------------------------------+ |
 | | Terminal guard + UI (ratatui)                                        | |
-| | alt screen, raw mode, cleared on exit and panic                      | |
+| | alt screen, raw mode, cleared on exit, panic and signals             | |
 | +----------------------------------------------------------------------+ |
 |             |                                    ^                       |
 |             v                                    v                       |
@@ -120,8 +120,10 @@ The unlock step runs before the sandbox because age plugins are separate binarie
 
 **On-disk layout**
 
+All vaults live under one fixed root, `~/Vaults` (mode 0700), one directory per vault, opened by name. There is no config file and no way to point Crystal elsewhere: a fixed root lets SELinux ship one static label for it, and nothing a same-user process writes can widen the sandbox.
+
 ```text
-vault/
+~/Vaults/<name>/
   VERSION        plaintext: format version only
   identity.age   vault X25519 identity, encrypted to your passphrase and/or hardware key(s)
   vault.age      the entire vault: every note, title, link and tag, padded and encrypted
@@ -158,7 +160,7 @@ About a dozen direct dependencies, all pure Rust, no async runtime, no C librari
 | Hashing | `sha2` | Already in age's tree; used for backup snapshot hashes |
 | Serialization | `serde` + `postcard` | Compact, schema-light, small attack surface for the vault contents |
 | Syscalls | `rustix` | prctl, setrlimit, mlockall, fsync, renameat without writing `unsafe` yourself |
-| Filesystem sandbox | `landlock` | Restrict file access to the vault and state directories |
+| Filesystem sandbox | `landlock` | Restrict file access to the vault and state directories. Version 0.4.7 supports Landlock ABI up to 9; no raw Landlock syscalls, which would need `unsafe` (docs/SANDBOXING.md 5.1) |
 | Syscall filter | `seccompiler` | Pure Rust BPF builder from Firecracker; avoids the C libseccomp |
 | CLI args | `lexopt` | Tiny; you only parse a vault path and a few flags |
 
@@ -203,42 +205,72 @@ Every path plaintext could take out of the process is listed below with its miti
 | Swap and hibernation | `mlockall` with current, future and on-fault flags; raise or check `RLIMIT_MEMLOCK`; refuse to unlock if it fails | `grep VmLck /proc/<pid>/status` is non-zero |
 | Core dumps | `RLIMIT_CORE = 0` and `PR_SET_DUMPABLE = 0` as the first lines of `main` | `kill -SEGV` during a test build produces no core |
 | Same-user ptrace and /proc/pid/mem | `PR_SET_DUMPABLE = 0`; system Yama `ptrace_scope` at 1 or higher | `gdb -p <pid>` fails as your user |
-| Terminal scrollback | Alternate screen only; clear it before leaving; never print note text on the main screen | Scroll up after quitting: nothing |
+| Terminal scrollback | Alternate screen only; clear it before leaving; never print note text on the main screen. All UI output goes to `/dev/tty`: clippy.toml bans `print!`, `println!`, `eprint!`, `eprintln!`, `dbg!` and `std::io::{stdin, stdout, stderr}` except in `main`'s error line and the panic hook, so a redirected stdout can never receive a frame | Scroll up after quitting: nothing; clippy in CI |
 | tmux or screen history | Warn when `TMUX` or `STY` is set | Manual check |
 | Terminal title | Never emit OSC 0/2 with a note title | Code review rule |
 | Clipboard | No clipboard support in v1; later opt-in OSC 52 with auto-clear | n/a |
 | Shell history, argv, environment | Passphrase only from /dev/tty; no secrets in args or env; ignore `CRYSTAL_*` secret variables | `cat /proc/<pid>/cmdline` |
-| Error messages and panics | Errors never include note text; panic hook prints location only, not the payload | Grep for `format!` near content types; fuzz panics |
+| Error messages and panics | Errors never include note text or argv text; panic hook prints location only, not the payload; types holding argv text (`VaultName`) have a Debug that prints `VaultName(..)` | Grep for `format!` near content types; fuzz panics; `tests/startup.rs` checks that panic, panic-in-Drop and stack overflow never print the message |
 | Crash mid-write | Plaintext is never written, so a crash can only leave ciphertext temp files | Kill -9 during save, inspect directory |
 | Filenames and titles | One vault.age file; no per-note names or sizes exist on disk | `ls vault/` |
 | Note sizes | Padmé padding before encryption | Vault size changes only between Padmé buckets |
-| Ctrl+Z and terminal close | Lock on `SIGTSTP`, `SIGHUP`, `SIGTERM`: zeroize model, leave alt screen, then stop or exit | Suspend and inspect screen |
+| Ctrl+Z, terminal close, kill signals | Lock on `SIGTSTP`; every catchable signal whose default kills the process (`term::EXIT_SIGNALS` and real-time signals) and a hung-up terminal end Crystal through the normal exit path: zeroize model, leave alt screen, then stop or exit. Exits that cannot be caught are listed under "Exits that skip cleanup" | `exit_signals_restore_terminal`, `terminal_hangup_exits_cleanly`, `suspend_restores_terminal_and_resume_reenters` |
 | Idle sessions | Auto-lock after N minutes of no input | Timer test |
 | Persistent scrollback in the emulator | Alt screen content is not kept in scrollback by most emulators; prefer a terminal without disk-backed history | Check your emulator's docs |
 
 Type-level rule that enforces most of this: note content only ever exists as a `NoteText` newtype over `Zeroizing<String>` that implements neither `Debug`, `Display` nor `Serialize`. The only way out is the renderer, the editor, or the encryptor.
 
+### Exits that skip cleanup
+
+The terminal guard and every `Drop` impl (zeroizing, from Phase 5) run only when Crystal leaves through its normal exit path or through a panic that unwinds. Phase 1 routes everything catchable onto that path; what remains cannot be caught, or cannot be caught without `unsafe` in a process that is already corrupted.
+
+| Way out | What runs | Terminal afterwards | Notes in memory |
+| --- | --- | --- | --- |
+| Normal quit; terminal hangup (window closed); catchable kill signals: `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGALRM`, `SIGVTALRM`, `SIGPROF`, `SIGXCPU`, `SIGXFSZ`, `SIGIO`, `SIGPWR`, `SIGSTKFLT`, real-time 35 to 64 | Handler writes one byte to a self-pipe; the main loop returns; every `Drop` | Cleared and restored | Zeroized |
+| Panic that unwinds | Panic hook (restore, location only), then every `Drop` | Cleared and restored | Zeroized |
+| Panic inside `Drop` during unwinding | Panic hook, then abort | Cleared and restored by the hook | Not zeroized |
+| `SIGKILL`; real-time 32 to 34; stack overflow; other faults (`SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGFPE`, `SIGTRAP`); `abort()`, including a failed allocation; seccomp kill (Phase 6) | Nothing | Raw mode, alternate screen, last frame still visible | Not zeroized |
+| `SIGSTOP`, `SIGTTIN`, `SIGTTOU` (stop, not exit) | Nothing until `SIGCONT` | Last frame visible while stopped | Kept, still locked |
+
+**Why each is accepted**
+
+- `SIGKILL` and `SIGSTOP` cannot be caught by any process.
+- Real-time signals 32 to 34: musl reserves them (thread cancellation, timers, `setxid` synchronisation) and its `sigaction` refuses handlers with `EINVAL`. `term::Signals::register` accepts that refusal for these three numbers only; any other failure stops startup.
+- Faults: returning from a handler reruns the faulting instruction, and restoring the terminal from inside a `SIGSEGV` handler needs an alternate signal stack and async-signal-safe raw code, which means `unsafe` running in a process whose state is already broken. signal-hook refuses to register them. On musl, Rust's stack guard prints nothing; a stack overflow is a bare `SIGSEGV` (exit 139).
+- `abort()` re-raises `SIGABRT` with the default action after any handler returns; nothing can stop it.
+- `SIGTTIN` and `SIGTTOU`: the kernel raises them again each time it restarts the terminal call that caused them, so a handler would loop forever. Their default only stops the process.
+- seccomp kill: killing at once, with no code running afterwards, is the point (docs/SANDBOXING.md).
+
+**What still holds on every one of these paths**
+
+- Nothing is printed: no exit path prints a panic message (`tests/startup.rs`, `abort_paths_print_no_secret_and_leave_no_core`).
+- No core dump: `RLIMIT_CORE` is 0 (hard limit too) and the process is non-dumpable from the first lines of `main`.
+- No swap: memory is `mlockall`ed. The kernel frees the pages and zeroes them before any other process gets them (on secureblue, `init_on_free=1` zeroes them at once).
+- Nothing on disk: Crystal never writes plaintext, so a kill can only leave ciphertext (`kill_9_leaves_no_new_files`; from Phase 4, also during a save).
+
+**Residual risk:** the last frame stays on the alternate screen and the terminal stays raw until the user runs `reset` or closes the window. That is screen exposure (A8, out of scope) plus a broken shell, not a disk leak. Every way to cause it from outside (`SIGKILL`, `SIGSTOP`, `kill -34`) needs a same-user process, which can already capture the screen (A6).
+
 ## Process hardening and sandboxing
 
-Hardening happens in a fixed order: protections that cost nothing go first, unlock happens while exec is still possible (for hardware-key plugins), and the sandbox locks down before any note is decrypted or rendered.
+Hardening happens in a fixed order: protections that cost nothing go first, unlock happens while exec is still possible (for hardware-key plugins), and the sandbox locks down before any note is decrypted or rendered. The detailed sandbox design (Landlock rules, seccomp policy, SELinux module, bubblewrap launcher, verification) is in docs/SANDBOXING.md.
 
 1. Install the panic hook (restore terminal, print location only).
 2. `setrlimit(RLIMIT_CORE, 0)`, `prctl(PR_SET_DUMPABLE, 0)`, `prctl(PR_SET_NO_NEW_PRIVS, 1)`, `umask(0o077)`.
-3. Environment allowlist: read only `TERM`, `COLORTERM` and locale variables, through one function; never read `EDITOR`, `PAGER` or similar. The process environment is not modified (`remove_var` is `unsafe` in edition 2024 and the crate forbids `unsafe`); instead, the only child process, the age plugin, is spawned with `env_clear()` plus the allowlist.
-4. `mlockall`; refuse to continue if it fails, with a message about `RLIMIT_MEMLOCK`.
+3. Environment allowlist: read only `HOME` (must be absolute; locates the state directory), `TERM`, `COLORTERM` and locale variables, through `harden::env_var`, which takes an `EnvVar` enum with one variant per allowed variable; never read `EDITOR`, `PAGER`, `XDG_STATE_HOME` or similar. Clippy's `disallowed-methods` (clippy.toml) makes any other `std::env` read a build error. The process environment is not modified (`remove_var` is `unsafe` in edition 2024 and the crate forbids `unsafe`); instead, the only child process, the age plugin, is spawned with `env_clear()` plus the allowlist.
+4. `mlockall` with `MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT`, after raising the soft `RLIMIT_MEMLOCK` to the hard limit. Refuse to continue if the hard limit is below 256 MiB (a smaller budget can run out mid-session, and the failed allocation aborts without zeroizing or saving) or if `mlockall` fails, with a message pointing to docs/SETUP.md.
 5. Require a real tty; open `/dev/tty` directly for input and output.
-6. Parse args (vault path, `--init`, `--lock-after`).
-7. Open the vault and state directories as directory fds with `O_DIRECTORY` and `O_NOFOLLOW`.
+6. Parse args in the `cli` module: one vault name (1 to 64 characters from `A-Z a-z 0-9 - _`, starting with a letter or digit, so no `/`, `..`, hidden names or option look-alikes), `--init`, `--lock-after MINUTES` (default 5, range 1 to 1440), `-h`/`--help`; from Phase 6 also `--sandbox-status`. Anything else is refused. Errors are fixed messages that never echo an argument, since a mistyped argument could be a passphrase; lexopt's own errors are discarded because they quote the argument.
+7. Open `~/Vaults` as a directory fd with `O_DIRECTORY` and `O_NOFOLLOW` and check it is ours and mode 0700; it is created (0700) only by `--init`, never as a side effect of opening. Open the vault relative to that fd with `openat(root, name, O_DIRECTORY | O_NOFOLLOW)`, and open the state directory the same way as the root. The vault and state fds are later reused as the Landlock rule fds; the root fd is not, so other vaults stay unreachable during a session. Then enter raw mode and the alternate screen on the `/dev/tty` fd (terminal guard).
 8. Unlock: decrypt `identity.age` with a passphrase or an age plugin. Plugins are external binaries, so this is the last moment `execve` is allowed.
-9. Apply Landlock: read and write only beneath the vault, state and backup directories; on ABI 4 or newer, also deny TCP bind and connect; on ABI 6 or newer, scope signals and abstract Unix sockets. Fail closed if Landlock is unsupported, unless the user passes an explicit `--no-landlock` flag.
-10. Apply seccomp (allowlist, below), with kill-process as the default action.
+9. Apply Landlock (docs/SANDBOXING.md section 5) through the `landlock` crate, up to ABI 9: read and write only beneath the vault, state and external backup directories; deny TCP bind and connect; block pathname Unix sockets (`RESOLVE_UNIX`); scope signals and abstract Unix sockets. The ruleset uses the crate's hard-requirement mode, so a right the kernel cannot enforce is an error. Below ABI 9, or without Landlock, Crystal refuses to start; there is no weaker mode and no override flag.
+10. Apply seccomp (allowlist, below; docs/SANDBOXING.md section 6), with kill-process as the default action. The log action exists only in builds with the `sandbox-audit` feature, never in release.
 11. Decrypt the vault, build the index, enter the TUI.
 
-**Seccomp allowlist (starting point):** `read`, `write`, `openat`, `close`, `fstat`, `newfstatat`, `statx`, `lseek`, `getdents64`, `mkdirat`, `renameat2`, `unlinkat`, `fsync`, `fdatasync`, `mmap`, `munmap`, `mremap`, `mprotect` (deny `PROT_EXEC`), `brk`, `madvise`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `sigaltstack`, `ioctl` (only `TCGETS`, `TCSETS*`, `TIOCGWINSZ`), `poll`, `ppoll`, `epoll_*`, `clock_gettime`, `clock_nanosleep`, `futex`, `getrandom`, `kill` and `tgkill` (own pid only, for `SIGTSTP`), `exit`, `exit_group`.
+**Seccomp allowlist (starting point):** `read`, `write`, `openat`, `close`, `fstat`, `newfstatat`, `statx`, `lseek`, `getdents64`, `mkdirat`, `renameat2`, `unlinkat`, `fsync`, `fdatasync`, `mmap`, `munmap`, `mremap`, `mprotect` (deny `PROT_EXEC`), `brk`, `madvise`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`, `sigaltstack`, `ioctl` (only `TCGETS2`, `TCSETS2`, `TCSETSF2`, `TIOCGWINSZ`: rustix uses the `*2` termios requests and falls back to `TCGETS` only on an error return, which a seccomp kill never gives; see docs/SYSCALLS.md), `poll`, `ppoll`, `epoll_*`, `clock_gettime`, `clock_nanosleep`, `futex`, `getrandom`, `getpid`, `kill` (own pid only, `SIGSTOP`, to suspend on Ctrl+Z or `SIGTSTP`), `exit`, `exit_group`.
 
-**Explicitly denied:** `socket`, `connect`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `memfd_create`, `io_uring_*`, `bpf`, `userfaultfd`, `personality`, and `clone`/`clone3` if you stay single-threaded.
+**Explicitly denied:** `socket`, `socketpair`, `connect`, `bind`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `userfaultfd`, `perf_event_open`, `keyctl`, `add_key`, `mount`, `unshare`, `setns`, `personality`, `memfd_create`, `clone`, `clone3` (Crystal is single-threaded), and the `ioctl` requests `TIOCSTI` and `TIOCLINUX`.
 
-Develop with the default action set to log, run every feature under `strace -f -c` to collect the real syscall set, then switch to kill. Check whether `crossterm`'s signal handling starts a thread; if it does, allow `clone3` with thread flags only.
+Develop with the `sandbox-audit` feature (log action), run every feature, and collect the real syscall set from the audit log with `run0 ausearch -m SECCOMP -c crystal`; this works with secureblue's `deny_ptrace` on. `strace -f -c` also works where ptrace is allowed. Then switch to kill. Crystal is single-threaded: if a dependency starts a thread, that is a finding to fix, not a reason to allow `clone`.
 
 **System-level recommendations:** encrypted swap or zram only, hibernation disabled, Yama `ptrace_scope` at 1 or higher, full-disk encryption, and a terminal emulator without disk-backed scrollback.
 
@@ -268,7 +300,7 @@ Crystal backs up automatically and fully offline by copying ciphertext only, so 
 
 Nine phases, each ending in a commit with passing acceptance tests; security layers (hardening, crypto, integrity) come before features, and the sandbox goes in once the syscall set is stable.
 
-1. **Phase 0: Skeleton and policy.** Single crate with modules `harden`, `term`, `crypto`, `vault`, `backup`, `model`, `md`, `ui`, `sys`. Release profile, musl target, `#![forbid(unsafe_code)]`, `deny.toml`, CI running clippy with warnings denied, tests, `cargo deny check`, `cargo audit`.
+1. **Phase 0: Skeleton and policy.** Workspace with the `crystal` crate (modules `harden`, `term`, `cli`, `crypto`, `vault`, `backup`, `model`, `md`, `ui`, `sys`) and the `zalloc` allocator crate. Release profile, musl target, `#![forbid(unsafe_code)]`, `deny.toml`, CI running clippy with warnings denied, tests, `cargo deny check`, `cargo audit`.
    - Accept: `file crystal` reports a static binary; CI is green.
 2. **Phase 1: Hardening bootstrap and terminal guard.** Steps 1 to 7 of the startup order; alt screen, raw mode, panic hook, signal handling.
    - Accept: `gdb -p` fails; `VmLck` is non-zero; a forced panic leaves a clean, cleared terminal.
@@ -280,8 +312,8 @@ Nine phases, each ending in a commit with passing acceptance tests; security lay
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock, lock on signals, full-text search, tags.
    - Accept: the canary scan finds no plaintext after lock.
-7. **Phase 6: Sandbox.** Landlock and seccomp in log mode, collect syscalls, then switch to kill.
-   - Accept: integration tests that try `socket`, `execve` and opening `~/.ssh` are killed or denied.
+7. **Phase 6: Sandbox.** Landlock and seccomp in log mode, collect syscalls, then switch to kill. SELinux policy module and optional bubblewrap launcher. Debug-only `--sandbox-selftest CHECK` and `--sandbox-status` (docs/SANDBOXING.md).
+   - Accept: the checks in docs/SANDBOXING.md section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied.
 8. **Phase 7: Backups.** Local snapshot store, external drive marker, headless mode with udev trigger, retention, verify, restore.
    - Accept: delete the vault, restore from the drive, every note matches; a tampered snapshot is refused; a headless run copies a new vault.age without the key.
 9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), passphrase change and key rotation, explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`.
@@ -302,7 +334,7 @@ Each security property gets a test that would fail if the property broke; tests 
 | Disk leak test | Only `*.age` and ciphertext temp files are ever created | `strace -f`, `inotifywait -r` on home and /tmp during a scripted session |
 | Canary scan | After lock, a unique canary string from a note no longer exists in process memory | Test-only feature that reads `/proc/self/mem` before dumpable is cleared |
 | Hardening checks | Non-dumpable, no core, memory locked, no new privs | Integration test reading `/proc/self/status` |
-| Sandbox checks | Denied syscalls kill the process; paths outside the vault return EACCES | Child-process tests |
+| Sandbox checks | Denied syscalls kill the process; paths outside the vault return EACCES | Child-process tests through the debug-only `--sandbox-selftest CHECK`, one check per process (docs/SANDBOXING.md section 9) |
 | Unsafe code | The allocator is sound | `cargo miri test` on `zalloc` |
 | Dependency audit | No known vulnerabilities, licenses allowed, crates reviewed | `cargo audit`, `cargo deny`, `cargo vet`, `cargo geiger` |
 | Reproducibility | Same source gives the same binary | Two clean builds, compare SHA-256 |
