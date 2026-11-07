@@ -18,7 +18,7 @@ Vaults are opened by name. An encrypted per-device config file, `~/.config/cryst
 
 ## Config file
 
-The config is local to one device, because paths differ between machines; a vault directory stays self-contained and syncable without it. If the config is lost, nothing is lost: `crystal `crystal add` NAME DIR` registers an existing vault again.
+The config is local to one device, because paths differ between machines; a vault directory stays self-contained and syncable without it. If the config is lost, nothing is lost: `crystal add NAME DIR` registers an existing vault again.
 
 - *Contents (postcard, then Padmé-padded, then age):* format version, `generation` (u64, +1 per write), default `lock_after`, and per vault: name, absolute path, pinned `vault_id`, optional `lock_after`; from Phase 7, the backup drive markers. It holds nothing that loosens security: no sandbox switches, no executable paths, no editor, no environment.
 - *Format 1* (`config.rs`, [decision 0021](../decisions/0021-config-format.md)):
@@ -109,6 +109,7 @@ age proves a file is authentic, not that it is the newest. Someone who controls 
 - **Format:** the generation in ASCII decimal and one newline (`42\n`), with exactly one valid spelling, the same rules as `VERSION`. Written through the atomic writer (`PublicBytes::generation`), mode 0600.
 - **On open** (`vault::generation::accept_on_open`), after a successful decrypt: a generation lower than the counter is refused with a message naming both numbers; equal or higher is accepted and the counter set to it. No counter means the first unlock on this device; rollback detection starts from there, and the user is told.
 - **On save** (`record_save`): the counter is written after the rename of the new file has committed. A crash in between leaves the counter one behind the file, which the next open accepts and catches up. A saved generation below the counter (another writer got ahead) is reported, and the counter is never lowered.
+- **Lost config:** `config.gen` outlives a deleted or lost `config.age`. A new config made by `crystal init` or `crystal add` on such a device starts at the stored generation, so its first write is one above the counter and is accepted (`config::fresh`).
 - **Fail closed:** a counter that is not exactly a decimal number and a newline, or is not a regular file, is refused. Crystal never resets a counter it cannot read; the user must look at it.
 - **Limits:** detection is relative to what *this device* has seen. A fresh device, or one whose state directory was lost, accepts whatever it sees first. The counters are plaintext, so a process running as you can lower or delete them (A5); this is accepted, see the decision record.
 

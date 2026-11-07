@@ -321,6 +321,19 @@ pub fn load(
     Ok(Some((config, seen)))
 }
 
+/// The config for a device without `config.age` (`crystal init`, `crystal add`).
+/// `config.gen` survives a lost config, so the new config starts at the
+/// stored generation: its first `store` writes one above it, never a
+/// generation the counter would refuse as a rollback. A corrupt counter
+/// is refused, as everywhere else.
+pub fn fresh(state: &StateDir) -> Result<Config, ConfigError> {
+    let stored = generation::load(state.fd(), Counter::Config).map_err(ConfigError::Generation)?;
+    Ok(Config {
+        generation: stored.unwrap_or(0),
+        ..Config::new()
+    })
+}
+
 /// Writes the config with its generation raised by one: atomic write of
 /// the new `config.age`, then `config.gen` once the rename has committed.
 pub fn store(
@@ -499,6 +512,39 @@ mod tests {
         assert!(same(&loaded, &config));
         assert_eq!(seen, Seen::Known);
         assert!(exists(&world.config).unwrap());
+    }
+
+    // A lost config.age with config.gen still there: the new config starts
+    // above the counter, so it is stored and loads again. A corrupt
+    // counter is refused, never reset.
+    #[test]
+    fn fresh_config_starts_above_the_stored_counter() {
+        let world = World::new("fresh");
+        assert_eq!(
+            fresh(&world.state).unwrap().generation,
+            0,
+            "first device use"
+        );
+
+        let mut config = sample();
+        store(&mut config, &world.config, &world.state, &pass("pw")).unwrap();
+        fs::remove_file(world.config_file()).unwrap();
+
+        let mut again = fresh(&world.state).unwrap();
+        assert_eq!(again.generation, 5);
+        assert!(again.vaults.is_empty());
+        store(&mut again, &world.config, &world.state, &pass("pw")).unwrap();
+        assert_eq!(again.generation, 6);
+        assert!(load(&world.config, &world.state, &pass("pw")).is_ok());
+
+        let counter = world.home.join(".local/state/crystal/config.gen");
+        fs::write(&counter, b"x\n").unwrap();
+        assert_eq!(
+            fresh(&world.state).err(),
+            Some(ConfigError::Generation(GenError::Corrupt {
+                what: "config"
+            }))
+        );
     }
 
     #[test]

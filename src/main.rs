@@ -181,7 +181,7 @@ fn add_vault(
         (pass, cfg)
     } else {
         let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
-        (pass, config::Config::new())
+        (pass, config::fresh(&state_dir)?)
     };
     drop(terminal);
 
@@ -236,7 +236,7 @@ fn init_vault(
         (pass, cfg)
     } else {
         let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
-        (pass, config::Config::new())
+        (pass, config::fresh(&state_dir)?)
     };
     if cfg.find(name).is_some() {
         return Err(config::ConfigError::NameTaken.into());

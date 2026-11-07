@@ -266,6 +266,31 @@ fn init_at_then_unlock() {
     assert!(output.contains("0 notes unlocked"), "{output}");
 }
 
+/// docs/design/storage.md: "If the config is lost, nothing is lost:
+/// `crystal add NAME DIR` registers an existing vault again." config.gen
+/// survives the loss (it lives in the state directory), so the new
+/// config.age must start above it, not at generation 1.
+#[test]
+fn add_after_lost_config_registers_again() {
+    let (home, vault) = home_with_vault("lost_config");
+    // A second init raises config.gen to 2.
+    init(&home, "other", PASS);
+    std::fs::remove_file(home.join(".config/crystal/config.age")).unwrap();
+
+    let steps = vec![
+        (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
+        (REPEAT, format!("{PASS}\r").into_bytes()),
+    ];
+    let (ok, output) = dialog(
+        &format!("'{BIN}' add diary '{}'", vault.display()),
+        &home,
+        &steps,
+    );
+    assert!(ok, "add after a lost config: {output}");
+    let output = unlock_ok(&home, "diary", PASS);
+    assert!(output.contains("0 notes unlocked"), "{output}");
+}
+
 /// Cancelling the passphrase prompt of `crystal add` or `crystal remove`
 /// changes nothing: config.age stays byte for byte the same.
 #[test]
