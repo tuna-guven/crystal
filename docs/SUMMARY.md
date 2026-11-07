@@ -51,6 +51,7 @@
   - [0023 Unlock: one prompt, fail closed, pinned vault id](decisions/0023-unlock.md)
   - [0024 Subcommands: crystal init, add, remove](decisions/0024-subcommands.md)
   - [0025 scrypt within the locked-memory budget](decisions/0025-scrypt-budget.md)
+  - [0026 Locked memory floor of 512 MiB](decisions/0026-memlock-floor-512.md)
 
 # Development
 

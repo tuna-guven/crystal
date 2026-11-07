@@ -37,7 +37,7 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
 }
 
 /// The largest plaintext Crystal encrypts: 32 MiB, far beyond any text
-/// vault, and well inside the 256 MiB locked-memory minimum
+/// vault, and well inside the 512 MiB locked-memory minimum
 /// (docs/design/startup.md, step 4) with the ciphertext and a decoded
 /// copy alongside.
 pub const MAX_PLAINTEXT: usize = 32 << 20;
@@ -452,9 +452,9 @@ mod tests {
     #[test]
     fn scrypt_fits_half_of_locked_memory() {
         const MIB: u64 = 1 << 20;
-        assert_eq!(fitting_log_n(Some(256 * MIB)), 17, "the floor: 128 MiB");
+        assert_eq!(fitting_log_n(Some(256 * MIB)), 17);
         assert_eq!(fitting_log_n(Some(300 * MIB)), 17);
-        assert_eq!(fitting_log_n(Some(512 * MIB)), 18, "age's default here");
+        assert_eq!(fitting_log_n(Some(512 * MIB)), 18, "the floor: 256 MiB");
         assert_eq!(fitting_log_n(Some(4096 * MIB)), 21);
         assert_eq!(fitting_log_n(None), MAX_SCRYPT_LOG_N);
         assert_eq!(fitting_log_n(Some(u64::MAX)), MAX_SCRYPT_LOG_N);

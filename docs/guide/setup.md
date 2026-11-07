@@ -138,10 +138,10 @@ never reach swap or a hibernation image ([startup](../design/startup.md) step 4)
 memory counts against `RLIMIT_MEMLOCK`. Fedora's default is 8 MiB, which a
 large vault could exhaust mid-session; a failed allocation then aborts
 without zeroizing memory or saving edits. So Crystal requires at least
-**256 MiB** (`harden::MEMLOCK_FLOOR`) and refuses to start below that:
+**512 MiB** (`harden::MEMLOCK_FLOOR`) and refuses to start below that:
 
 ```text
-crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 262144 KiB to keep notes out of swap; see docs/guide/setup.md
+crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 524288 KiB to keep notes out of swap; see docs/guide/setup.md
 ```
 
 **Check the current limit** (in KiB; `unlimited` is fine too):
@@ -151,10 +151,10 @@ ulimit -l
 ```
 
 **Raise it** (needs root once). Replace `user` with your login name
-(`id -un`). The value is in KiB: 262144 KiB = 256 MiB.
+(`id -un`). The value is in KiB: 524288 KiB = 512 MiB.
 
 ```sh
-echo 'user - memlock 262144' | run0 tee /etc/security/limits.d/90-crystal.conf
+echo 'user - memlock 524288' | run0 tee /etc/security/limits.d/90-crystal.conf
 ```
 
 `-` sets both the soft and hard limit. On Fedora and secureblue, `pam_limits`
@@ -167,14 +167,14 @@ restarts. Opening a new terminal is not enough.
 **Verify:**
 
 ```sh
-ulimit -l                                              # expect 262144
+ulimit -l                                              # expect 524288
 grep 'locked' /proc/$(pgrep -u "$(id -un)" -x systemd)/limits
 ```
 
 The file itself may be readable by root only; that is fine, `pam_limits`
 reads it as root.
 
-**Trade-off.** Any process running as your user can now lock up to 256 MiB
+**Trade-off.** Any process running as your user can now lock up to 512 MiB
 of RAM. On a single-user desktop this is a minor denial-of-service risk; it
 does not let anything read Crystal's memory.
 
@@ -183,12 +183,11 @@ does not let anything read Crystal's memory.
 **More memory, stronger passphrase files.** The passphrase is stretched
 with scrypt, which needs a lot of memory, and that memory is locked too.
 Crystal lets scrypt use up to half of your limit
-([decision 0025](../decisions/0025-scrypt-budget.md)). age's own default
-takes about one second, which on a fast machine needs 256 MiB, so at the
-256 MiB floor Crystal uses a smaller factor (128 MiB). For age's full
-default, set the limit to at least 1 GiB (1048576 KiB); a larger limit,
-up to what your machine can spare (for example 16777216 KiB = 16 GiB), is
-fine and changes nothing else. A passphrase file that needs more than your
+([decision 0025](../decisions/0025-scrypt-budget.md)), so the 512 MiB
+floor holds 256 MiB of scrypt (log N 18), age's one-second default on a
+fast machine ([decision 0026](../decisions/0026-memlock-floor-512.md)).
+A larger limit, up to what your machine can spare (for example
+16777216 KiB = 16 GiB), is fine and changes nothing else. A passphrase file that needs more than your
 limit allows is refused with a message pointing here, never a crash.
 
 ## ptrace and SELinux `deny_ptrace`

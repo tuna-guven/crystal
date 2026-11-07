@@ -38,10 +38,10 @@ jobs:
       # memory for real instead of only checking the refusal path.
       - name: Test
         run: |
-          sudo prlimit --pid $$ --memlock=268435456:268435456
+          sudo prlimit --pid $$ --memlock=536870912:536870912
           # Fail here if the raise didn't apply; otherwise the test would
           # silently take its refusal branch and still pass.
-          test "$(ulimit -l)" -eq 262144
+          test "$(ulimit -l)" -eq 524288
           # The runner leaks open fds (142 and up) into every step; GitHub
           # treats this as by design (actions/runner-images#3391). Crystal
           # refuses to start with any inherited fd above 2 (docs/design/startup.md,

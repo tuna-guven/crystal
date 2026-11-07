@@ -1,7 +1,7 @@
 # 0008 Locked memory floor of 256 MiB
 
 - **Date:** 2026-11-06 (Phase 1)
-- **Status:** Accepted
+- **Status:** Superseded by [0026](0026-memlock-floor-512.md)
 
 ## Context
 

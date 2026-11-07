@@ -1,6 +1,6 @@
 # Testing and verification
 
-Integration tests drive the real binary in a pseudo-terminal (`script`); their shared helpers are in `tests/common/mod.rs`. Tests of startup steps 1 to 7, signals and the terminal guard pass the debug-only `--skip-unlock-for-test`, so they need no vault; release builds have no such flag. Under `cargo test --release`, the tests that need a debug-only hook are reported as ignored; everything else, including the tamper suite, runs against the release binary. Run it at the 256 MiB memlock floor too (`prlimit --memlock=268435456:268435456 cargo test --release`): a release build stretches passphrases far harder than a debug build, and only that run shows whether scrypt fits in locked memory.
+Integration tests drive the real binary in a pseudo-terminal (`script`); their shared helpers are in `tests/common/mod.rs`. Tests of startup steps 1 to 7, signals and the terminal guard pass the debug-only `--skip-unlock-for-test`, so they need no vault; release builds have no such flag. Under `cargo test --release`, the tests that need a debug-only hook are reported as ignored; everything else, including the tamper suite, runs against the release binary. Run it at the 512 MiB memlock floor too (`prlimit --memlock=536870912:536870912 cargo test --release`): a release build stretches passphrases far harder than a debug build, and only that run shows whether scrypt fits in locked memory.
 
 Each security property gets a test that would fail if the property broke; tests run in CI on every commit.
 

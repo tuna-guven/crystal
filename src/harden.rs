@@ -16,8 +16,10 @@ use rustix::thread::set_no_new_privs;
 
 /// Smallest RLIMIT_MEMLOCK Crystal starts with. Below this, a large vault
 /// could exhaust locked memory mid-session, and a failed allocation aborts
-/// without zeroizing or saving. See docs/guide/setup.md.
-pub const MEMLOCK_FLOOR: u64 = 256 * 1024 * 1024;
+/// without zeroizing or saving. Half of it holds scrypt at log N 18, so
+/// every device at the floor opens every passphrase file
+/// (docs/decisions/0026-memlock-floor-512.md, docs/guide/setup.md).
+pub const MEMLOCK_FLOOR: u64 = 512 * 1024 * 1024;
 
 /// A hardening step that failed. Holds only fixed step names and numbers,
 /// never any data.
