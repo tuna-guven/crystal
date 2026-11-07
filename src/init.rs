@@ -22,7 +22,7 @@ use crate::config::{self, Config, ConfigError, VaultEntry};
 use crate::crypto::{CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
 use crate::term::{PromptError, Signals, TerminalGuard};
-use crate::vault::atomic::{FileName, Payload, WriteError, atomic_write};
+use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
 use crate::vault::codec::VaultContents;
 use crate::vault::format::{self, VaultError};
 use crate::vault::generation::{self, Counter, GenError};
@@ -270,14 +270,31 @@ pub fn create(
     ) {
         Ok(vault_id) => generation::record_save(state.fd(), Counter::Vault(vault_id), 1)
             .map_err(InitError::Generation),
-        // config.age was written; only config.gen failed. The vault is
-        // complete and registered, so it stays.
-        Err(e @ InitError::Config(ConfigError::Generation(_))) => Err(e),
+        // config.age was written: the vault is complete and registered, so
+        // it stays.
+        Err(e) if config_committed(&e) => Err(e),
         Err(e) => match remove_created(&plan, created) {
             Ok(()) => Err(InitError::RolledBack(Box::new(e))),
             Err(()) => Err(InitError::CleanupFailed(Box::new(e))),
         },
     }
+}
+
+/// Whether `config.age` already names the new vault when `e` happened:
+/// only `config.gen` failed, or the atomic writer failed after its rename
+/// (the commit point), at the directory fsync. Removing the vault then
+/// would leave the config pointing at nothing.
+fn config_committed(e: &InitError) -> bool {
+    matches!(
+        e,
+        InitError::Config(
+            ConfigError::Generation(_)
+                | ConfigError::Write(WriteError {
+                    step: Step::DirFsync,
+                    ..
+                })
+        )
+    )
 }
 
 #[expect(clippy::too_many_arguments, reason = "the steps of create, split out")]
@@ -443,6 +460,10 @@ mod tests {
                 &self.config,
                 &self.state,
             )
+        }
+
+        fn config_file_exists(&self) -> bool {
+            self.home.join(".config/crystal/config.age").exists()
         }
 
         fn create(&self, plan: Plan, n: &str, backup: &VaultIdentity) -> Result<(), InitError> {
@@ -664,6 +685,74 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(cfg.find(&name("diary")).is_some());
+    }
+
+    // The atomic writer fails after its rename (the commit point), at the
+    // directory fsync: config.age already names the vault, so the vault
+    // stays and still opens. Before the rename, the same write rolls back.
+    #[test]
+    fn config_written_but_not_synced_keeps_the_vault() {
+        use crate::vault::atomic::FailAt;
+        let world = World::new("dirfsync_config");
+        let backup = VaultIdentity::generate();
+        let plan = world.plan(None, "diary").unwrap();
+        let err = {
+            let _armed = FailAt::arm_for(Step::DirFsync, config::CONFIG_FILE);
+            world.create(plan, "diary", &backup).unwrap_err()
+        };
+        assert!(
+            matches!(
+                err,
+                InitError::Config(ConfigError::Write(WriteError {
+                    step: Step::DirFsync,
+                    ..
+                }))
+            ),
+            "{err:?}"
+        );
+        let (cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
+            .unwrap()
+            .unwrap();
+        let entry = cfg.find(&name("diary")).unwrap();
+        let vault = VaultDir::open_checked(
+            entry.path.as_ref(),
+            world.home.as_os_str(),
+            &world.config,
+            &world.state,
+        )
+        .unwrap();
+        assert_eq!(
+            config::identify_vault(&vault, &pass("pw")).unwrap().0,
+            entry.vault_id
+        );
+
+        // The rename itself fails: nothing was committed, so it rolls back.
+        let world = World::new("rename_config");
+        let plan = world.plan(None, "diary").unwrap();
+        let err = {
+            let _armed = FailAt::arm_for(Step::Rename, config::CONFIG_FILE);
+            world.create(plan, "diary", &backup).unwrap_err()
+        };
+        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
+        assert!(!world.home.join("Vaults").exists());
+        assert!(!world.config_file_exists());
+    }
+
+    // A directory fsync failing for a vault file (before config.age is
+    // written) is an ordinary late failure: everything is removed.
+    #[test]
+    fn vault_file_not_synced_rolls_back() {
+        use crate::vault::atomic::FailAt;
+        let world = World::new("dirfsync_vault");
+        let backup = VaultIdentity::generate();
+        let plan = world.plan(None, "diary").unwrap();
+        let err = {
+            let _armed = FailAt::arm_for(Step::DirFsync, "vault.age");
+            world.create(plan, "diary", &backup).unwrap_err()
+        };
+        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
+        assert!(!world.home.join("Vaults").exists());
+        assert!(!world.config_file_exists());
     }
 
     // A failure after the directory exists removes everything this run

@@ -57,7 +57,7 @@ The config is local to one device, because paths differ between machines; a vaul
 3. One or more backup recipients (`age1…` public keys) are asked for, echoed because they are public, and validated by age.
 4. Created, in order: `~/Vaults` (0700) if missing, the vault directory (0700), `VERSION`, a new identity and random `vault_id`, `identity.age`, `identity.backup.age`, and an empty `vault.age` at generation 1 (each 0600, through the atomic writer). The finished directory must pass the full vault check; then the entry is added to the config, the config stored, and the vault's rollback counter set to 1.
 
-If a step in 4 fails, the files, the vault directory and a `~/Vaults` made by this run are removed again, and the error says so. A directory that existed before is never removed. The one exception is a failure to write `config.gen` after `config.age` was written: the vault is then complete and registered, so it stays.
+If a step in 4 fails, the files, the vault directory and a `~/Vaults` made by this run are removed again, and the error says so. A directory that existed before is never removed. The exception is a failure once the new `config.age` has been renamed into place (the commit point): writing `config.gen`, or the directory fsync after that rename. The vault is then complete and registered, so it stays.
 
 ## Vault contents
 

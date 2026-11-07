@@ -134,17 +134,17 @@ pub fn atomic_write(dir: &OwnedFd, name: &FileName, data: Payload<'_>) -> Result
         Payload::Ciphertext(c) => c.as_bytes(),
         Payload::Public(p) => p.as_bytes(),
     };
-    run(Step::Sweep, || remove_stale_temps(dir, name))?;
-    let tmp = run(Step::Random, || temp_name(name))?;
-    let file = run(Step::Open, || {
+    run(Step::Sweep, name, || remove_stale_temps(dir, name))?;
+    let tmp = run(Step::Random, name, || temp_name(name))?;
+    let file = run(Step::Open, name, || {
         let flags =
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         openat(dir, tmp.as_c_str(), flags, Mode::RUSR | Mode::WUSR)
     })?;
-    let committed = write_all(&file, bytes)
-        .and_then(|()| run(Step::Fsync, || fsync(&file)))
+    let committed = write_all(&file, bytes, name)
+        .and_then(|()| run(Step::Fsync, name, || fsync(&file)))
         .and_then(|()| {
-            run(Step::Rename, || {
+            run(Step::Rename, name, || {
                 renameat_with(
                     dir,
                     tmp.as_c_str(),
@@ -160,18 +160,22 @@ pub fn atomic_write(dir: &OwnedFd, name: &FileName, data: Payload<'_>) -> Result
         let _ = unlinkat(dir, tmp.as_c_str(), AtFlags::empty());
         return Err(e);
     }
-    run(Step::DirFsync, || fsync(dir))
+    run(Step::DirFsync, name, || fsync(dir))
 }
 
 /// Runs one step, mapping its errno to a `WriteError` for that step. In
 /// test builds, an armed `FailAt` makes the step fail before it runs.
-fn run<T>(step: Step, op: impl FnOnce() -> Result<T, Errno>) -> Result<T, WriteError> {
-    fail_point(step)?;
+fn run<T>(
+    step: Step,
+    name: &FileName,
+    op: impl FnOnce() -> Result<T, Errno>,
+) -> Result<T, WriteError> {
+    fail_point(step, name)?;
     op().map_err(|errno| WriteError { step, errno })
 }
 
 /// Writes all of `bytes`, retrying on short writes and EINTR.
-fn write_all(file: &OwnedFd, bytes: &[u8]) -> Result<(), WriteError> {
+fn write_all(file: &OwnedFd, bytes: &[u8], name: &FileName) -> Result<(), WriteError> {
     let mut done = 0;
     while done < bytes.len() {
         match write(file, &bytes[done..]) {
@@ -185,7 +189,7 @@ fn write_all(file: &OwnedFd, bytes: &[u8]) -> Result<(), WriteError> {
             }
         }
         // Test builds: fail with part (or all) of the data in the temp file.
-        fail_point(Step::Write)?;
+        fail_point(Step::Write, name)?;
     }
     Ok(())
 }
@@ -243,18 +247,25 @@ fn remove_stale_temps(dir: &OwnedFd, name: &FileName) -> Result<(), Errno> {
 
 #[cfg(not(test))]
 #[inline(always)]
-fn fail_point(_step: Step) -> Result<(), WriteError> {
+fn fail_point(_step: Step, _name: &FileName) -> Result<(), WriteError> {
     Ok(())
 }
 
+/// The armed step, and the only file it fails for (`None`: every file).
+#[cfg(test)]
+type Armed = Option<(Step, Option<&'static str>)>;
+
 #[cfg(test)]
 thread_local! {
-    static FAIL_AT: std::cell::Cell<Option<Step>> = const { std::cell::Cell::new(None) };
+    static FAIL_AT: std::cell::Cell<Armed> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
-fn fail_point(step: Step) -> Result<(), WriteError> {
-    if FAIL_AT.get() == Some(step) {
+fn fail_point(step: Step, name: &FileName) -> Result<(), WriteError> {
+    if let Some((armed, only)) = FAIL_AT.get()
+        && armed == step
+        && only.is_none_or(|file| file == name.as_str())
+    {
         return Err(WriteError {
             step,
             errno: Errno::IO,
@@ -269,8 +280,16 @@ pub struct FailAt;
 
 #[cfg(test)]
 impl FailAt {
+    /// `step` fails for every file.
     pub fn arm(step: Step) -> Self {
-        FAIL_AT.set(Some(step));
+        FAIL_AT.set(Some((step, None)));
+        Self
+    }
+
+    /// `step` fails only while writing `file`; other writes succeed. For
+    /// tests of a sequence of writes, such as `crystal init`.
+    pub fn arm_for(step: Step, file: &'static str) -> Self {
+        FAIL_AT.set(Some((step, Some(file))));
         Self
     }
 }
