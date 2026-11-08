@@ -40,13 +40,14 @@ fn pass_step(pass: &str) -> Vec<(&'static str, Vec<u8>)> {
     vec![(PROMPT, format!("{pass}\r").into_bytes())]
 }
 
-/// Unlocks `name` with `pass` and quits at the placeholder screen.
+/// Unlocks `name` with `pass` and quits the shell.
 fn unlock_ok(home: &Path, name: &str, pass: &str) -> String {
+    let prompt = format!("crystal:{name}> ");
     let mut steps = pass_step(pass);
-    steps.push(("notes unlocked", b"q".to_vec()));
+    steps.push((prompt.as_str(), b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' {name}"), home, &steps);
     assert!(ok, "{output}");
-    output
+    visible(&output)
 }
 
 /// Tries to unlock `diary` with `PASS`; it must be refused with a message
@@ -193,10 +194,10 @@ fn older_vault_needs_restore() {
 
     let mut steps = pass_step(PASS);
     steps.push((question, b"restore\r".to_vec()));
-    steps.push(("notes unlocked", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
     assert!(
-        ok && output.contains("The restored vault was accepted"),
+        ok && visible(&output).contains("The restored vault was accepted"),
         "{output}"
     );
     assert_eq!(std::fs::read(&counter).unwrap(), b"1\n");
@@ -823,4 +824,69 @@ fn rm_cancelled_deletes_nothing() {
     assert!(!ok && output.contains("cancelled"), "{output}");
     assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 4);
     unlock_ok(&home, "diary", PASS);
+}
+
+// ---- the Crystal shell ----
+
+/// The prompt: drawn in one styled run, so it shows up whole in the
+/// output (unstyled spaces on a blank screen are not redrawn, so plain
+/// text arrives in pieces).
+const SHELL_READY: &str = "crystal:diary> ";
+
+/// What the terminal shows after Crystal left the alternate screen: must
+/// hold nothing from the shell.
+fn after_leaving(output: &str) -> &str {
+    output.rfind("\x1b[?1049l").map_or("", |at| &output[at..])
+}
+
+/// The shell answers help and unknown commands, quits, and leaves nothing
+/// behind on the normal screen.
+#[test]
+fn shell_help_unknown_and_quit() {
+    let (home, _) = home_with_vault("shell_basic");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"help\r".to_vec()));
+    steps.push(("Commands:", b"frobnicate now\r".to_vec()));
+    steps.push(("unknown command: frobnicate", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(output.contains("crystal:diary>"), "{output}");
+    let after = after_leaving(&output);
+    for gone in ["crystal:diary", "Commands", "frobnicate", "unlocked"] {
+        assert!(!after.contains(gone), "{gone} left on screen: {after:?}");
+    }
+    assert!(output.contains("\x1b[?2004h"), "bracketed paste on");
+    assert!(
+        after.contains("\x1b[?2004l") || output.contains("\x1b[?2004l\x1b[?25h"),
+        "and off again"
+    );
+}
+
+#[test]
+fn shell_ctrl_d_quits() {
+    let (home, _) = home_with_vault("shell_ctrl_d");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"\x04".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// A paste is text, never keys: a pasted "quit" and Enter do not quit, and
+/// a pasted escape sequence is not passed to the terminal.
+#[test]
+fn shell_paste_is_never_a_command() {
+    let (home, _) = home_with_vault("shell_paste");
+    let mut steps = pass_step(PASS);
+    steps.push((
+        SHELL_READY,
+        b"\x1b[200~quit\r\n\x1b]52;c;aGk=\x07\x1b[201~".to_vec(),
+    ));
+    steps.push(("]52;c;aGk=", b"\x15help\r".to_vec()));
+    steps.push(("Commands:", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(
+        !output.contains("\x1b]52"),
+        "OSC 52 reached the terminal: {output:?}"
+    );
 }

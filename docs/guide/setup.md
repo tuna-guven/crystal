@@ -155,9 +155,14 @@ Crystal shell ([decision 0033](../decisions/0033-shell.md)): a prompt at
 the bottom of the screen, output above it. Commands include `ls`,
 `view NAME`, `search TEXT`, `find TEXT`, `tags`, `copy NAME`, `help`,
 `lock` and `quit`. Nothing you see there stays in the terminal's
-scrollback. Until the shell exists (end of Phase 3), Crystal only shows how
-many notes the vault holds. The first unlock of a vault on a device says
-so: rollback detection starts from that point.
+scrollback. So far the shell knows `help`, `clear` and `quit` (also
+`exit`, or Ctrl+D on an empty line); the vault commands come with the rest
+of Phase 3. On the prompt line, the arrow keys, Home and End move,
+Ctrl+U, Ctrl+K and Ctrl+W delete, Up and Down recall earlier commands,
+PgUp and PgDn scroll the output, Ctrl+C clears the line and Ctrl+L the
+screen. Pasted text is always inserted as text, never run. The first
+unlock of a vault on a device says so: rollback detection starts from that
+point.
 
 ### Backups
 

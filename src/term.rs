@@ -22,10 +22,11 @@ use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
-/// Show the cursor again (the viewer hides it), clear the alternate screen
-/// while still on it, then leave it, so none of its content survives in
-/// terminals that keep it around.
-const LEAVE_SCREEN: &[u8] = b"\x1b[?25h\x1b[2J\x1b[?1049l";
+/// Turn bracketed paste off and show the cursor again (the shell turns one
+/// on and hides the other), clear the alternate screen while still on it,
+/// then leave it, so none of its content survives in terminals that keep
+/// it around.
+const LEAVE_SCREEN: &[u8] = b"\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
 
 /// The controlling terminal, opened directly. Redirected stdin or stdout can
 /// then neither feed input (a passphrase) nor capture output (the UI).
@@ -99,7 +100,6 @@ pub enum TermError {
     Poll(Errno),
     Read(io::ErrorKind),
     Stop(Errno),
-    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
     WindowSize(Errno),
 }
 
@@ -308,7 +308,6 @@ pub enum Event {
 
 /// Used when the terminal reports a size of zero (some serial consoles
 /// and fresh ptys), so layout never divides an empty area.
-#[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
 const FALLBACK_SIZE: (u16, u16) = (80, 24);
 
 impl TerminalGuard {
@@ -367,7 +366,6 @@ impl TerminalGuard {
 
     /// The window size as (columns, rows), or 80 by 24 if the terminal
     /// reports zero for either.
-    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
     pub fn size(&self) -> Result<(u16, u16), TermError> {
         let size = tcgetwinsize(&self.tty).map_err(TermError::WindowSize)?;
         if size.ws_col == 0 || size.ws_row == 0 {
@@ -377,7 +375,6 @@ impl TerminalGuard {
     }
 
     /// The terminal, for the frame writer (`ui::screen`) only.
-    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
     pub(crate) fn output(&mut self) -> &mut File {
         &mut self.tty
     }
@@ -557,12 +554,6 @@ impl TerminalGuard {
         } else {
             Err(PromptError::Mismatch)
         }
-    }
-
-    /// Clears the alternate screen and writes `text`, which must be fixed
-    /// text or numbers, never note content (Phase 2's placeholder screen).
-    pub fn show_status(&mut self, text: &str) -> Result<(), PromptError> {
-        self.show(text.as_bytes())
     }
 
     /// Clears the alternate screen and writes `text` at the top left.

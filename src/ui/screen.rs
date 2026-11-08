@@ -18,8 +18,10 @@ use std::mem;
 use super::frame::{FrameWriter, draw};
 use super::grid::Grid;
 
-/// Hide the cursor, clear the screen, cursor to top left.
-const FULL_REDRAW: &[u8] = b"\x1b[?25l\x1b[2J\x1b[H";
+/// Hide the cursor, turn on bracketed paste (pasted text arrives marked,
+/// never as keys: `shell::keys`), clear the screen, cursor to top left.
+/// Again after every resume, since leaving the screen turns paste off.
+const FULL_REDRAW: &[u8] = b"\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H";
 
 pub struct Screen {
     /// What the terminal shows.
@@ -92,7 +94,7 @@ mod tests {
         let mut screen = Screen::new((3, 2));
         assert_eq!(
             frame(&mut screen, &["ab", "c"]),
-            "\x1b[?25l\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[2;1Hc\x1b[0m"
+            "\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[2;1Hc\x1b[0m"
         );
     }
 
@@ -114,7 +116,7 @@ mod tests {
         assert_eq!(screen.size(), (2, 1));
         assert_eq!(
             frame(&mut screen, &["ab"]),
-            "\x1b[?25l\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[0m"
+            "\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[0m"
         );
     }
 
@@ -136,6 +138,6 @@ mod tests {
         frame(&mut screen, &["ab"]);
         assert!(screen.frame(Broken, |_| {}).is_err());
         assert!(screen.full);
-        assert!(frame(&mut screen, &["ab"]).starts_with("\x1b[?25l\x1b[2J"));
+        assert!(frame(&mut screen, &["ab"]).starts_with("\x1b[?25l\x1b[?2004h\x1b[2J"));
     }
 }

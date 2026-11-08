@@ -18,6 +18,7 @@ mod model;
 mod recover;
 mod recovery;
 mod rm;
+mod shell;
 mod sys;
 mod term;
 mod ui;
@@ -121,31 +122,70 @@ fn startup() -> Result<(), Box<dyn Error>> {
     let restored = if let Some(older) = unlocked.older {
         confirm_restore(&mut terminal, &signals, older)?;
         unlock::accept_restore(&state_dir, unlocked.contents.vault_id, older)?;
-        "\r\nThe restored vault was accepted: rollback detection starts again from it."
+        "\nThe restored vault was accepted: rollback detection starts again from it."
     } else {
         ""
     };
 
-    // Phase 2 placeholder for the shell (Phase 3): the note count only,
-    // never a title.
-    let notes = unlocked.contents.notes.len();
+    // The shell (docs/decisions/0033-shell.md). Leaving it drops the notes
+    // and everything shown (all wiped), and the guard clears the screen.
     let first = if unlocked.pinned == vault::pin::Pinned::New
         || unlocked.seen == vault::generation::Seen::FirstUse
     {
-        "\r\nFirst unlock of this vault on this device: it is pinned to its name, and \
-         rollback detection starts now."
+        "\nFirst unlock of this vault on this device: it is pinned to its name, and rollback \
+         detection starts now."
     } else {
         ""
     };
-    terminal.show_status(&format!(
-        "{notes} notes unlocked.{first}{restored}\r\nPress any key to lock and quit."
-    ))?;
-    // Ctrl+Z suspends, any other key or an exit signal returns, so the
-    // guard restores the terminal and the notes are dropped (wiped).
-    terminal.run_until_exit(&signals)?;
+    let mut shell = shell::Shell::new(&args.name);
+    let notes = unlocked.contents.notes.len();
+    shell.print(
+        &format!("{notes} notes unlocked.{first}{restored}"),
+        ui::grid::Style::PLAIN,
+    );
+    shell.print("Type help for the commands.", ui::grid::Style::PLAIN);
+    run_shell(&mut terminal, &signals, &mut shell)?;
+    drop(shell);
     drop(unlocked);
     drop(state_dir);
     Ok(())
+}
+
+/// The shell's loop: draw, wait, handle keys; a resize or resume redraws
+/// everything. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal.
+fn run_shell(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    shell: &mut shell::Shell,
+) -> Result<(), Box<dyn Error>> {
+    let mut screen = ui::screen::Screen::new(terminal.size()?);
+    let mut decoder = shell::keys::Decoder::new();
+    let mut input = zeroize::Zeroizing::new([0u8; 256]);
+    let mut keys = Vec::new();
+    loop {
+        screen.frame(terminal.output(), |grid| shell.draw(grid))?;
+        match terminal.wait(signals, &mut input[..])? {
+            term::Event::Exit => return Ok(()),
+            term::Event::Redraw => screen.redraw_all(terminal.size()?),
+            term::Event::Keys(n) => {
+                decoder.feed(&input[..n], &mut keys);
+                for key in keys.drain(..) {
+                    match shell.key(key) {
+                        shell::Action::Nothing => {}
+                        shell::Action::Quit => return Ok(()),
+                        // The vault commands come in L6.
+                        shell::Action::Command(words) => {
+                            let name = words.first().map_or("", |w| w.as_str());
+                            shell.print(
+                                &format!("unknown command: {name} (type help)"),
+                                shell::ERROR_STYLE,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 const PROMPT: &str = "Passphrase: ";

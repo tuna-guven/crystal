@@ -13,8 +13,8 @@
 What runs today: `crystal init NAME` creates a vault in
 `~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
 with the recovery code, `crystal check-code NAME` checks the code,
-`crystal rm NAME` deletes a vault, and `crystal NAME` performs startup steps
-1 to 8: it unlocks the vault and shows how many notes it holds.
+`crystal rm NAME` deletes a vault, and `crystal NAME` unlocks the vault
+into the Crystal shell, which so far knows `help`, `clear` and `quit`.
 
 ## Next steps (Phase 3)
 
@@ -28,9 +28,9 @@ starts.
 | L2 (done) | Vault format 2 ([0034](../decisions/0034-vault-format-2.md)): folders, name rules, no tags field (tags live in the text), reading format 1, the `VERSION` rule | The shell addresses notes by name; the format must be settled before notes can be created |
 | L3 (done) | Restore acceptance at unlock ([0036](../decisions/0036-backups-external.md)) | Makes restores from restic work; small, and it touches the unlock code L1 just simplified |
 | L4 (done) | Sanitizer and `SafeText` ([0037](../decisions/0037-visible-escapes.md)); the Markdown renderer and plain text notes ([0038](../decisions/0038-plain-text-notes.md)), with bounded nesting, golden and property tests | `view` needs it; the main defence against hostile note content (A3) |
-| L5 | Shell core ([0033](../decisions/0033-shell.md)): prompt line in zeroizing memory, quoting, scrollback and history in memory | The frame every command runs in |
+| L5 (done) | Shell core ([0033](../decisions/0033-shell.md)): prompt line in zeroizing memory, quoting, scrollback and history in memory | The frame every command runs in |
 | L6 | Read-only commands: `ls`, `view` (pager: links with `#heading` and `#^id`, backlinks, `y`/`Y`), `search`, `find`, `tags`, `links`, `copy`, `help`, `clear`, `lock`, `quit`; in-memory indexes, with `#tag` and `[[link]]` parsing from the text; both clipboards ([0035](../decisions/0035-clipboard.md)) | A usable read-only Crystal with copying |
-| L7 | Tab completion; the shell after unlock, replacing the placeholder; end-to-end tests; escape-injection corpus and renderer fuzzing | Ends Phase 3 with its acceptance tests |
+| L7 | Tab completion; end-to-end tests of every command; escape-injection corpus and renderer fuzzing | Ends Phase 3 with its acceptance tests |
 
 ## Plan
 

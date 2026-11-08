@@ -371,25 +371,26 @@ fn init_then_rm_end_to_end() {
     assert_eq!(std::fs::read(vault.join("VERSION")).unwrap(), b"2\n");
     assert!(!home.join(".config").exists(), "no config file");
     let state_dir = home.join(".local/state/crystal");
-    let mut state: Vec<String> = std::fs::read_dir(&state_dir)
+    let state: Vec<String> = std::fs::read_dir(&state_dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    state.sort();
+    // The vault id is random, so its counter may sort before or after
+    // the pin: find each by name.
     assert_eq!(state.len(), 2, "{state:?}");
+    assert!(state.contains(&"diary.pin".to_owned()), "{state:?}");
+    let counter = state.iter().find(|f| f.ends_with(".gen")).unwrap().clone();
     assert!(
-        state[0].len() == 64 + 4
-            && state[0].ends_with(".gen")
-            && state[0][..64]
+        counter.len() == 64 + 4
+            && counter[..64]
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
         "<vault_id hex>.gen: {state:?}"
     );
-    assert_eq!(state[1], "diary.pin");
     let pin = std::fs::read_to_string(state_dir.join("diary.pin")).unwrap();
     assert_eq!(
         pin,
-        format!("{}\n", &state[0][..64]),
+        format!("{}\n", &counter[..64]),
         "the pin names the counter's vault"
     );
 

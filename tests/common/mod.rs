@@ -212,3 +212,29 @@ pub fn age_decrypt(identity: &dyn age::Identity, file: &Path) -> Vec<u8> {
     reader.read_to_end(&mut out).unwrap();
     out
 }
+
+/// Crystal's output as visible text: each cursor move (`ESC [ row ; col H`)
+/// becomes a space and every other CSI sequence is removed, so words that
+/// the frame writer drew one by one read as a sentence again.
+pub fn visible(output: &str) -> String {
+    let mut out = String::with_capacity(output.len());
+    let mut chars = output.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            let mut last = ' ';
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() || c == '~' {
+                    last = c;
+                    break;
+                }
+            }
+            if last == 'H' && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}

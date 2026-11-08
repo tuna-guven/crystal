@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 63211df73c7173fd5dda8baa8f2be97fb960841733695cc36f7bc577b8f3ee2b # shrinks to parts = ["日本"], width = 1
+cc b83d423c226997fadc6ccaf56bcc836618c3e4641c086342c4e4a7aac124a020 # shrinks to source = "ㄅ", width = 1
+cc 203b4ce3796d501637664123874a2da098d5f16721f6517e54efeda6713a737b # shrinks to parts = ["*", "```\n", "- ", "`", "日本"], width = 3
+cc b3f229a43cd51180c39a00f0f7ca938dc8a5c59a0b99db29b95137e57aae7c08 # shrinks to source = ">𚿽", width = 3
