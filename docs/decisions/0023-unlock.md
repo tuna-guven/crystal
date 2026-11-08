@@ -19,7 +19,8 @@ state counters (same-user processes can change them, accepted in
 
 1. decrypt `config.age` and check `config.gen` (refuse an older config);
 2. find the name;
-3. walk and check the vault path ([0020](0020-vault-path-checks.md)),
+3. walk and check the vault path (replaced by the fixed location of
+   [0032](0032-fixed-locations.md)),
    including `VERSION`;
 4. refuse a `vault.sync-conflict-*.age` until the per-note merge exists
    (#31), instead of silently ignoring the other side's edits;

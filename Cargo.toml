@@ -34,7 +34,7 @@ unicode-width = { version = "=0.2.3", default-features = false }
 # Grapheme clusters, so a character with its combining marks or an emoji
 # sequence fills one cell.
 unicode-segmentation = "=1.13.3"
-# CommonMark parser for the viewer (decision 0030). No default features:
+# CommonMark parser for the viewer (decision 0031). No default features:
 # no getopts (its CLI) and no HTML writer; Crystal renders the events.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 

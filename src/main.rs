@@ -1,4 +1,4 @@
-//! Crystal: an encrypted Markdown vault in a TUI.
+//! Crystal: an encrypted Markdown vault in a terminal shell.
 //!
 //! See the book in docs/ (docs/SUMMARY.md) for the architecture and threat
 //! model.
@@ -9,9 +9,7 @@
 // that checks memory (zeroization) may allow it, with a SAFETY comment.
 #![cfg_attr(test, deny(unsafe_code))]
 
-mod backup;
 mod cli;
-mod config;
 mod crypto;
 mod harden;
 mod init;
@@ -19,6 +17,7 @@ mod md;
 mod model;
 mod recover;
 mod recovery;
+mod rm;
 mod sys;
 mod term;
 mod ui;
@@ -52,6 +51,12 @@ fn print_usage() {
     println!("{}", cli::USAGE);
 }
 
+/// The result line of `check-code` and `rm`: fixed text, never a name.
+#[expect(clippy::disallowed_macros, reason = "fixed result text only")]
+fn print_done(message: &dyn std::fmt::Display) {
+    println!("{message}");
+}
+
 /// docs/design/startup.md, steps 2 onward. Each step fails closed.
 /// Errors carry only step names and numbers, never note text.
 fn startup() -> Result<(), Box<dyn Error>> {
@@ -67,17 +72,15 @@ fn startup() -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         cli::Command::Run(args) => args,
-        cli::Command::Init { name, at } => return init_vault(tty, &name, at.as_ref()),
-        cli::Command::Add { name, dir } => return add_vault(tty, &name, &dir),
-        cli::Command::Remove { name } => return remove_vault(tty, &name),
-        cli::Command::Recover { name, dir } => return recover_vault(tty, &name, &dir),
+        cli::Command::Init { name } => return init_vault(tty, &name),
+        cli::Command::Recover { name } => return recover_vault(tty, &name),
+        cli::Command::CheckCode { name } => return check_code(tty, &name),
+        cli::Command::Rm { name } => return remove_vault(tty, &name),
     };
     let home = harden::env_var(harden::EnvVar::Home);
-    // Step 7. Opening never creates the config directory (only `crystal init` and
-    // `crystal add` do). The vault is looked up by name in config.age at unlock
-    // (step 8); ~/Vaults is never opened directly.
-    let config_dir = vault::ConfigDir::open(home.as_deref())?;
-    // After the config, so a run without one creates nothing.
+    // Step 7. Opening never creates the data directory (only `crystal
+    // init` does); the vault itself is opened at unlock (step 8).
+    let data_dir = vault::DataDir::open(home.as_deref())?;
     let state_dir = vault::StateDir::open_or_create(home.as_deref())?;
     // Last, so every earlier error prints on the normal screen. Dropped when
     // startup returns, before main prints any error.
@@ -104,23 +107,23 @@ fn startup() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Step 8: unlock. Without a config there is nothing to ask for.
-    if !config::exists(&config_dir)? {
-        return Err(unlock::UnlockError::NoConfig.into());
-    }
+    // Step 8: unlock. The vault directory is checked before the prompt, so
+    // a mistyped name fails at once.
+    let vault_dir = unlock::open_vault_dir(&data_dir, &args.name)?;
+    drop(data_dir);
     let pass = terminal.read_passphrase(&signals, PROMPT)?;
     // unlock takes the passphrase and wipes it as soon as identity.age is
     // open, before vault.age is read.
-    let unlocked = unlock::unlock(&args.name, pass, &home_dir()?, &config_dir, &state_dir)?;
-    // The sandbox never reaches the config: its fd is closed now. The vault
-    // and state fds stay open (Landlock rule fds in Phase 6).
-    drop(config_dir);
+    let unlocked = unlock::unlock(vault_dir, &args.name, pass, &state_dir)?;
 
-    // Phase 2 placeholder for the TUI (Phase 3): the note count only,
+    // Phase 2 placeholder for the shell (Phase 3): the note count only,
     // never a title.
     let notes = unlocked.contents.notes.len();
-    let first = if unlocked.seen == vault::generation::Seen::FirstUse {
-        "\r\nFirst unlock of this vault on this device: rollback detection starts now."
+    let first = if unlocked.pinned == vault::pin::Pinned::New
+        || unlocked.seen == vault::generation::Seen::FirstUse
+    {
+        "\r\nFirst unlock of this vault on this device: it is pinned to its name, and \
+         rollback detection starts now."
     } else {
         ""
     };
@@ -138,235 +141,108 @@ fn startup() -> Result<(), Box<dyn Error>> {
 const PROMPT: &str = "Passphrase: ";
 const NEW_PROMPT: &str = "Crystal recommends a passphrase of 8 or more random words, generated \
                           with KeePassDX or KeePassXC.\r\n\r\nNew passphrase for this \
-                          device's Crystal config: ";
+                          vault: ";
 const REPEAT: &str = "Repeat passphrase: ";
 
-/// HOME, which the config and state directory checks have already
-/// required to be set and absolute.
+/// HOME, which the data and state directory checks require to be set and
+/// absolute.
 fn home_dir() -> Result<std::ffi::OsString, Box<dyn Error>> {
     harden::env_var(harden::EnvVar::Home).ok_or_else(|| "HOME is unset".into())
 }
 
-/// `crystal add NAME DIR`: register an existing vault, then exit. The directory
-/// is resolved and checked before any prompt, so a bad path fails at once
-/// and writes nothing. Then the config is unlocked (or, on a device
-/// without one, created with a new passphrase), the vault's identity.age
-/// and vault.age are opened with the same passphrase to pin its vault_id,
-/// and the config is stored.
-fn add_vault(
-    tty: term::Tty,
-    name: &vault::VaultName,
-    dir: &cli::ArgPath,
-) -> Result<(), Box<dyn Error>> {
+/// `crystal init NAME`: create a vault in ~/.local/share/crystal, then exit
+/// (docs/design/storage.md, "Key design"). The name is checked first; then
+/// a new passphrase is asked for twice, and the new recovery code is shown
+/// and typed back; only then is anything created, and a failure removes it
+/// again.
+fn init_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
     let home = home_dir()?;
-    let config_dir = vault::ConfigDir::create(Some(&home))?;
+    let data_dir = vault::DataDir::create(Some(&home))?;
     let state_dir = vault::StateDir::open_or_create(Some(&home))?;
-    let resolved = resolve_vault_dir(dir)?;
-    let vault_dir = vault::vault_dir::VaultDir::open_checked(
-        resolved.as_ref(),
-        &home,
-        &config_dir,
-        &state_dir,
-    )?;
-    let has_config = config::exists(&config_dir)?;
+    let plan = init::plan(&data_dir, name)?;
 
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
-    let (pass, mut cfg) = if has_config {
-        let pass = terminal.read_passphrase(&signals, PROMPT)?;
-        let (cfg, _) =
-            config::load(&config_dir, &state_dir, &pass)?.ok_or(config::ConfigError::Missing)?;
-        (pass, cfg)
-    } else {
-        let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
-        (pass, config::fresh(&state_dir)?)
-    };
-    drop(terminal);
-
-    if cfg.find(name).is_some() {
-        return Err(config::ConfigError::NameTaken.into());
-    }
-    let (vault_id, vault_generation) =
-        config::identify_vault(&vault_dir, &pass).map_err(|e| match e {
-            config::ConfigError::Vault(vault::format::VaultError::Crypto(
-                crypto::CryptoError::WrongPassphrase,
-            )) => config::ConfigError::VaultPassphrase {
-                new_device: !has_config,
-            },
-            e => e,
-        })?;
-    // Refuses a taken name or a vault already registered, before anything
-    // is written.
-    cfg.add(config::VaultEntry {
-        name: vault::VaultName::new(name.as_str().into()).ok_or(config::ConfigError::BadName)?,
-        path: resolved,
-        vault_id,
-        lock_after: None,
-    })?;
-    // The vault's rollback baseline on this device starts here, and an
-    // older vault than this device has seen is refused. Recorded before
-    // the config is stored: the counter means "seen here", and this
-    // generation was just decrypted and authenticated, whether or not the
-    // config write that follows succeeds.
-    vault::generation::accept_on_open(
-        state_dir.fd(),
-        vault::generation::Counter::Vault(vault_id),
-        vault_generation,
-    )?;
-    config::store(&mut cfg, &config_dir, &state_dir, &pass)?;
-    Ok(())
-}
-
-/// DIR fully resolved, as the config stores it: the vault check refuses
-/// any symlink (/home is one on Fedora Atomic). For `add` and `recover`.
-fn resolve_vault_dir(dir: &cli::ArgPath) -> Result<String, Box<dyn Error>> {
-    let resolved = std::fs::canonicalize(dir.as_path())
-        .map_err(|e| format!("cannot resolve the vault directory ({})", e.kind()))?;
-    Ok(resolved
-        .into_os_string()
-        .into_string()
-        .map_err(|_| "the vault directory's path must be valid UTF-8")?)
-}
-
-/// `crystal recover NAME DIR` (docs/decisions/0029-recovery-code.md): the
-/// vault in DIR is opened with its recovery code; its key is sealed again
-/// with this device's passphrase and the vault is registered as NAME. On a
-/// device whose config opens only with a forgotten passphrase, that config
-/// is replaced once the user types `replace`. DIR is checked before any
-/// prompt, as for `crystal add`.
-fn recover_vault(
-    tty: term::Tty,
-    name: &vault::VaultName,
-    dir: &cli::ArgPath,
-) -> Result<(), Box<dyn Error>> {
-    use recover::RecoverError;
-    let home = home_dir()?;
-    let config_dir = vault::ConfigDir::create(Some(&home))?;
-    let state_dir = vault::StateDir::open_or_create(Some(&home))?;
-    let resolved = resolve_vault_dir(dir)?;
-    let vault_dir = vault::vault_dir::VaultDir::open_checked(
-        resolved.as_ref(),
-        &home,
-        &config_dir,
-        &state_dir,
-    )?;
-    let has_config = config::exists(&config_dir)?;
-
-    let signals = term::Signals::register()?;
-    let mut terminal = term::TerminalGuard::enter(tty)?;
-    let typed = terminal.read_public_line(&signals, recover::CODE_PROMPT)?;
-    let code = recovery::RecoveryCode::parse(&typed).map_err(RecoverError::Code)?;
-    drop(typed);
-    let opened = recover::open_backup(&vault_dir, &code)?;
-    drop(code);
-
-    let device_pass = if has_config {
-        terminal.read_passphrase_or_empty(&signals, recover::DEVICE_PROMPT)?
-    } else {
-        None
-    };
-    let (pass, cfg) = match device_pass {
-        Some(pass) => {
-            let (cfg, _) = config::load(&config_dir, &state_dir, &pass)?
-                .ok_or(config::ConfigError::Missing)?;
-            (pass, cfg)
-        }
-        None => {
-            if has_config {
-                let answer = terminal.read_public_line(&signals, recover::REPLACE_PROMPT)?;
-                if answer.as_str() != recover::REPLACE_WORD {
-                    return Err(RecoverError::NotReplaced.into());
-                }
-            }
-            let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
-            (pass, config::fresh(&state_dir)?)
-        }
-    };
-    drop(terminal);
-    recover::finish(
-        opened,
-        name,
-        resolved,
-        &pass,
-        cfg,
-        &vault_dir,
-        &config_dir,
-        &state_dir,
-    )?;
-    Ok(())
-}
-
-/// `crystal init NAME [--at DIR]`: create a vault and register it, then exit
-/// (docs/design/storage.md, "Key design"). The target is resolved and
-/// checked first; then the passphrase (the config's, or a new one twice on
-/// a device without a config) is asked for, and the new recovery code is
-/// shown and typed back; only then is anything created, and a failure
-/// removes it again.
-fn init_vault(
-    tty: term::Tty,
-    name: &vault::VaultName,
-    at: Option<&cli::ArgPath>,
-) -> Result<(), Box<dyn Error>> {
-    let home = home_dir()?;
-    let config_dir = vault::ConfigDir::create(Some(&home))?;
-    let state_dir = vault::StateDir::open_or_create(Some(&home))?;
-    let plan = init::plan(
-        &home,
-        at.map(cli::ArgPath::as_path),
-        name,
-        &config_dir,
-        &state_dir,
-    )?;
-    let has_config = config::exists(&config_dir)?;
-
-    let signals = term::Signals::register()?;
-    let mut terminal = term::TerminalGuard::enter(tty)?;
-    let (pass, cfg) = if has_config {
-        let pass = terminal.read_passphrase(&signals, PROMPT)?;
-        let (cfg, _) =
-            config::load(&config_dir, &state_dir, &pass)?.ok_or(config::ConfigError::Missing)?;
-        (pass, cfg)
-    } else {
-        let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
-        (pass, config::fresh(&state_dir)?)
-    };
-    if cfg.find(name).is_some() {
-        return Err(config::ConfigError::NameTaken.into());
-    }
+    let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
     let recovery = recovery::RecoveryCode::generate().map_err(init::InitError::Random)?;
     init::confirm_recovery_code(&mut terminal, &signals, &recovery)?;
     drop(terminal);
-    init::create(
-        plan,
-        name,
-        &pass,
-        &recovery,
-        cfg,
-        &home,
-        &config_dir,
-        &state_dir,
-    )?;
+    init::create(plan, name, &pass, &recovery, &data_dir, &state_dir)?;
     Ok(())
 }
 
-/// `crystal remove NAME`: unlock the config, forget NAME, store, exit. The
-/// vault's own files are never touched.
-fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
+/// `crystal recover NAME` (docs/decisions/0029-recovery-code.md): the
+/// recovery code opens the vault's key; once the vault is checked against
+/// its pin and rollback counter, a new passphrase seals the key into a new
+/// identity.age. Nothing else changes.
+fn recover_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
     let home = home_dir()?;
-    // Never creates anything: without a config there is nothing to remove.
-    let config_dir = vault::ConfigDir::open(Some(&home))?;
+    let data_dir = vault::DataDir::open(Some(&home))?;
     let state_dir = vault::StateDir::open_or_create(Some(&home))?;
-    if !config::exists(&config_dir)? {
-        return Err(config::ConfigError::UnknownName.into());
-    }
+    let vault_dir = vault::vault_dir::VaultDir::open(&data_dir, name)?;
+
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
+    let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
+    recover::check_seen(&opened, name, &state_dir)?;
+    let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
+    drop(terminal);
+    recover::finish(opened, &pass, &vault_dir)?;
+    Ok(())
+}
+
+/// `crystal check-code NAME`: the recovery code must open the backup, and
+/// the backup must hold the same key as identity.age. Writes nothing.
+fn check_code(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
+    let home = home_dir()?;
+    let data_dir = vault::DataDir::open(Some(&home))?;
+    let vault_dir = vault::vault_dir::VaultDir::open(&data_dir, name)?;
+
+    let signals = term::Signals::register()?;
+    let mut terminal = term::TerminalGuard::enter(tty)?;
+    let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
     let pass = terminal.read_passphrase(&signals, PROMPT)?;
     drop(terminal);
-    let (mut cfg, _) =
-        config::load(&config_dir, &state_dir, &pass)?.ok_or(config::ConfigError::Missing)?;
-    cfg.remove(name)?;
-    config::store(&mut cfg, &config_dir, &state_dir, &pass)?;
+    recover::check_code(&opened, &pass, &vault_dir)?;
+    print_done(
+        &"The recovery code is right: it opens identity.backup.age, which holds the same \
+                 key as identity.age.",
+    );
+    Ok(())
+}
+
+/// Asks for the recovery code and opens the vault's backup with it.
+fn open_with_code(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    vault_dir: &vault::vault_dir::VaultDir,
+) -> Result<recover::Opened, Box<dyn Error>> {
+    let typed = terminal.read_public_line(signals, recover::CODE_PROMPT)?;
+    let code = recovery::RecoveryCode::parse(&typed).map_err(recover::RecoverError::Code)?;
+    drop(typed);
+    Ok(recover::open_backup(vault_dir, &code)?)
+}
+
+/// `crystal rm NAME`: delete a vault for good once its name is typed again
+/// (docs/decisions/0032-fixed-locations.md).
+fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
+    let home = home_dir()?;
+    let data_dir = vault::DataDir::open(Some(&home))?;
+    let state_dir = vault::StateDir::open_or_create(Some(&home))?;
+    // Checked before the prompt, so a mistyped name fails at once.
+    drop(vault::vault_dir::VaultDir::open_for_removal(
+        &data_dir, name,
+    )?);
+
+    let signals = term::Signals::register()?;
+    let mut terminal = term::TerminalGuard::enter(tty)?;
+    let typed = terminal.read_public_line(&signals, rm::CONFIRM_PROMPT)?;
+    drop(terminal);
+    if typed.as_str() != name.as_str() {
+        return Err(rm::RmError::NotConfirmed.into());
+    }
+    let removed = rm::remove(&data_dir, &state_dir, name)?;
+    print_done(&removed);
     Ok(())
 }
 

@@ -1,41 +1,36 @@
-//! `crystal init NAME [--at DIR]` (docs/design/storage.md, "Key design",
-//! "On-disk layout"): create a vault and register it.
+//! `crystal init NAME` (docs/design/storage.md, "Key design"; decision
+//! 0032): create a vault in `~/.local/share/crystal/NAME`.
 //!
 //! Everything that can be checked is checked before anything is created:
-//! the target is resolved, must not exist, and its parent must pass the
-//! vault path walk; the name must be new in the config; the passphrase is
-//! asked for and the recovery code is shown and typed back
-//! (docs/decisions/0029-recovery-code.md). Only then are the directory and files
-//! made. If a later step fails, exactly what this run created is removed
-//! again, never anything that existed before.
+//! the vault directory must not exist; the passphrase is asked for and the
+//! recovery code is shown and typed back
+//! (docs/decisions/0029-recovery-code.md). Only then are the directory and
+//! files made. If a later step fails, exactly what this run created is
+//! removed again, never anything that existed before.
 
-use std::ffi::OsStr;
 use std::fmt;
 use std::os::fd::OwnedFd;
-use std::path::Path;
 
 use rustix::fs::{AtFlags, Mode, mkdirat, openat, statat, unlinkat};
 use rustix::io::Errno;
 use zeroize::Zeroizing;
 
-use crate::config::{self, Config, ConfigError, VaultEntry};
 use crate::crypto::{CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
 use crate::recovery::{CodeError, RecoveryCode};
 use crate::term::{PromptError, Signals, TerminalGuard};
-use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
+use crate::vault::atomic::{FileName, Payload, WriteError, atomic_write};
 use crate::vault::codec::VaultContents;
 use crate::vault::format::{
     self, IDENTITY_BACKUP_FILE, IDENTITY_FILE, VAULT_FILE, VERSION_FILE, VaultError,
 };
 use crate::vault::generation::{self, Counter, GenError};
-use crate::vault::vault_dir::{OpenVaultError, VaultDir, components, open_parent_checked};
-use crate::vault::{ConfigDir, OPEN_DIR_FLAGS, StateDir, VaultName};
+use crate::vault::pin::{self, PinError};
+use crate::vault::vault_dir::{OpenVaultError, VaultDir};
+use crate::vault::{DataDir, OPEN_DIR_FLAGS, StateDir, VaultName};
 
-/// The default parent of new vaults, inside HOME.
-const VAULTS_DIR: &str = "Vaults";
 /// Every file `crystal init` creates in the vault directory, in order.
-const VAULT_FILES: [&str; 4] = [
+pub const VAULT_FILES: [&str; 4] = [
     VERSION_FILE,
     IDENTITY_FILE,
     IDENTITY_BACKUP_FILE,
@@ -45,10 +40,6 @@ const VAULT_FILES: [&str; 4] = [
 /// Why `crystal init` stopped. Fixed text; never a path, name or key.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InitError {
-    /// `--at DIR` ends in `.`, `..` or `/`, or is not valid UTF-8.
-    BadTarget,
-    /// The target or its parent could not be resolved.
-    Resolve(std::io::ErrorKind),
     /// The vault directory already exists.
     Exists,
     Path(OpenVaultError),
@@ -58,7 +49,7 @@ pub enum InitError {
     Crypto(CryptoError),
     Vault(VaultError),
     Write(WriteError),
-    Config(ConfigError),
+    Pin(PinError),
     Generation(GenError),
     Prompt(PromptError),
     /// A step after the directory was created failed; everything this run
@@ -72,14 +63,7 @@ pub enum InitError {
 impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadTarget => write!(
-                f,
-                "--at must name the new vault directory itself, as valid UTF-8"
-            ),
-            Self::Resolve(kind) => {
-                write!(f, "cannot resolve where the vault should go ({kind})")
-            }
-            Self::Exists => write!(f, "the vault directory already exists"),
+            Self::Exists => write!(f, "a vault with that name already exists"),
             Self::Path(e) => e.fmt(f),
             Self::Stat(errno) => write!(f, "cannot check the vault directory ({errno})"),
             Self::Create(errno) => write!(f, "cannot create the vault directory ({errno})"),
@@ -87,7 +71,7 @@ impl fmt::Display for InitError {
             Self::Crypto(e) => e.fmt(f),
             Self::Vault(e) => e.fmt(f),
             Self::Write(e) => write!(f, "cannot write a vault file: {e}"),
-            Self::Config(e) => e.fmt(f),
+            Self::Pin(e) => e.fmt(f),
             Self::Generation(e) => e.fmt(f),
             Self::Prompt(e) => e.fmt(f),
             Self::RolledBack(e) => {
@@ -104,99 +88,21 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Where the parent of the new vault directory stands.
-enum Parent {
-    /// It exists and passed the walk.
-    Exists(OwnedFd),
-    /// `~/Vaults` does not exist yet: it is created in HOME (which passed
-    /// the walk) when the vault is.
-    CreateIn { home: OwnedFd },
-}
-
 /// A checked target for a new vault; nothing has been created yet.
 pub struct Plan {
-    parent: Parent,
     dir_name: String,
-    /// The resolved path the config will store.
-    path: String,
 }
 
-/// Resolves `p` to a real path in UTF-8.
-fn resolve(p: &Path) -> Result<String, InitError> {
-    std::fs::canonicalize(p)
-        .map_err(|e| InitError::Resolve(e.kind()))?
-        .into_os_string()
-        .into_string()
-        .map_err(|_| InitError::BadTarget)
-}
-
-/// Step 1: where the vault goes, checked, with nothing created. Without
-/// `--at`, `~/Vaults/NAME` (with HOME resolved, so the stored path has no
-/// symlink); with `--at DIR`, DIR itself, which must not exist yet.
-pub fn plan(
-    home: &OsStr,
-    at: Option<&Path>,
-    name: &VaultName,
-    config_dir: &ConfigDir,
-    state: &StateDir,
-) -> Result<Plan, InitError> {
-    // `resolved_home` is set only for the default location, where a
-    // missing ~/Vaults is created in it.
-    let (parent_path, dir_name, resolved_home) = match at {
-        None => {
-            let home = resolve(Path::new(home))?;
-            (
-                format!("{home}/{VAULTS_DIR}"),
-                name.as_str().to_owned(),
-                Some(home),
-            )
-        }
-        Some(dir) => {
-            let dir_name = dir
-                .file_name()
-                .and_then(OsStr::to_str)
-                .filter(|_| !dir.as_os_str().as_encoded_bytes().ends_with(b"/"))
-                .ok_or(InitError::BadTarget)?
-                .to_owned();
-            let parent = match dir.parent() {
-                Some(p) if !p.as_os_str().is_empty() => p,
-                _ => Path::new("."),
-            };
-            (resolve(parent)?, dir_name, None)
-        }
-    };
-    let path = format!("{parent_path}/{dir_name}");
-    components(path.as_bytes()).map_err(InitError::Path)?;
-
-    let parent = match open_parent_checked(parent_path.as_ref(), config_dir, state) {
-        Ok(fd) => Parent::Exists(fd),
-        // Only ~/Vaults itself may be missing, and only by default: it is
-        // created in the resolved HOME (never found by trimming the path,
-        // which would go wrong for a HOME that itself ends in "Vaults").
-        Err(OpenVaultError::Missing { component })
-            if resolved_home.is_some()
-                && component == components(parent_path.as_bytes()).map_or(0, |c| c.len()) =>
-        {
-            let home = resolved_home.as_deref().unwrap_or_default();
-            Parent::CreateIn {
-                home: open_parent_checked(home.as_ref(), config_dir, state)
-                    .map_err(InitError::Path)?,
-            }
-        }
-        Err(e) => return Err(InitError::Path(e)),
-    };
-    if let Parent::Exists(fd) = &parent {
-        match statat(fd, dir_name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
-            Err(Errno::NOENT) => {}
-            Ok(_) => return Err(InitError::Exists),
-            Err(errno) => return Err(InitError::Stat(errno)),
-        }
+/// Step 1: the vault directory `NAME` must not exist in the data
+/// directory, not even as a symlink.
+pub fn plan(data: &DataDir, name: &VaultName) -> Result<Plan, InitError> {
+    match statat(data.fd(), name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+        Err(Errno::NOENT) => Ok(Plan {
+            dir_name: name.as_str().to_owned(),
+        }),
+        Ok(_) => Err(InitError::Exists),
+        Err(errno) => Err(InitError::Stat(errno)),
     }
-    Ok(Plan {
-        parent,
-        dir_name,
-        path,
-    })
 }
 
 /// Shows the new vault's recovery code once and has it typed back, so a
@@ -249,109 +155,58 @@ pub const CONFIRM_PROMPT: &str = "Type the recovery code to confirm: ";
 /// What this run created, to remove again if a later step fails.
 #[derive(Default)]
 struct Created {
-    vaults_dir: Option<OwnedFd>,
-    vault_dir: Option<(OwnedFd, OwnedFd)>,
+    vault_dir: Option<OwnedFd>,
+    pinned: bool,
 }
 
-/// Step 2: creates the vault as planned, registers it in `cfg` and stores
-/// the config, then starts the vault's rollback counter at generation 1.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site, each input distinct"
-)]
+/// Step 2: creates the vault as planned, pins it to its name and starts
+/// its rollback counter at generation 1. All or nothing.
 pub fn create(
     plan: Plan,
     name: &VaultName,
     pass: &Passphrase,
     recovery: &RecoveryCode,
-    mut cfg: Config,
-    home: &OsStr,
-    config_dir: &ConfigDir,
+    data: &DataDir,
     state: &StateDir,
 ) -> Result<(), InitError> {
     let mut created = Created::default();
-    match build(
-        &plan,
-        name,
-        pass,
-        recovery,
-        &mut cfg,
-        home,
-        config_dir,
-        state,
-        &mut created,
-    ) {
-        Ok(vault_id) => generation::record_save(state.fd(), Counter::Vault(vault_id), 1)
-            .map_err(InitError::Generation),
-        // config.age was written: the vault is complete and registered, so
-        // it stays.
-        Err(e) if config_committed(&e) => Err(e),
-        Err(e) => match remove_created(&plan, created) {
+    match build(&plan, name, pass, recovery, data, state, &mut created) {
+        Ok(()) => Ok(()),
+        Err(e) => match remove_created(&plan, name, data, state, created) {
             Ok(()) => Err(InitError::RolledBack(Box::new(e))),
             Err(()) => Err(InitError::CleanupFailed(Box::new(e))),
         },
     }
 }
 
-/// Whether `config.age` already names the new vault when `e` happened:
-/// only `config.gen` failed, or the atomic writer failed after its rename
-/// (the commit point), at the directory fsync. Removing the vault then
-/// would leave the config pointing at nothing.
-fn config_committed(e: &InitError) -> bool {
-    matches!(
-        e,
-        InitError::Config(
-            ConfigError::Generation(_)
-                | ConfigError::Write(WriteError {
-                    step: Step::DirFsync,
-                    ..
-                })
-        )
-    )
-}
-
-#[expect(clippy::too_many_arguments, reason = "the steps of create, split out")]
 fn build(
     plan: &Plan,
     name: &VaultName,
     pass: &Passphrase,
     recovery: &RecoveryCode,
-    cfg: &mut Config,
-    home: &OsStr,
-    config_dir: &ConfigDir,
+    data: &DataDir,
     state: &StateDir,
     created: &mut Created,
-) -> Result<VaultId, InitError> {
-    let parent = match &plan.parent {
-        Parent::Exists(fd) => fd,
-        Parent::CreateIn { home } => {
-            mkdirat(home, VAULTS_DIR, Mode::RWXU).map_err(InitError::Create)?;
-            let fd = openat(home, VAULTS_DIR, OPEN_DIR_FLAGS, Mode::empty())
-                .map_err(InitError::Create)?;
-            created.vaults_dir.insert(fd)
-        }
-    };
-    mkdirat(parent, plan.dir_name.as_str(), Mode::RWXU).map_err(|errno| match errno {
+) -> Result<(), InitError> {
+    mkdirat(data.fd(), plan.dir_name.as_str(), Mode::RWXU).map_err(|errno| match errno {
         Errno::EXIST => InitError::Exists,
         other => InitError::Create(other),
     })?;
     let dir = openat(
-        parent,
+        data.fd(),
         plan.dir_name.as_str(),
         OPEN_DIR_FLAGS,
         Mode::empty(),
     )
     .map_err(InitError::Create)?;
-    let parent_copy = parent
-        .try_clone()
-        .map_err(|e| InitError::Create(Errno::from_io_error(&e).unwrap_or(Errno::IO)))?;
-    let (_, dir) = created.vault_dir.insert((parent_copy, dir));
+    let dir = created.vault_dir.insert(dir);
 
     format::write_version(dir).map_err(InitError::Write)?;
     let identity = VaultIdentity::generate();
     let vault_id = VaultId::random().map_err(InitError::Random)?;
     let write = |file: &str, sealed: &crate::crypto::Ciphertext| {
-        let name = FileName::new(file).ok_or(InitError::BadTarget)?;
+        // The four names are fixed and valid: this cannot fail.
+        let name = FileName::new(file).ok_or(InitError::Create(Errno::INVAL))?;
         atomic_write(dir, &name, Payload::Ciphertext(sealed)).map_err(InitError::Write)
     };
     write(
@@ -377,24 +232,27 @@ fn build(
     )?;
 
     // The finished directory must pass the same check as any vault.
-    VaultDir::open_checked(plan.path.as_ref(), home, config_dir, state).map_err(InitError::Path)?;
-    cfg.add(VaultEntry {
-        name: VaultName::new(name.as_str().into()).ok_or(InitError::BadTarget)?,
-        path: plan.path.clone(),
-        vault_id,
-        lock_after: None,
-    })
-    .map_err(InitError::Config)?;
-    config::store(cfg, config_dir, state, pass).map_err(InitError::Config)?;
-    Ok(vault_id)
+    VaultDir::open(data, name).map_err(InitError::Path)?;
+    created.pinned = true;
+    pin::store(state.fd(), name, &vault_id).map_err(InitError::Pin)?;
+    generation::record_save(state.fd(), Counter::Vault(vault_id), 1)
+        .map_err(InitError::Generation)?;
+    Ok(())
 }
 
 /// Removes what `build` created: the files in the new vault directory,
-/// the directory, and `~/Vaults` if this run made it. Each directory was
-/// created by this run, so removing it never touches anything older.
-fn remove_created(plan: &Plan, created: Created) -> Result<(), ()> {
+/// the directory, and the pin. The directory was created by this run, so
+/// removing it never touches anything older. A rollback counter for the
+/// new, random vault id is harmless and stays if it was written.
+fn remove_created(
+    plan: &Plan,
+    name: &VaultName,
+    data: &DataDir,
+    state: &StateDir,
+    created: Created,
+) -> Result<(), ()> {
     let mut ok = true;
-    if let Some((parent, dir)) = created.vault_dir {
+    if let Some(dir) = created.vault_dir {
         for file in VAULT_FILES {
             match unlinkat(&dir, file, AtFlags::empty()) {
                 Ok(()) | Err(Errno::NOENT) => {}
@@ -402,12 +260,10 @@ fn remove_created(plan: &Plan, created: Created) -> Result<(), ()> {
             }
         }
         drop(dir);
-        ok &= unlinkat(&parent, plan.dir_name.as_str(), AtFlags::REMOVEDIR).is_ok();
+        ok &= unlinkat(data.fd(), plan.dir_name.as_str(), AtFlags::REMOVEDIR).is_ok();
     }
-    if created.vaults_dir.is_some()
-        && let Parent::CreateIn { home } = &plan.parent
-    {
-        ok &= unlinkat(home, VAULTS_DIR, AtFlags::REMOVEDIR).is_ok();
+    if created.pinned {
+        ok &= pin::remove(state.fd(), name).is_ok();
     }
     if ok { Ok(()) } else { Err(()) }
 }
@@ -418,7 +274,7 @@ mod tests {
     use crate::crypto::decrypt_with_identity;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use zeroize::Zeroizing;
 
     fn pass(s: &str) -> Passphrase {
@@ -433,63 +289,40 @@ mod tests {
         fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
     }
 
+    fn set_mode(p: &Path, mode: u32) {
+        fs::set_permissions(p, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
     struct World {
-        base: PathBuf,
         home: PathBuf,
-        config: ConfigDir,
+        data: DataDir,
         state: StateDir,
     }
 
     impl World {
         fn new(test: &str) -> Self {
-            Self::with_home(test, "home")
-        }
-
-        /// As `new`, with HOME's last component named `home_name`.
-        fn with_home(test: &str, home_name: &str) -> Self {
-            let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            let home = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("target/unit-init")
                 .join(test);
-            let _ = fs::remove_dir_all(&base);
-            let home = base.join(home_name);
+            let _ = fs::remove_dir_all(&home);
             fs::create_dir_all(&home).unwrap();
-            fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-            let config = ConfigDir::create(Some(home.as_os_str())).unwrap();
+            set_mode(&home, 0o700);
+            let data = DataDir::create(Some(home.as_os_str())).unwrap();
             let state = StateDir::open_or_create(Some(home.as_os_str())).unwrap();
-            Self {
-                base,
-                home,
-                config,
-                state,
-            }
+            Self { home, data, state }
         }
 
-        fn plan(&self, at: Option<&Path>, n: &str) -> Result<Plan, InitError> {
-            plan(
-                self.home.as_os_str(),
-                at,
-                &name(n),
-                &self.config,
-                &self.state,
-            )
+        fn data_path(&self) -> PathBuf {
+            self.home.join(".local/share/crystal")
         }
 
-        fn config_file_exists(&self) -> bool {
-            self.home.join(".config/crystal/config.age").exists()
+        fn state_path(&self) -> PathBuf {
+            self.home.join(".local/state/crystal")
         }
 
-        fn create(&self, plan: Plan, n: &str, backup: &RecoveryCode) -> Result<(), InitError> {
-            create(
-                plan,
-                &name(n),
-                &pass("pw"),
-                backup,
-                Config::new(),
-                self.home.as_os_str(),
-                &self.config,
-                &self.state,
-            )
+        fn create(&self, n: &str, code: &RecoveryCode) -> Result<(), InitError> {
+            let plan = plan(&self.data, &name(n))?;
+            create(plan, &name(n), &pass("pw"), code, &self.data, &self.state)
         }
     }
 
@@ -498,14 +331,11 @@ mod tests {
     #[test]
     fn creates_the_documented_layout() {
         let world = World::new("layout");
-        let backup = RecoveryCode::generate().unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        assert!(matches!(plan.parent, Parent::CreateIn { .. }));
-        world.create(plan, "diary", &backup).unwrap();
+        let code = RecoveryCode::generate().unwrap();
+        world.create("diary", &code).unwrap();
 
-        let vaults = world.home.join("Vaults");
-        let vault = vaults.join("diary");
-        assert_eq!((mode(&vaults), mode(&vault)), (0o700, 0o700));
+        let vault = world.data_path().join("diary");
+        assert_eq!((mode(&world.data_path()), mode(&vault)), (0o700, 0o700));
         let mut files: Vec<String> = fs::read_dir(&vault)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -525,37 +355,35 @@ mod tests {
         }
         assert_eq!(fs::read(vault.join("VERSION")).unwrap(), b"1\n");
 
-        // The config holds the entry with the vault's real id and resolved
-        // path; both rollback counters exist.
-        let (cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
+        // The vault is pinned and its counter is at generation 1.
+        let id = pin::load(world.state.fd(), &name("diary"))
             .unwrap()
             .unwrap();
-        let entry = cfg.find(&name("diary")).unwrap();
-        let resolved = fs::canonicalize(&vault).unwrap();
-        assert_eq!(Path::new(&entry.path), resolved);
-        let vault_dir = VaultDir::open_checked(
-            entry.path.as_ref(),
-            world.home.as_os_str(),
-            &world.config,
-            &world.state,
-        )
-        .unwrap();
-        let (id, generation) = config::identify_vault(&vault_dir, &pass("pw")).unwrap();
-        assert_eq!((id, generation), (entry.vault_id, 1));
         assert_eq!(
             generation::load(world.state.fd(), Counter::Vault(id)),
             Ok(Some(1))
         );
-        assert_eq!(
-            generation::load(world.state.fd(), Counter::Config),
-            Ok(Some(1))
-        );
+        let mut state: Vec<String> = fs::read_dir(world.state_path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        state.sort();
+        assert_eq!(state, [format!("{}.gen", id.hex()), "diary.pin".to_owned()]);
+
+        // The passphrase opens identity.age, and that opens vault.age.
+        let identity = VaultIdentity::open_with_passphrase(
+            &fs::read(vault.join("identity.age")).unwrap(),
+            &pass("pw"),
+        )
+        .unwrap();
+        let contents = format::open(&fs::read(vault.join("vault.age")).unwrap(), &identity);
+        assert!(contents.unwrap().vault_id == id);
 
         // Recovery without the passphrase: the recovery code opens
         // identity.backup.age, and the identity inside opens vault.age.
         let recovered = VaultIdentity::open_with_passphrase(
             &fs::read(vault.join("identity.backup.age")).unwrap(),
-            &backup.passphrase(),
+            &code.passphrase(),
         )
         .unwrap();
         let vault_age = fs::read(vault.join("vault.age")).unwrap();
@@ -570,78 +398,67 @@ mod tests {
         );
     }
 
-    // Regression: ~/Vaults was once found by trimming "Vaults" off the
-    // parent path, which also stripped a HOME that itself ends in "Vaults".
     #[test]
-    fn home_ending_in_vaults() {
-        let world = World::with_home("home_vaults", "Vaults");
-        let backup = RecoveryCode::generate().unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        assert!(matches!(plan.parent, Parent::CreateIn { .. }));
-        world.create(plan, "diary", &backup).unwrap();
-        assert!(world.home.join("Vaults/diary/vault.age").exists());
-        assert_eq!(mode(&world.home.join("Vaults")), 0o700);
-    }
-
-    #[test]
-    fn at_names_the_vault_directory_itself() {
-        let world = World::new("at");
-        let backup = RecoveryCode::generate().unwrap();
-        let synced = world.base.join("synced");
-        fs::create_dir(&synced).unwrap();
-        fs::set_permissions(&synced, fs::Permissions::from_mode(0o755)).unwrap();
-        let plan = world.plan(Some(&synced.join("notes")), "work").unwrap();
-        world.create(plan, "work", &backup).unwrap();
-        assert_eq!(mode(&synced.join("notes")), 0o700);
-        assert!(synced.join("notes/vault.age").exists());
-        assert!(!world.home.join("Vaults").exists());
-    }
-
-    #[test]
-    fn plan_refuses_without_creating_anything() {
+    fn plan_refuses_an_existing_name_without_creating_anything() {
         let world = World::new("plan");
-        let existing = world.base.join("existing");
-        fs::create_dir(&existing).unwrap();
+        fs::create_dir(world.data_path().join("taken")).unwrap();
         assert_eq!(
-            world.plan(Some(&existing), "x").err(),
+            plan(&world.data, &name("taken")).err(),
             Some(InitError::Exists)
         );
-        symlink(&existing, world.base.join("link")).unwrap();
+        symlink("/nowhere", world.data_path().join("link")).unwrap();
         assert_eq!(
-            world.plan(Some(&world.base.join("link")), "x").err(),
+            plan(&world.data, &name("link")).err(),
             Some(InitError::Exists),
-            "a symlink at the target name exists too"
+            "a dangling symlink at the name exists too"
         );
-        for bad in ["/", "..", "x/"] {
-            let err = world.plan(Some(Path::new(bad)), "x").err();
-            assert!(
-                matches!(err, Some(InitError::BadTarget | InitError::Path(_))),
-                "{bad}"
-            );
-        }
-        let open = world.base.join("open");
-        fs::create_dir(&open).unwrap();
-        fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
-        let err = world.plan(Some(&open.join("v")), "x").err();
-        assert!(matches!(
-            err,
-            Some(InitError::Path(OpenVaultError::UnsafeParent { .. }))
-        ));
-        let inside = world.home.join(".config/crystal/v");
+        fs::write(world.data_path().join("file"), b"").unwrap();
         assert_eq!(
-            world.plan(Some(&inside), "x").err(),
-            Some(InitError::Path(OpenVaultError::InsideCrystalDir))
+            plan(&world.data, &name("file")).err(),
+            Some(InitError::Exists)
         );
-        let missing_parent = world.base.join("no/such/v");
-        assert!(matches!(
-            world.plan(Some(&missing_parent), "x").err(),
-            Some(InitError::Resolve(_))
-        ));
-        // ~/Vaults/x already there.
-        fs::create_dir_all(world.home.join("Vaults/x")).unwrap();
-        fs::set_permissions(world.home.join("Vaults"), fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(world.plan(None, "x").err(), Some(InitError::Exists));
-        assert!(world.plan(None, "y").is_ok());
+        assert!(plan(&world.data, &name("free")).is_ok());
+        assert!(!world.data_path().join("free").exists());
+    }
+
+    // A failure after the directory exists (here: the pin cannot be
+    // written) removes everything this run created, and the data
+    // directory and other vaults stay.
+    #[test]
+    fn late_failure_removes_what_was_created() {
+        let world = World::new("rollback");
+        let code = RecoveryCode::generate().unwrap();
+        world.create("other", &code).unwrap();
+        set_mode(&world.state_path(), 0o500);
+        let err = world.create("diary", &code).unwrap_err();
+        set_mode(&world.state_path(), 0o700);
+        assert!(
+            matches!(&err, InitError::RolledBack(e) if matches!(**e, InitError::Pin(_))),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .ends_with("the partly created vault was removed")
+        );
+        assert!(!world.data_path().join("diary").exists());
+        assert!(world.data_path().join("other/vault.age").exists());
+        assert!(!world.state_path().join("diary.pin").exists());
+    }
+
+    // A directory fsync failing for a vault file is an ordinary late
+    // failure: everything is removed.
+    #[test]
+    fn vault_file_not_synced_rolls_back() {
+        use crate::vault::atomic::{FailAt, Step};
+        let world = World::new("dirfsync_vault");
+        let code = RecoveryCode::generate().unwrap();
+        let err = {
+            let _armed = FailAt::arm_for(Step::DirFsync, "vault.age");
+            world.create("diary", &code).unwrap_err()
+        };
+        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
+        assert!(!world.data_path().join("diary").exists());
+        assert!(!world.state_path().join("diary.pin").exists());
     }
 
     // If undoing fails (here: a file the run did not make is in the new
@@ -650,31 +467,28 @@ mod tests {
     #[test]
     fn failed_cleanup_is_reported() {
         let world = World::new("cleanup_fails");
-        let plan = world.plan(None, "diary").unwrap();
+        let plan = plan(&world.data, &name("diary")).unwrap();
+        let code = RecoveryCode::generate().unwrap();
         let mut created = Created::default();
-        let backup = RecoveryCode::generate().unwrap();
-        let config_dir = world.home.join(".config/crystal");
-        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        set_mode(&world.state_path(), 0o500);
         let err = build(
             &plan,
             &name("diary"),
             &pass("pw"),
-            &backup,
-            &mut Config::new(),
-            world.home.as_os_str(),
-            &world.config,
+            &code,
+            &world.data,
             &world.state,
             &mut created,
         )
         .unwrap_err();
-        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            matches!(err, InitError::Config(ConfigError::Write(_))),
-            "{err:?}"
-        );
-        let vault = world.home.join("Vaults/diary");
+        set_mode(&world.state_path(), 0o700);
+        assert!(matches!(err, InitError::Pin(_)), "{err:?}");
+        let vault = world.data_path().join("diary");
         fs::write(vault.join("stray"), b"x").unwrap();
-        assert_eq!(remove_created(&plan, created), Err(()));
+        assert_eq!(
+            remove_created(&plan, &name("diary"), &world.data, &world.state, created),
+            Err(())
+        );
         assert!(vault.join("stray").exists());
         assert!(
             !vault.join("vault.age").exists(),
@@ -685,128 +499,13 @@ mod tests {
         assert!(shown.ends_with("remove it by hand"), "{shown}");
     }
 
-    // config.age was written but config.gen could not be: the vault is
-    // complete and registered, so it is kept, not rolled back.
     #[test]
-    fn config_gen_failure_keeps_the_registered_vault() {
-        let world = World::new("gen_fails");
-        let backup = RecoveryCode::generate().unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        let state_dir = world.home.join(".local/state/crystal");
-        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500)).unwrap();
-        let err = world.create(plan, "diary", &backup).unwrap_err();
-        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            matches!(err, InitError::Config(ConfigError::Generation(_))),
-            "{err:?}"
-        );
-        assert!(world.home.join("Vaults/diary/vault.age").exists());
-        let (cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
-            .unwrap()
-            .unwrap();
-        assert!(cfg.find(&name("diary")).is_some());
-    }
-
-    // The atomic writer fails after its rename (the commit point), at the
-    // directory fsync: config.age already names the vault, so the vault
-    // stays and still opens. Before the rename, the same write rolls back.
-    #[test]
-    fn config_written_but_not_synced_keeps_the_vault() {
-        use crate::vault::atomic::FailAt;
-        let world = World::new("dirfsync_config");
-        let backup = RecoveryCode::generate().unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        let err = {
-            let _armed = FailAt::arm_for(Step::DirFsync, config::CONFIG_FILE);
-            world.create(plan, "diary", &backup).unwrap_err()
-        };
-        assert!(
-            matches!(
-                err,
-                InitError::Config(ConfigError::Write(WriteError {
-                    step: Step::DirFsync,
-                    ..
-                }))
-            ),
-            "{err:?}"
-        );
-        let (cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
-            .unwrap()
-            .unwrap();
-        let entry = cfg.find(&name("diary")).unwrap();
-        let vault = VaultDir::open_checked(
-            entry.path.as_ref(),
-            world.home.as_os_str(),
-            &world.config,
-            &world.state,
-        )
-        .unwrap();
-        assert_eq!(
-            config::identify_vault(&vault, &pass("pw")).unwrap().0,
-            entry.vault_id
-        );
-
-        // The rename itself fails: nothing was committed, so it rolls back.
-        let world = World::new("rename_config");
-        let plan = world.plan(None, "diary").unwrap();
-        let err = {
-            let _armed = FailAt::arm_for(Step::Rename, config::CONFIG_FILE);
-            world.create(plan, "diary", &backup).unwrap_err()
-        };
-        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
-        assert!(!world.home.join("Vaults").exists());
-        assert!(!world.config_file_exists());
-    }
-
-    // A directory fsync failing for a vault file (before config.age is
-    // written) is an ordinary late failure: everything is removed.
-    #[test]
-    fn vault_file_not_synced_rolls_back() {
-        use crate::vault::atomic::FailAt;
-        let world = World::new("dirfsync_vault");
-        let backup = RecoveryCode::generate().unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        let err = {
-            let _armed = FailAt::arm_for(Step::DirFsync, "vault.age");
-            world.create(plan, "diary", &backup).unwrap_err()
-        };
-        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
-        assert!(!world.home.join("Vaults").exists());
-        assert!(!world.config_file_exists());
-    }
-
-    // A failure after the directory exists removes everything this run
-    // created, and nothing that existed before.
-    #[test]
-    fn late_failure_removes_what_was_created() {
-        let world = World::new("rollback");
-        let backup = RecoveryCode::generate().unwrap();
-        let config = world.home.join(".config/crystal");
-        let plan = world.plan(None, "diary").unwrap();
-        // config.age cannot be written: the last step fails.
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o500)).unwrap();
-        let err = world.create(plan, "diary", &backup).unwrap_err();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
-        assert!(
-            err.to_string()
-                .ends_with("the partly created vault was removed")
-        );
-        assert!(
-            !world.home.join("Vaults").exists(),
-            "~/Vaults was created by this run"
-        );
-
-        // With ~/Vaults already there, only the vault directory goes.
-        fs::create_dir(world.home.join("Vaults")).unwrap();
-        fs::set_permissions(world.home.join("Vaults"), fs::Permissions::from_mode(0o700)).unwrap();
-        let plan = world.plan(None, "diary").unwrap();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o500)).unwrap();
-        let err = world.create(plan, "diary", &backup).unwrap_err();
-        fs::set_permissions(&config, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
-        assert!(world.home.join("Vaults").exists());
-        assert_eq!(fs::read_dir(world.home.join("Vaults")).unwrap().count(), 0);
-        assert!(!config.join("config.age").exists());
+    fn errors_never_show_the_name() {
+        let world = World::new("errors");
+        let code = RecoveryCode::generate().unwrap();
+        world.create("diary", &code).unwrap();
+        let err = world.create("diary", &code).unwrap_err();
+        assert_eq!(err, InitError::Exists);
+        assert!(!err.to_string().contains("diary"));
     }
 }

@@ -141,6 +141,11 @@ pub const NEW_PROMPT: &str = "New passphrase";
 pub const RECOVERY_SHOWN: &str = "Press Enter once you have written it down.";
 
 pub const RECOVERY_CONFIRM: &str = "Type the recovery code to confirm: ";
+/// The confirmation prompt of `crystal rm` (src/rm.rs, CONFIRM_PROMPT).
+pub const RM_CONFIRM: &str = "Type the vault's name to confirm: ";
+/// The recovery code prompt of `recover` and `check-code`
+/// (src/recover.rs, CODE_PROMPT).
+pub const CODE_PROMPT: &str = "Recovery code (written down at crystal init): ";
 
 /// As the keys of a dialog step: type the last recovery code shown so far,
 /// then Enter.

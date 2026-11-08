@@ -6,14 +6,15 @@
 | --- | --- |
 | 0 Skeleton and policy | Done |
 | 1 Hardening bootstrap and terminal guard | Done |
-| 2 Crypto, vault format and config | Done (#3 to #15), then redesigned (decisions 0032 to 0036, step L1 below): fixed vault location, no config file |
-| 3 Shell and viewer | In progress: own screen grid, frame writer, layout, wrapping and widgets done (decisions 0030, 0031) |
+| 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
+| 3 Shell and viewer | In progress: own screen grid, frame writer, layout, wrapping and widgets done (decision 0031) |
 | 4 to 8 | Not started; Phase 7 dropped (decision 0036) |
 
-What runs today: `crystal init NAME` creates a vault, `crystal add` and
-`crystal remove` register and forget vaults, and `crystal NAME` performs startup
-steps 1 to 8: it unlocks the vault and shows how many notes it holds.
-Step L1 replaces `add` and `remove` with fixed locations and `crystal rm`.
+What runs today: `crystal init NAME` creates a vault in
+`~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
+with the recovery code, `crystal check-code NAME` checks the code,
+`crystal rm NAME` deletes a vault, and `crystal NAME` performs startup steps
+1 to 8: it unlocks the vault and shows how many notes it holds.
 
 ## Next steps (Phase 3)
 
@@ -22,8 +23,8 @@ starts.
 
 | Step | What | Why |
 | --- | --- | --- |
-| D1 | Decisions 0032 to 0036 and the book (docs only) | Fix the design before the code changes, so every step has a written target |
-| L1 | Fixed locations ([0032](../decisions/0032-fixed-locations.md)), with syscalls.md and the startup chapter's as-built notes updated: `crystal init NAME`, `crystal NAME`, `crystal recover NAME`, `crystal check-code NAME`, `crystal rm NAME`; remove `add`, `remove`, `--at`, DIR, `config.age` and the configured-path walk; `NAME.pin` and the counter in the state directory | Removes about 1,200 lines and the largest untrusted-path surface before anything new is built |
+| D1 (done) | Decisions 0032 to 0036 and the book (docs only) | Fix the design before the code changes, so every step has a written target |
+| L1 (done) | Fixed locations ([0032](../decisions/0032-fixed-locations.md)), with syscalls.md and the startup chapter's as-built notes updated: `crystal init NAME`, `crystal NAME`, `crystal recover NAME`, `crystal check-code NAME`, `crystal rm NAME`; remove `add`, `remove`, `--at`, DIR, `config.age` and the configured-path walk; `NAME.pin` and the counter in the state directory | Removes about 1,200 lines and the largest untrusted-path surface before anything new is built |
 | L2 | Vault format 2 ([0034](../decisions/0034-vault-format-2.md)): folders, name rules, tags and links in the text, reading format 1, the `VERSION` rule | The shell addresses notes by name; the format must be settled before notes can be created |
 | L3 | Restore acceptance at unlock ([0036](../decisions/0036-backups-external.md)) | Makes restores from restic work; small, and it touches the unlock code L1 just simplified |
 | L4 | Sanitizer, `SafeText` and the Markdown renderer, with a nesting limit and golden tests | `view` needs it; the main defence against hostile note content (A3) |

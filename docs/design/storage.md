@@ -35,12 +35,12 @@ Vaults live in one fixed place, `~/.local/share/crystal/NAME`, and are opened by
 
 **`crystal init NAME`** (`init.rs`, [decision 0022](../decisions/0022-init.md), [decision 0032](../decisions/0032-fixed-locations.md)) creates nothing until everything is known:
 
-1. The target `~/.local/share/crystal/NAME` must not exist; its parent (or, for a missing `~/.local/share/crystal`, `~/.local/share`) must pass the checks under [Vault directory](#vault-directory).
+1. `~/.local/share/crystal` is opened, or created (0700) if missing, with the checks under [Vault directory](#vault-directory); `NAME` must not exist in it, not even as a symlink.
 2. A new passphrase is asked for twice (at least 20 characters; [decision 0028](../decisions/0028-passphrase-minimum.md)).
 3. A recovery code is generated (27 random Crockford base32 symbols and a check symbol), shown once as 7 groups of 4, and must be typed back before anything is created.
-4. Created, in order: `~/.local/share/crystal` (0700) if missing, the vault directory (0700), `VERSION`, a new identity and random `vault_id`, `identity.age`, `identity.backup.age`, and an empty `vault.age` at generation 1 (each 0600, through the atomic writer). The finished directory must pass the full vault check; then `NAME.pin` and the rollback counter are written.
+4. Created, in order: the vault directory (0700), `VERSION`, a new identity and random `vault_id`, `identity.age`, `identity.backup.age`, and an empty `vault.age` at generation 1 (each 0600, through the atomic writer). The finished directory must pass the full vault check; then `NAME.pin` and the rollback counter are written.
 
-If a step in 4 fails, the files, the vault directory and a `~/.local/share/crystal` made by this run are removed again, and the error says so. A directory that existed before is never removed.
+If a step in 4 fails, the files, the vault directory and the pin are removed again, and the error says so. `~/.local/share/crystal` itself is created before the prompts, like the state directory, and stays; a directory that existed before is never removed.
 
 ## Vault contents
 

@@ -20,9 +20,9 @@ pub enum Payload<'a> {
 }
 
 /// The only plaintext Crystal ever writes: the fixed public formats of
-/// `VERSION` (format version) and the `*.gen` generation counters. The
-/// field is private; the two encoders are added here with their formats
-/// (#10, #11), and nothing else may construct one.
+/// `VERSION` (format version), the `*.gen` generation counters and the
+/// `*.pin` vault pins. The field is private; the three encoders below are
+/// the only way to construct one.
 pub struct PublicBytes(Vec<u8>);
 
 impl PublicBytes {
@@ -40,6 +40,12 @@ impl PublicBytes {
     /// ASCII decimal and a newline, for example `42\n`. Nothing else.
     pub fn generation(seen: u64) -> Self {
         Self(format!("{seen}\n").into_bytes())
+    }
+
+    /// A `NAME.pin` file: the pinned vault id in 64 lowercase hex digits
+    /// and a newline. Nothing else.
+    pub fn pin(vault_id: &crate::model::VaultId) -> Self {
+        Self(format!("{}\n", vault_id.hex()).into_bytes())
     }
 
     /// Test builds only, until the real encoders exist.
@@ -211,7 +217,7 @@ fn temp_name(name: &FileName) -> Result<CString, Errno> {
 
 /// Whether `entry` is a temp file of `name`: exactly `.<name>.tmp-` and 16
 /// lowercase hex digits. Anything else in the directory is left alone.
-fn is_temp_of(entry: &[u8], name: &FileName) -> bool {
+pub(crate) fn is_temp_of(entry: &[u8], name: &FileName) -> bool {
     let Some(rest) = entry
         .strip_prefix(b".")
         .and_then(|r| r.strip_prefix(name.as_str().as_bytes()))

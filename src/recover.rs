@@ -1,14 +1,19 @@
-//! `crystal recover NAME DIR` (docs/decisions/0029-recovery-code.md):
-//! open a vault with its recovery code when the passphrase is forgotten
-//! (or `identity.age` is lost), then seal the vault key again with this
-//! device's passphrase and register the vault.
+//! `crystal recover NAME` and `crystal check-code NAME`
+//! (docs/decisions/0029-recovery-code.md, 0032): the recovery code opens
+//! `identity.backup.age`.
 //!
-//! The prompts are in `main::recover_vault`; this module does the rest, so
-//! the unit tests can drive it without a terminal.
+//! - `recover`: when the passphrase is forgotten (or `identity.age` is
+//!   lost), the vault key from the backup is sealed again with a new
+//!   passphrase into `identity.age`. Nothing else changes.
+//! - `check-code`: checks, without writing anything, that the code on
+//!   paper opens the backup and that it holds the same key as
+//!   `identity.age`.
+//!
+//! The prompts are in `main`; this module does the rest, so the unit tests
+//! can drive it without a terminal.
 
 use std::fmt;
 
-use crate::config::{self, Config, ConfigError, VaultEntry};
 use crate::crypto::{self, CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
 use crate::recovery::{CodeError, RecoveryCode};
@@ -17,40 +22,34 @@ use crate::vault::format::{
     self, IDENTITY_BACKUP_FILE, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError,
 };
 use crate::vault::generation::{self, Counter, GenError};
+use crate::vault::pin::{self, PinError};
 use crate::vault::public_file::{ReadError, read_bounded};
 use crate::vault::vault_dir::VaultDir;
-use crate::vault::{ConfigDir, StateDir, VaultName};
+use crate::vault::{StateDir, VaultName};
 
 /// The prompt for the recovery code. Shown as typed, like at `crystal init`.
 pub const CODE_PROMPT: &str = "Recovery code (written down at crystal init): ";
-/// On a device with a config: its passphrase, or Enter if forgotten too.
-pub const DEVICE_PROMPT: &str = "Passphrase of this device's Crystal config \
-                                 (press Enter if you forgot it too): ";
-/// Asked before a forgotten config is replaced.
-pub const REPLACE_PROMPT: &str = "This device's config.age opens only with the forgotten \
-     passphrase. It will be replaced by a new config that holds this vault; vaults \
-     registered with the old passphrase must be recovered or added again.\r\n\
-     Type replace to continue: ";
-/// What must be typed at `REPLACE_PROMPT`.
-pub const REPLACE_WORD: &str = "replace";
 
-/// Why `crystal recover` stopped. Fixed text; never a path, name, code or key.
+/// Why `crystal recover` or `check-code` stopped. Fixed text; never a
+/// path, name, code or key.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecoverError {
     Code(CodeError),
     /// The code is well formed but does not open `identity.backup.age`.
     WrongCode,
     Read(ReadError),
-    /// `identity.backup.age` or `vault.age` is missing.
+    /// `identity.age`, `identity.backup.age` or `vault.age` is missing.
     MissingFile(&'static str),
     TooLarge(&'static str),
     Identity(CryptoError),
+    /// `check-code`: the passphrase does not open `identity.age`.
+    WrongPassphrase,
+    /// `check-code`: the backup holds another key than `identity.age`.
+    KeysDiffer,
     Vault(VaultError),
-    Config(ConfigError),
+    Pin(PinError),
     Generation(GenError),
     Write(WriteError),
-    /// The forgotten config was not replaced; nothing changed.
-    NotReplaced,
 }
 
 impl fmt::Display for RecoverError {
@@ -66,11 +65,20 @@ impl fmt::Display for RecoverError {
             Self::MissingFile(file) => write!(f, "the vault has no {file}"),
             Self::TooLarge(file) => write!(f, "the vault's {file} is too large"),
             Self::Identity(e) => write!(f, "identity.backup.age: {e}"),
+            Self::WrongPassphrase => write!(
+                f,
+                "the recovery code is right, but the vault's identity.age does not open with \
+                 this passphrase"
+            ),
+            Self::KeysDiffer => write!(
+                f,
+                "identity.backup.age and identity.age hold different keys: the recovery code \
+                 opens a key that does not open this vault"
+            ),
             Self::Vault(e) => write!(f, "vault.age: {e}"),
-            Self::Config(e) => e.fmt(f),
+            Self::Pin(e) => e.fmt(f),
             Self::Generation(e) => e.fmt(f),
             Self::Write(e) => write!(f, "cannot write identity.age: {e}"),
-            Self::NotReplaced => write!(f, "not replaced; nothing was changed"),
         }
     }
 }
@@ -85,26 +93,32 @@ pub struct Opened {
     generation: u64,
 }
 
+/// Reads one vault file, refusing a missing or oversized one.
+fn read(vault_dir: &VaultDir, file: &'static str, max: usize) -> Result<Vec<u8>, RecoverError> {
+    // read_bounded reads one byte past `max` to show the file is longer.
+    let bytes = read_bounded(vault_dir.fd(), file, max)
+        .map_err(RecoverError::Read)?
+        .ok_or(RecoverError::MissingFile(file))?;
+    if bytes.len() > max {
+        return Err(RecoverError::TooLarge(file));
+    }
+    Ok(bytes)
+}
+
 /// Opens `identity.backup.age` with `code`, then `vault.age` with the key
 /// inside, to learn the vault's id and generation. Nothing is written.
 pub fn open_backup(vault_dir: &VaultDir, code: &RecoveryCode) -> Result<Opened, RecoverError> {
-    let read = |file: &'static str, max: usize| {
-        let bytes = read_bounded(vault_dir.fd(), file, max)
-            .map_err(RecoverError::Read)?
-            .ok_or(RecoverError::MissingFile(file))?;
-        if bytes.len() > max {
-            return Err(RecoverError::TooLarge(file));
-        }
-        Ok(bytes)
-    };
-    let backup = read(IDENTITY_BACKUP_FILE, MAX_IDENTITY_FILE)?;
+    let backup = read(vault_dir, IDENTITY_BACKUP_FILE, MAX_IDENTITY_FILE)?;
     let identity =
         VaultIdentity::open_with_passphrase(&backup, &code.passphrase()).map_err(|e| match e {
             CryptoError::WrongPassphrase => RecoverError::WrongCode,
             e => RecoverError::Identity(e),
         })?;
-    let contents = format::open(&read(VAULT_FILE, crypto::MAX_CIPHERTEXT)?, &identity)
-        .map_err(RecoverError::Vault)?;
+    let contents = format::open(
+        &read(vault_dir, VAULT_FILE, crypto::MAX_CIPHERTEXT)?,
+        &identity,
+    )
+    .map_err(RecoverError::Vault)?;
     Ok(Opened {
         identity,
         vault_id: contents.vault_id,
@@ -112,58 +126,49 @@ pub fn open_backup(vault_dir: &VaultDir, code: &RecoveryCode) -> Result<Opened, 
     })
 }
 
-/// Registers the vault in `cfg` as `name` unless it is already there
-/// (same vault_id), checks and records its rollback counter, writes a new
-/// `identity.age` sealed with `pass`, then stores the config if it
-/// changed. `identity.age` comes first: if storing the config fails, the
-/// vault already opens with `pass`, and `crystal add` registers it.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one call site, each input distinct"
-)]
-pub fn finish(
-    opened: Opened,
-    name: &VaultName,
-    path: String,
-    pass: &Passphrase,
-    mut cfg: Config,
-    vault_dir: &VaultDir,
-    config_dir: &ConfigDir,
-    state: &StateDir,
-) -> Result<(), RecoverError> {
-    let registered = cfg.vaults.iter().any(|v| v.vault_id == opened.vault_id);
-    if !registered {
-        cfg.add(VaultEntry {
-            name: VaultName::new(name.as_str().into()).ok_or(ConfigError::BadName)?,
-            path,
-            vault_id: opened.vault_id,
-            lock_after: None,
-        })?;
-    }
-    // A vault older than this device has seen is refused, as at unlock.
+/// `recover`, before the new passphrase is asked for: the vault must be
+/// the one pinned to `name` (or is pinned now), and not older than the
+/// newest version seen here.
+pub fn check_seen(opened: &Opened, name: &VaultName, state: &StateDir) -> Result<(), RecoverError> {
+    pin::check(state.fd(), name, &opened.vault_id).map_err(RecoverError::Pin)?;
     generation::accept_on_open(
         state.fd(),
         Counter::Vault(opened.vault_id),
         opened.generation,
     )
     .map_err(RecoverError::Generation)?;
+    Ok(())
+}
+
+/// `recover`: writes a new `identity.age`, the vault key sealed with
+/// `pass`. The only file that changes.
+pub fn finish(opened: Opened, pass: &Passphrase, vault_dir: &VaultDir) -> Result<(), RecoverError> {
     let sealed = opened
         .identity
         .seal_with_passphrase(pass)
         .map_err(RecoverError::Identity)?;
     // A fixed, valid name: FileName::new cannot refuse it.
     let file = FileName::new(IDENTITY_FILE).ok_or(RecoverError::MissingFile(IDENTITY_FILE))?;
-    atomic_write(vault_dir.fd(), &file, Payload::Ciphertext(&sealed))
-        .map_err(RecoverError::Write)?;
-    if !registered {
-        config::store(&mut cfg, config_dir, state, pass)?;
-    }
-    Ok(())
+    atomic_write(vault_dir.fd(), &file, Payload::Ciphertext(&sealed)).map_err(RecoverError::Write)
 }
 
-impl From<ConfigError> for RecoverError {
-    fn from(e: ConfigError) -> Self {
-        Self::Config(e)
+/// `check-code`: `pass` must open `identity.age`, and it must hold the
+/// same key as the backup. Writes nothing.
+pub fn check_code(
+    opened: &Opened,
+    pass: &Passphrase,
+    vault_dir: &VaultDir,
+) -> Result<(), RecoverError> {
+    let daily = read(vault_dir, IDENTITY_FILE, MAX_IDENTITY_FILE)?;
+    let identity = VaultIdentity::open_with_passphrase(&daily, pass).map_err(|e| match e {
+        CryptoError::WrongPassphrase => RecoverError::WrongPassphrase,
+        e => RecoverError::Identity(e),
+    })?;
+    // Public keys: comparing them reveals nothing secret.
+    if identity.recipient().to_string() == opened.identity.recipient().to_string() {
+        Ok(())
+    } else {
+        Err(RecoverError::KeysDiffer)
     }
 }
 
@@ -171,7 +176,8 @@ impl From<ConfigError> for RecoverError {
 mod tests {
     use super::*;
     use crate::init;
-    use crate::unlock::{self, UnlockError};
+    use crate::unlock;
+    use crate::vault::DataDir;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -185,255 +191,199 @@ mod tests {
         VaultName::new(s.into()).unwrap()
     }
 
-    /// A HOME with Crystal's directories; vaults are made by init's own
-    /// code with passphrase "pw", each with its recovery code.
     struct World {
         home: PathBuf,
-        config: ConfigDir,
+        data: DataDir,
         state: StateDir,
     }
 
     impl World {
         fn new(test: &str) -> Self {
-            let base = Path::new(env!("CARGO_MANIFEST_DIR"))
+            let home = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("target/unit-recover")
                 .join(test);
-            let _ = fs::remove_dir_all(&base);
-            let home = base.join("home");
+            let _ = fs::remove_dir_all(&home);
             fs::create_dir_all(&home).unwrap();
-            fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
             fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-            let config = ConfigDir::create(Some(home.as_os_str())).unwrap();
+            let data = DataDir::create(Some(home.as_os_str())).unwrap();
             let state = StateDir::open_or_create(Some(home.as_os_str())).unwrap();
-            Self {
-                home,
-                config,
-                state,
-            }
+            Self { home, data, state }
         }
 
-        fn init(&self, n: &str) -> (PathBuf, RecoveryCode) {
-            let cfg = match config::load(&self.config, &self.state, &pass("pw")).unwrap() {
-                Some((cfg, _)) => cfg,
-                None => config::fresh(&self.state).unwrap(),
-            };
-            let plan = init::plan(
-                self.home.as_os_str(),
-                None,
-                &name(n),
-                &self.config,
-                &self.state,
-            )
-            .unwrap();
+        /// A vault `n` with passphrase "pw"; returns its recovery code.
+        fn init(&self, n: &str) -> RecoveryCode {
             let code = RecoveryCode::generate().unwrap();
-            init::create(
-                plan,
-                &name(n),
-                &pass("pw"),
-                &code,
-                cfg,
-                self.home.as_os_str(),
-                &self.config,
-                &self.state,
-            )
-            .unwrap();
-            (self.home.join("Vaults").join(n), code)
+            let plan = init::plan(&self.data, &name(n)).unwrap();
+            init::create(plan, &name(n), &pass("pw"), &code, &self.data, &self.state).unwrap();
+            code
         }
 
-        fn vault_dir(&self, path: &Path) -> VaultDir {
-            VaultDir::open_checked(
-                path.as_os_str(),
-                self.home.as_os_str(),
-                &self.config,
-                &self.state,
-            )
-            .unwrap()
+        fn vault(&self, n: &str) -> PathBuf {
+            self.home.join(".local/share/crystal").join(n)
         }
 
-        fn config_file(&self) -> PathBuf {
-            self.home.join(".config/crystal/config.age")
+        fn dir(&self, n: &str) -> VaultDir {
+            VaultDir::open(&self.data, &name(n)).unwrap()
         }
 
-        /// The passphrase was forgotten: config.age is unusable, so the
-        /// device starts a fresh config (config.gen stays).
-        fn forget(&self) {
-            fs::remove_file(self.config_file()).unwrap();
+        fn unlocks(&self, n: &str, pw: &str) -> bool {
+            let dir = unlock::open_vault_dir(&self.data, &name(n)).unwrap();
+            unlock::unlock(dir, &name(n), pass(pw), &self.state).is_ok()
         }
 
-        fn recover(
-            &self,
-            n: &str,
-            path: &Path,
-            code: &RecoveryCode,
-            new: &str,
-            cfg: Config,
-        ) -> Result<(), RecoverError> {
-            let dir = self.vault_dir(path);
+        /// The whole `recover` flow with a new passphrase.
+        fn recover(&self, n: &str, code: &RecoveryCode, new: &str) -> Result<(), RecoverError> {
+            let dir = self.dir(n);
             let opened = open_backup(&dir, code)?;
-            finish(
-                opened,
-                &name(n),
-                path.to_str().unwrap().to_owned(),
-                &pass(new),
-                cfg,
-                &dir,
-                &self.config,
-                &self.state,
-            )
-        }
-
-        fn unlock(&self, n: &str, pw: &str) -> Result<(), UnlockError> {
-            unlock::unlock(
-                &name(n),
-                pass(pw),
-                self.home.as_os_str(),
-                &self.config,
-                &self.state,
-            )
-            .map(|_| ())
+            check_seen(&opened, &name(n), &self.state)?;
+            finish(opened, &pass(new), &dir)
         }
     }
 
-    const NEW: &str = "a-new-passphrase-after-recovery";
-
-    // The whole point: passphrase forgotten, config gone with it; the code
-    // opens the vault, the new passphrase unlocks it, the old one is dead.
     #[test]
     fn recovers_a_forgotten_passphrase() {
         let world = World::new("forgotten");
-        let (vault, code) = world.init("diary");
-        world.forget();
-        let fresh = config::fresh(&world.state).unwrap();
-        world.recover("diary", &vault, &code, NEW, fresh).unwrap();
-        world.unlock("diary", NEW).unwrap();
-        assert!(world.unlock("diary", "pw").is_err());
-        // The recovery code still works afterwards: it was not changed.
-        let again = open_backup(&world.vault_dir(&vault), &code);
-        assert!(again.is_ok());
+        let code = world.init("diary");
+        let before = fs::read(world.vault("diary").join(VAULT_FILE)).unwrap();
+        world.recover("diary", &code, "new-pw").unwrap();
+        assert!(world.unlocks("diary", "new-pw"));
+        assert!(!world.unlocks("diary", "pw"));
+        // Only identity.age changed; the code still works.
+        assert_eq!(
+            fs::read(world.vault("diary").join(VAULT_FILE)).unwrap(),
+            before
+        );
+        world.recover("diary", &code, "third-pw").unwrap();
+        assert!(world.unlocks("diary", "third-pw"));
     }
 
-    // identity.age lost, passphrase known: the config opens, the vault is
-    // already registered, so config.age is not rewritten.
     #[test]
-    fn restores_a_lost_identity_with_the_known_passphrase() {
+    fn restores_a_lost_identity() {
         let world = World::new("lost_identity");
-        let (vault, code) = world.init("diary");
-        fs::remove_file(vault.join(IDENTITY_FILE)).unwrap();
-        let config_before = fs::read(world.config_file()).unwrap();
-        let (cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
-            .unwrap()
-            .unwrap();
-        world.recover("diary", &vault, &code, "pw", cfg).unwrap();
-        assert_eq!(fs::read(world.config_file()).unwrap(), config_before);
-        world.unlock("diary", "pw").unwrap();
+        let code = world.init("diary");
+        fs::remove_file(world.vault("diary").join(IDENTITY_FILE)).unwrap();
+        world.recover("diary", &code, "pw").unwrap();
+        assert!(world.unlocks("diary", "pw"));
     }
 
     #[test]
     fn refuses_another_vaults_code() {
-        let world = World::new("wrong_code");
-        let (diary, _) = world.init("diary");
-        let (_, other_code) = world.init("other");
-        let identity = fs::read(diary.join(IDENTITY_FILE)).unwrap();
-        let fresh = config::fresh(&world.state).unwrap();
-        let err = world
-            .recover("diary", &diary, &other_code, NEW, fresh)
-            .unwrap_err();
-        assert_eq!(err, RecoverError::WrongCode);
-        assert_eq!(fs::read(diary.join(IDENTITY_FILE)).unwrap(), identity);
+        let world = World::new("other_code");
+        world.init("diary");
+        let other = world.init("other");
+        assert_eq!(
+            world.recover("diary", &other, "new-pw").err(),
+            Some(RecoverError::WrongCode)
+        );
+        assert!(world.unlocks("diary", "pw"));
     }
 
-    // identity.backup.age swapped in from another vault, with its code:
-    // it opens, but vault.age is not encrypted to that key.
+    // identity.backup.age and vault.age swapped in from another vault: the
+    // code opens them, but the pin refuses the vault, and nothing is
+    // written.
     #[test]
-    fn refuses_a_backup_of_another_vault() {
-        let world = World::new("swapped_backup");
-        let (diary, _) = world.init("diary");
-        let (other, other_code) = world.init("other");
-        fs::copy(
-            other.join(IDENTITY_BACKUP_FILE),
-            diary.join(IDENTITY_BACKUP_FILE),
-        )
-        .unwrap();
-        let err = open_backup(&world.vault_dir(&diary), &other_code).err();
-        assert!(matches!(err, Some(RecoverError::Vault(_))), "{err:?}");
+    fn refuses_a_swapped_vault_and_writes_nothing() {
+        let world = World::new("swapped");
+        world.init("diary");
+        let other = world.init("other");
+        for file in [IDENTITY_BACKUP_FILE, VAULT_FILE] {
+            fs::copy(
+                world.vault("other").join(file),
+                world.vault("diary").join(file),
+            )
+            .unwrap();
+        }
+        let identity = fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap();
+        assert_eq!(
+            world.recover("diary", &other, "new-pw").err(),
+            Some(RecoverError::Pin(PinError::Mismatch))
+        );
+        assert_eq!(
+            fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap(),
+            identity
+        );
+    }
+
+    #[test]
+    fn refuses_a_rolled_back_vault_and_writes_nothing() {
+        let world = World::new("rolled_back");
+        let code = world.init("diary");
+        let id = pin::load(world.state.fd(), &name("diary"))
+            .unwrap()
+            .unwrap();
+        generation::store(world.state.fd(), Counter::Vault(id), 9).unwrap();
+        let identity = fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap();
+        assert!(matches!(
+            world.recover("diary", &code, "new-pw"),
+            Err(RecoverError::Generation(GenError::Rollback { .. }))
+        ));
+        assert_eq!(
+            fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap(),
+            identity
+        );
     }
 
     #[test]
     fn refuses_missing_or_oversized_backup() {
         let world = World::new("backup_files");
-        let (vault, code) = world.init("diary");
-        let dir = world.vault_dir(&vault);
-        fs::write(
-            vault.join(IDENTITY_BACKUP_FILE),
-            vec![b'x'; MAX_IDENTITY_FILE + 1],
-        )
-        .unwrap();
+        let code = world.init("diary");
+        let backup = world.vault("diary").join(IDENTITY_BACKUP_FILE);
+        fs::write(&backup, vec![b'x'; MAX_IDENTITY_FILE + 1]).unwrap();
         assert_eq!(
-            open_backup(&dir, &code).err(),
+            open_backup(&world.dir("diary"), &code).err(),
             Some(RecoverError::TooLarge(IDENTITY_BACKUP_FILE))
         );
-        fs::remove_file(vault.join(IDENTITY_BACKUP_FILE)).unwrap();
+        fs::remove_file(&backup).unwrap();
         assert_eq!(
-            open_backup(&dir, &code).err(),
+            open_backup(&world.dir("diary"), &code).err(),
             Some(RecoverError::MissingFile(IDENTITY_BACKUP_FILE))
         );
     }
 
-    // A rolled-back vault is refused before anything is written.
     #[test]
-    fn refuses_a_rolled_back_vault_and_writes_nothing() {
-        let world = World::new("rollback");
-        let (vault, code) = world.init("diary");
-        let id = world.vault_dir(&vault);
-        let opened = open_backup(&id, &code).unwrap();
-        generation::store(world.state.fd(), Counter::Vault(opened.vault_id), 9).unwrap();
-        world.forget();
-        let identity = fs::read(vault.join(IDENTITY_FILE)).unwrap();
-        let fresh = config::fresh(&world.state).unwrap();
-        let err = world
-            .recover("diary", &vault, &code, NEW, fresh)
-            .unwrap_err();
-        assert!(
-            matches!(err, RecoverError::Generation(GenError::Rollback { .. })),
-            "{err:?}"
+    fn check_code_finds_each_problem() {
+        let world = World::new("check_code");
+        let code = world.init("diary");
+        let other = world.init("other");
+        let dir = world.dir("diary");
+        let opened = open_backup(&dir, &code).unwrap();
+        assert_eq!(check_code(&opened, &pass("pw"), &dir), Ok(()));
+        assert_eq!(
+            check_code(&opened, &pass("not-pw"), &dir),
+            Err(RecoverError::WrongPassphrase)
         );
-        assert_eq!(fs::read(vault.join(IDENTITY_FILE)).unwrap(), identity);
-        assert!(!world.config_file().exists());
-    }
-
-    // NAME taken by another vault in the config that opens: refused before
-    // anything is written.
-    #[test]
-    fn refuses_a_taken_name_and_writes_nothing() {
-        let world = World::new("taken");
-        let (diary, code) = world.init("diary");
-        world.init("other");
-        let (mut cfg, _) = config::load(&world.config, &world.state, &pass("pw"))
-            .unwrap()
-            .unwrap();
-        cfg.remove(&name("diary")).unwrap();
-        let identity = fs::read(diary.join(IDENTITY_FILE)).unwrap();
-        let err = world
-            .recover("other", &diary, &code, "pw", cfg)
-            .unwrap_err();
-        assert_eq!(err, RecoverError::Config(ConfigError::NameTaken));
-        assert_eq!(fs::read(diary.join(IDENTITY_FILE)).unwrap(), identity);
+        assert_eq!(
+            open_backup(&dir, &other).err(),
+            Some(RecoverError::WrongCode)
+        );
+        // identity.age of another vault under the same passphrase.
+        fs::copy(
+            world.vault("other").join(IDENTITY_FILE),
+            world.vault("diary").join(IDENTITY_FILE),
+        )
+        .unwrap();
+        assert_eq!(
+            check_code(&opened, &pass("pw"), &dir),
+            Err(RecoverError::KeysDiffer)
+        );
     }
 
     #[test]
     fn errors_never_show_paths_names_or_codes() {
         let code = RecoveryCode::generate().unwrap();
         let grouped = code.grouped();
-        for err in [
+        let errors = [
             RecoverError::WrongCode,
-            RecoverError::NotReplaced,
             RecoverError::MissingFile(IDENTITY_BACKUP_FILE),
-            RecoverError::TooLarge(IDENTITY_BACKUP_FILE),
-            RecoverError::Code(CodeError::Mistyped),
-        ] {
-            let text = err.to_string();
-            assert!(!text.contains('/') && !text.contains("diary"), "{text}");
-            assert!(!text.contains(grouped.as_str()), "{text}");
+            RecoverError::TooLarge(VAULT_FILE),
+            RecoverError::WrongPassphrase,
+            RecoverError::KeysDiffer,
+            RecoverError::Pin(PinError::Mismatch),
+        ];
+        for e in errors {
+            let shown = e.to_string();
+            assert!(!shown.contains(grouped.as_str()), "{shown}");
+            assert!(!shown.contains("diary"), "{shown}");
         }
     }
 }

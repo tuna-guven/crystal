@@ -70,10 +70,6 @@ the command: `crystal diary 5>&-`. List what is open with
 
 ## Vaults
 
-> **Being changed (step L1, [decision 0032](../decisions/0032-fixed-locations.md)).**
-> This section describes the design. Until L1 is built, Crystal still has
-> `crystal add`, `crystal remove`, `init --at DIR` and `~/.config/crystal/config.age`.
-
 Vaults are opened by name: `crystal diary`. Names are 1 to 64 characters
 from `A-Z a-z 0-9 - _`, starting with a letter or digit. Every vault lives
 in `~/.local/share/crystal/NAME`; there is no option to put it elsewhere

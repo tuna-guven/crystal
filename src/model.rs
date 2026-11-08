@@ -144,6 +144,12 @@ impl VaultId {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// 64 lowercase hex digits: the name of its `.gen` counter and the
+    /// content of a `.pin` file. A vault id is not secret.
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// Shows only the first 4 bytes in hex, enough to tell two vaults apart in

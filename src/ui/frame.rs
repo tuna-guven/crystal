@@ -1,4 +1,4 @@
-//! Crystal's own terminal backend (decisions 0030, 0031): turns the
+//! Crystal's own terminal backend (decision 0031): turns the
 //! difference between two grids into the bytes that update the screen.
 //!
 //! - Only cells that changed are written (`Grid::diff`).

@@ -466,25 +466,19 @@ enum Feed {
 
 /// The typed passphrase, in a buffer of fixed capacity that is wiped on
 /// drop. Deleted bytes are zeroed at once, not just cut off, so the spare
-/// capacity never holds old input either. The flag: whether Enter on an
-/// empty line ends it (`read_passphrase_or_empty`).
-struct LineEditor(Zeroizing<Vec<u8>>, bool);
+/// capacity never holds old input either.
+struct LineEditor(Zeroizing<Vec<u8>>);
 
 impl LineEditor {
     fn new() -> Self {
-        Self(Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE)), false)
-    }
-
-    fn allowing_empty() -> Self {
-        Self(Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE)), true)
+        Self(Zeroizing::new(Vec::with_capacity(MAX_PASSPHRASE)))
     }
 
     fn feed(&mut self, byte: u8) -> Feed {
         match byte {
             // Raw mode turns off CR-to-NL, so Enter arrives as CR. An
-            // empty line is ignored rather than refused, unless it means
-            // something (`allowing_empty`).
-            b'\r' | b'\n' if self.0.is_empty() && !self.1 => Feed::More,
+            // empty line is ignored rather than refused.
+            b'\r' | b'\n' if self.0.is_empty() => Feed::More,
             b'\r' | b'\n' => Feed::Enter,
             // One whole UTF-8 character: continuation bytes (10xxxxxx),
             // then the byte that starts it.
@@ -524,16 +518,6 @@ impl LineEditor {
     fn finish(self) -> Result<Passphrase, PromptError> {
         Passphrase::new(self.0).ok_or(PromptError::NotText)
     }
-
-    /// `None` for an empty line (Enter alone).
-    fn finish_or_empty(self) -> Result<Option<Passphrase>, PromptError> {
-        if self.0.is_empty() {
-            return Ok(None);
-        }
-        Passphrase::new(self.0)
-            .ok_or(PromptError::NotText)
-            .map(Some)
-    }
 }
 
 impl TerminalGuard {
@@ -552,20 +536,6 @@ impl TerminalGuard {
         let result = self.read_line(signals);
         self.show(b"")?;
         result
-    }
-
-    /// As `read_passphrase`, but Enter alone gives `None` (`crystal
-    /// recover`: "press Enter if you forgot it").
-    pub fn read_passphrase_or_empty(
-        &mut self,
-        signals: &Signals,
-        prompt: &'static str,
-    ) -> Result<Option<Passphrase>, PromptError> {
-        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
-        self.show(prompt.as_bytes())?;
-        let result = self.read_line_raw(signals, LineEditor::allowing_empty());
-        self.show(b"")?;
-        result?.finish_or_empty()
     }
 
     /// For `crystal init`: asks twice and accepts only matching entries, compared
@@ -872,19 +842,13 @@ mod tests {
         );
     }
 
-    // An empty Enter is ignored at a passphrase prompt, but ends the line
-    // where it means "I forgot it" (crystal recover).
+    // An empty Enter is ignored at a passphrase prompt.
     #[test]
-    fn empty_enter_only_where_allowed() {
+    fn empty_enter_is_ignored() {
         let mut line = LineEditor::new();
         assert_eq!(line.feed(b'\r'), Feed::More);
-        let mut line = LineEditor::allowing_empty();
-        assert_eq!(line.feed(b'\r'), Feed::Enter);
-        assert!(line.finish_or_empty().unwrap().is_none());
-        let mut line = LineEditor::allowing_empty();
         line.feed(b'x');
         assert_eq!(line.feed(b'\r'), Feed::Enter);
-        assert!(line.finish_or_empty().unwrap().is_some());
     }
 
     // Acceptance: the buffer never reallocates. The 1025th byte is

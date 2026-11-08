@@ -63,8 +63,7 @@ const TEST_SCRYPT_LOG_N: u8 = 10;
 /// needs 1 TiB); `policy_for` caps decryption far below it.
 const MAX_SCRYPT_LOG_N: u8 = 30;
 
-/// scrypt work factors for this run (docs/decisions/0025-scrypt-budget.md,
-/// docs/decisions/0027-scrypt-fixed.md).
+/// scrypt work factors for this run (docs/decisions/0027-scrypt-fixed.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScryptPolicy {
     /// log2 N for new passphrase files.

@@ -1,30 +1,34 @@
 # 0026 Locked memory floor of 512 MiB
 
-- **Date:** 2026-11-07 (Phase 2 review)
-- **Status:** Accepted; supersedes [0008](0008-memlock-floor.md)
+- **Date:** 2026-11-06, raised from 256 MiB on 2026-11-07 (Phase 2 review)
+- **Status:** Accepted
 
 ## Context
 
-[0008](0008-memlock-floor.md) set the `RLIMIT_MEMLOCK` floor at 256 MiB.
-Since [0025](0025-scrypt-budget.md), scrypt may use at most half of the
-limit, so at that floor passphrase files got log N 17 (128 MiB): half the
-cost of age's one-second default on a fast machine (log N 18, 256 MiB).
+`mlockall` keeps plaintext out of swap and hibernation images. Every
+allocation then counts against `RLIMIT_MEMLOCK`; if the budget runs out
+mid-session, an allocation fails and Rust aborts, skipping zeroization and
+the save. scrypt needs 2^(log N + 10) bytes of that budget while it runs.
 
 `identity.age` is the vault's secret key, encrypted to the passphrase. It
 sits in the vault directory and goes wherever the vault is synced or
 backed up, so its scrypt cost is what protects every note against an
-attacker who never touches the device. `config.age` uses the same
-passphrase, so it adds nothing beyond that. The floor also decides what
-every device can open: a file must fit in half the limit of the device
-that decrypts it.
+attacker who never touches the device. The floor also decides what every
+device can open: a passphrase file must fit in half the limit of the
+device that decrypts it ([0027](0027-scrypt-fixed.md)).
+
+The first floor, 256 MiB, gave log N 17 (128 MiB) at most: half the cost
+of age's one-second default on a fast machine (log N 18, 256 MiB).
 
 ## Decision
 
-Refuse to start if the hard limit is below 512 MiB
-(`harden::MEMLOCK_FLOOR`). Everything else in 0008 is unchanged: raise
-the soft limit to the hard limit, `mlockall(MCL_CURRENT | MCL_FUTURE |
-MCL_ONFAULT)`, no override. Half the floor, 256 MiB, holds log N 18, so
-any device that starts Crystal can open a passphrase file at log N 18.
+Raise the soft `RLIMIT_MEMLOCK` to the hard limit, refuse to start if the
+hard limit is below 512 MiB (`harden::MEMLOCK_FLOOR`), then
+`mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)`. There is no override.
+Half the floor, 256 MiB, holds log N 18, so any device that starts Crystal
+can open a passphrase file at log N 18. The largest plaintext Crystal
+encrypts is 32 MiB, well inside the rest. See
+[Setup, Memory locking](../guide/setup.md#memory-locking-required).
 
 The floor is a fixed number, not derived from the machine's RAM, its
 limit or its speed: it is a promise that holds on every device, and a
@@ -32,7 +36,9 @@ synced vault must open on all of them.
 
 ## Alternatives
 
-- **Keep 256 MiB:** log N 17 at the floor; half the guessing cost.
+- **Lock only secret buffers:** misses copies made by libraries.
+- **Run unlocked with a warning:** plaintext can reach swap.
+- **256 MiB:** log N 17 at the floor; half the guessing cost.
 - **Adaptive floor (RAM, limit or timing):** a device could then start
   with less than another device's files need, and the guarantee that
   every device opens every vault is lost. RAM never limits Crystal; the
@@ -46,8 +52,8 @@ synced vault must open on all of them.
 
 ## Consequences
 
-Users who set the limit for 0008 (262144 KiB) must raise it to
-524288 KiB once ([Setup](../guide/setup.md#memory-locking-required));
-until then Crystal refuses to start with a message saying so. CI pins the
-limit at exactly 512 MiB. Any process running as the user can lock up to
+Most distributions default to 8 MiB, so users raise the limit once to
+524288 KiB ([Setup](../guide/setup.md#memory-locking-required)); until
+then Crystal refuses to start with a message saying so. CI pins the limit
+at exactly 512 MiB. Any process running as the user can lock up to
 512 MiB, a minor denial-of-service risk on a single-user desktop.

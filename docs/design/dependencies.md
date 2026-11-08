@@ -7,7 +7,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 | Screen grid and widgets | Crystal's own (`ui::grid`, `ui::screen`) | No ratatui: Crystal used a fifth of it and got 28 crates ([decision 0031](../decisions/0031-own-grid.md)) |
 | Display width | `unicode-width` =0.2.3 (no default features, so no `cjk` tables) | Columns a grapheme takes; no dependencies, `forbid(unsafe_code)` (decision 0031) |
 | Grapheme clusters | `unicode-segmentation` =1.13.3 | A character with its combining marks, or an emoji sequence, fills one cell; no dependencies (decision 0031) |
-| Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0030](../decisions/0030-viewer-dependencies.md)) |
+| Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions/0031-own-grid.md)) |
 | Editor widget | Crystal's own | Phase 4, on the grid; `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
 | Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
 | Encryption | `age` | The library crate of the rage project; X25519 and scrypt recipients; enable the plugin feature only for YubiKey or TPM unlock |
@@ -35,7 +35,7 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Markdown parsing | Reuse `pulldown-cmark` | n/a | Parsers are where bugs live |
 | Unicode width and graphemes | Reuse `unicode-width` + `unicode-segmentation` | n/a | Unicode tables change with each release |
 | Grid, wrapping and widgets | Build | 600 lines | Crystal uses a grid, a diff and four widgets; ratatui would bring 28 crates (decision 0031) |
-| Terminal output | Build | 150 lines | Crystal already owns the tty; every byte to the terminal passes through its code (decisions 0030, 0031) |
+| Terminal output | Build | 150 lines | Crystal already owns the tty; every byte to the terminal passes through its code (decision 0031) |
 | Sandbox plumbing | Reuse `landlock` + `seccompiler` | n/a | Kernel ABI details are easy to get wrong |
 | Vault format | Build | 600 lines | Defines integrity, rollback and metadata hiding |
 | Atomic writer | Build | 80 lines | Ciphertext-only, temp + fsync + rename + dir fsync |

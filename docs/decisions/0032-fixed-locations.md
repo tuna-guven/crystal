@@ -1,9 +1,9 @@
 # 0032 Fixed locations, no config file, one `rm`
 
 - **Date:** 2026-11-08 (Phase 3 redesign)
-- **Status:** Accepted. Supersedes [0005](0005-untrusted-config.md) and
-  [0021](0021-config-format.md); the path walk of
-  [0020](0020-vault-path-checks.md) for configured paths; `--at` in
+- **Status:** Accepted. Replaces the encrypted config file and its
+  configured-path checks (records 0005, 0020 and 0021, now removed);
+  supersedes `--at` in
   [0022](0022-init.md); the config steps of [0023](0023-unlock.md);
   `add` and `remove` in [0024](0024-subcommands.md); `config.gen` in
   [0019](0019-generation-counters.md); the config and DIR parts of

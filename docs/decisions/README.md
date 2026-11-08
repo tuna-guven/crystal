@@ -5,13 +5,18 @@ gets a short record here: cryptography, file formats, sandboxing,
 hardening, dependencies, Linux integration, the threat model, the build
 and release process. Implementation details do not.
 
-Records are numbered in the order they were made and are never rewritten.
-When a later decision replaces one, the old record gets the status
-*Superseded by NNNN* and the new one links back.
+Records are numbered in the order they were made and are never rewritten
+for a new decision; a new decision gets a new record. When a later
+decision replaces part of a record, the old record's status line says
+which part, and the new one names it. When a record is replaced
+entirely, it is deleted, and the record that replaces it states
+everything still in force, so the log holds only what applies today. Git
+history keeps the deleted records; numbers are never reused, so gaps are
+expected.
 
 Each record has the same parts:
 
-- **Status**: Accepted, Superseded by NNNN, or Proposed.
+- **Status**: Accepted (noting any part replaced by a later record), or Proposed.
 - **Context**: the problem and the forces at play.
 - **Decision**: what Crystal does.
 - **Alternatives**: what was considered and why it lost.

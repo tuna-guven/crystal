@@ -1,6 +1,6 @@
-//! Vault I/O: on-disk format, Padmé padding, generation counter and the
-//! atomic writer. Writes only ciphertext, or the fixed public `VERSION` and
-//! `*.gen` formats (`atomic::PublicBytes`). `codec` turns notes into the
+//! Vault I/O: on-disk format, Padmé padding, generation counter, pin and
+//! the atomic writer. Writes only ciphertext, or the fixed public
+//! `VERSION`, `*.gen` and `*.pin` formats (`atomic::PublicBytes`). `codec` turns notes into the
 //! plaintext bytes that `crypto` encrypts (and back), in zeroizing
 //! buffers, and never touches a file.
 
@@ -9,6 +9,7 @@ pub(crate) mod codec;
 pub(crate) mod format;
 pub(crate) mod generation;
 pub(crate) mod padme;
+pub(crate) mod pin;
 pub(crate) mod public_file;
 pub(crate) mod vault_dir;
 
@@ -27,8 +28,8 @@ pub(crate) const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
-/// A vault name: the key in config.age, and the directory name under
-/// ~/Vaults when `crystal init` creates a vault there. 1 to 64 characters
+/// A vault name: the directory name under ~/.local/share/crystal
+/// (docs/decisions/0032-fixed-locations.md). 1 to 64 characters
 /// from `A-Z a-z 0-9 - _`, starting with a letter or digit, and not a
 /// command word. No `/`, `..`, hidden names or option look-alikes can
 /// exist as a value.
@@ -46,10 +47,10 @@ impl fmt::Debug for VaultName {
 
 impl VaultName {
     pub const MAX_LEN: usize = 64;
-    /// The command words (`crystal init`, `add`, `remove`, `recover`,
+    /// The command words (`crystal init`, `rm`, `recover`, `check-code`,
     /// `help`): a vault with one of these names could not be opened as
     /// `crystal NAME`.
-    pub const RESERVED: [&str; 5] = ["init", "add", "remove", "recover", "help"];
+    pub const RESERVED: [&str; 5] = ["init", "rm", "recover", "check-code", "help"];
 
     pub fn new(name: OsString) -> Option<Self> {
         let bytes = name.as_bytes();
@@ -80,6 +81,8 @@ pub struct PrivateDirError {
 enum Problem {
     NoHome,
     Missing,
+    /// `~/.local/share/crystal` does not exist: no vault was created yet.
+    NoVaults,
     Create(Errno),
     NotARealDirectory,
     Open(Errno),
@@ -95,6 +98,10 @@ impl fmt::Display for PrivateDirError {
         match self.problem {
             Problem::NoHome => write!(f, "HOME is unset or not an absolute path"),
             Problem::Missing => write!(f, "{dir} does not exist; see docs/guide/setup.md"),
+            Problem::NoVaults => write!(
+                f,
+                "{dir} does not exist: there is no vault yet; create one with crystal init NAME"
+            ),
             Problem::Create(errno) => write!(f, "cannot create {dir} ({errno})"),
             Problem::NotARealDirectory => write!(f, "{dir} is a symlink or not a directory"),
             Problem::Open(errno) => write!(f, "cannot open {dir} ({errno})"),
@@ -114,7 +121,7 @@ impl fmt::Display for PrivateDirError {
 impl std::error::Error for PrivateDirError {}
 
 const STATE_DIR: &str = "~/.local/state/crystal";
-const CONFIG_DIR: &str = "~/.config/crystal";
+const DATA_DIR: &str = "~/.local/share/crystal";
 
 /// HOME as an absolute path, or NoHome for `dir`.
 fn home_dir(home: Option<&OsStr>, dir: &'static str) -> Result<PathBuf, PrivateDirError> {
@@ -204,32 +211,37 @@ impl StateDir {
     }
 }
 
-/// ~/.config/crystal: holds config.age. Local only, never synced. Must be
-/// ours and mode 0700, or another user could swap the config. A normal run
-/// only opens it, so a mistyped command creates nothing; only `crystal init` and
-/// `crystal add` create it. Closed after unlock (step 8): the sandbox never
-/// reaches it.
-pub struct ConfigDir {
+/// ~/.local/share/crystal: every vault, one directory each
+/// (docs/decisions/0032-fixed-locations.md). Must be ours and mode 0700,
+/// and reached without a symlink. A normal run only opens it, so a
+/// mistyped command creates nothing; only `crystal init` creates it.
+pub struct DataDir {
     fd: OwnedFd,
 }
 
-impl ConfigDir {
+impl DataDir {
     pub fn fd(&self) -> &OwnedFd {
         &self.fd
     }
 
-    /// Startup step 7 for a normal run. A missing directory is an error.
+    /// Startup step 7. A missing directory means no vault exists yet.
     pub fn open(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
-        Ok(Self {
-            fd: open_home_subdir(home, CONFIG_DIR, &[".config"], "crystal", Create::No)?,
-        })
+        let fd = open_home_subdir(home, DATA_DIR, &[".local", "share"], "crystal", Create::No)
+            .map_err(|e| match e.problem {
+                Problem::Missing => PrivateDirError {
+                    problem: Problem::NoVaults,
+                    ..e
+                },
+                _ => e,
+            })?;
+        Ok(Self { fd })
     }
 
-    /// For `crystal init` and `crystal add` only: creates missing levels with mode 0700,
+    /// For `crystal init` only: creates missing levels with mode 0700,
     /// then applies the same checks as `open`.
     pub fn create(home: Option<&OsStr>) -> Result<Self, PrivateDirError> {
         Ok(Self {
-            fd: open_home_subdir(home, CONFIG_DIR, &[".config"], "crystal", Create::Yes)?,
+            fd: open_home_subdir(home, DATA_DIR, &[".local", "share"], "crystal", Create::Yes)?,
         })
     }
 }
@@ -281,24 +293,11 @@ fn create_dir(parent: &OwnedFd, name: &str) -> Result<(), Errno> {
     }
 }
 
-/// Who may own a directory on a walk to one of Crystal's directories.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Owners {
-    /// Only us: the walks inside HOME (~/.config, ~/.local/state).
-    Us,
-    /// Root or us: the walk from `/` to a vault (vault_dir), where `/`,
-    /// `/var` and similar belong to root.
-    UsOrRoot,
-}
-
-/// Whether an intermediate directory on a walk is safe: owned by an
-/// allowed owner and not writable by group or others, so nobody else can
-/// rename or replace what lies beneath it. No exception for sticky
-/// directories such as /tmp. Any stricter mode is fine (~/.local is often
-/// 0755).
-fn is_safe_parent(uid: u32, mode: u32, owners: Owners, our_uid: u32) -> bool {
-    let owner_ok = uid == our_uid || (owners == Owners::UsOrRoot && uid == 0);
-    owner_ok && mode & 0o022 == 0
+/// Whether an intermediate directory on a walk is safe: ours and not
+/// writable by group or others, so nobody else can rename or replace what
+/// lies beneath it. Any stricter mode is fine (~/.local is often 0755).
+fn is_safe_parent(uid: u32, mode: u32, our_uid: u32) -> bool {
+    uid == our_uid && mode & 0o022 == 0
 }
 
 /// Opens an intermediate directory: not a symlink, ours, and not writable
@@ -310,7 +309,7 @@ fn open_safe_parent(parent: &OwnedFd, name: &str) -> Result<OwnedFd, Problem> {
         other => Problem::Open(other),
     })?;
     let stat = fstat(&fd).map_err(Problem::Stat)?;
-    if !is_safe_parent(stat.st_uid, stat.st_mode, Owners::Us, geteuid().as_raw()) {
+    if !is_safe_parent(stat.st_uid, stat.st_mode, geteuid().as_raw()) {
         return Err(Problem::UnsafeParent);
     }
     Ok(fd)
@@ -366,32 +365,27 @@ mod tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
-    // Only `crystal init` and `crystal add` create the config directory, every level 0700;
+    // Only `crystal init` creates the data directory, every level 0700;
     // a second create accepts what the first one made.
     #[test]
-    fn config_dir_create_makes_every_level_0700() {
-        let home = fresh_home("config_create");
-        ConfigDir::create(Some(home.as_os_str())).unwrap();
-        for dir in [".config", ".config/crystal"] {
+    fn data_dir_create_makes_every_level_0700() {
+        let home = fresh_home("data_create");
+        DataDir::create(Some(home.as_os_str())).unwrap();
+        for dir in [".local", ".local/share", ".local/share/crystal"] {
             assert_eq!(mode(&home.join(dir)), 0o700, "{dir}");
         }
-        ConfigDir::create(Some(home.as_os_str())).unwrap();
-        ConfigDir::open(Some(home.as_os_str())).unwrap();
+        DataDir::create(Some(home.as_os_str())).unwrap();
+        DataDir::open(Some(home.as_os_str())).unwrap();
     }
 
-    // A normal run never creates it, not even ~/.config.
+    // A normal run never creates it, not even ~/.local.
     #[test]
-    fn config_dir_open_creates_nothing() {
-        let home = fresh_home("config_open_missing");
-        let err = ConfigDir::open(Some(home.as_os_str())).err().unwrap();
-        assert!(matches!(err.problem, Problem::Missing), "{err:?}");
-        assert!(err.to_string().contains("~/.config/crystal does not exist"));
-        assert!(!home.join(".config").exists());
-
-        std::fs::create_dir(home.join(".config")).unwrap();
-        let err = ConfigDir::open(Some(home.as_os_str())).err().unwrap();
-        assert!(matches!(err.problem, Problem::Missing), "{err:?}");
-        assert!(!home.join(".config/crystal").exists());
+    fn data_dir_open_creates_nothing() {
+        let home = fresh_home("data_open_missing");
+        let err = DataDir::open(Some(home.as_os_str())).err().unwrap();
+        assert!(matches!(err.problem, Problem::NoVaults), "{err:?}");
+        assert!(err.to_string().contains("there is no vault yet"));
+        assert!(!home.join(".local").exists());
     }
 
     // Directories owned by someone else are refused, at the last level and
@@ -403,11 +397,11 @@ mod tests {
             return;
         }
         let root = Some(OsStr::new("/"));
-        let leaf = open_home_subdir(root, CONFIG_DIR, &[], "usr", Create::No);
+        let leaf = open_home_subdir(root, DATA_DIR, &[], "usr", Create::No);
         let err = leaf.err().unwrap();
         assert!(matches!(err.problem, Problem::NotOwned), "{err:?}");
 
-        let parent = open_home_subdir(root, CONFIG_DIR, &["usr"], "bin", Create::No);
+        let parent = open_home_subdir(root, DATA_DIR, &["usr"], "bin", Create::No);
         let err = parent.err().unwrap();
         assert!(matches!(err.problem, Problem::UnsafeParent), "{err:?}");
     }

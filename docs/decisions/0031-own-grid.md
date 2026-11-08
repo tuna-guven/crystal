@@ -1,16 +1,24 @@
-# 0031 Own screen grid instead of ratatui
+# 0031 Own screen grid and terminal backend, no ratatui
 
 - **Date:** 2026-11-08 (Phase 3)
-- **Status:** Accepted. Supersedes the ratatui part of
-  [0030](0030-viewer-dependencies.md); its own backend and
-  `pulldown-cmark` stay.
+- **Status:** Accepted
 
 ## Context
 
 Crystal is meant to be a minimal, auditable, secure note-taking app with
-as few dependencies as possible. [0030](0030-viewer-dependencies.md) added
-`ratatui-core` and `ratatui-widgets` with Crystal's own backend. Writing
-that backend showed how little of ratatui Crystal uses:
+as few dependencies as possible. The viewer needs a cell grid with Unicode
+widths, a few widgets, and a CommonMark parser. The first plan was the
+full `ratatui` with `crossterm` as its backend.
+
+Crystal already owns the terminal: `term::TerminalGuard` sets raw mode
+and the alternate screen on `/dev/tty`, restores them on every exit path,
+and reads keys through `ppoll` with the signal self-pipes, with no threads
+([0009](0009-signals-self-pipe.md)). `crossterm` would duplicate all of
+that, bring its own event reader and signal handling, and add syscalls the
+seccomp allowlist would have to admit.
+
+A first step kept `ratatui-core` and `ratatui-widgets` with Crystal's own
+backend. Writing that backend showed how little of ratatui Crystal uses:
 
 - a grid of cells with display widths, and the difference between two
   grids;
@@ -32,8 +40,11 @@ whatever grid Crystal has.
 
 ## Decision
 
-- **Remove `ratatui-core` and `ratatui-widgets`;** `deny.toml` no longer
-  allows Zlib.
+- **No `ratatui`, no `crossterm`;** `deny.toml` allows no Zlib.
+- **Own backend (`ui::frame`):** Crystal turns the difference between two
+  grids into cursor moves (CUP) and styles (SGR) and writes it to the
+  `/dev/tty` fd it already holds. Every byte that reaches the terminal
+  passes through Crystal's code.
 - **Own grid (`ui::grid`):** one cell per column and row. A cell holds one
   grapheme inline (at most 16 bytes), its width and its style; a grid is
   one allocation that never grows and is wiped on reset and drop. Text
@@ -54,14 +65,23 @@ whatever grid Crystal has.
 
   Embedding Unicode width and segmentation tables in Crystal would be more
   code to keep current, not less risk.
+- **`pulldown-cmark =0.13.6`** without default features: no `getopts`
+  (its command-line tool) and no HTML writer; Crystal renders the events
+  itself and sanitizes every text span. Without the `simd` feature it
+  forbids `unsafe` code.
 - `ui::frame` (backend) and `ui::screen` (two grids, full redraw on start,
   resize and resume) work on the grid. Widgets, wrapping and the editor
   will be Crystal's own.
 
 ## Alternatives
 
-- **Keep ratatui (0030):** well tested, but most of its code and crates go
-  unused, and every crate is something to audit.
+- **`ratatui` with `crossterm`:** a second terminal owner, with its own
+  raw-mode, signal and event code, and more syscalls.
+- **`ratatui-core` and `ratatui-widgets` with an own backend:** well
+  tested, but most of their code and crates go unused, and every crate is
+  something to audit.
+- **pulldown-cmark's HTML writer:** a ready-made output that the
+  sanitizer could be bypassed by.
 - **No Unicode crates, own tables:** a few thousand lines of generated data
   to update with each Unicode release.
 - **Treat every `char` as one column:** wrong for wide (CJK, emoji) and
