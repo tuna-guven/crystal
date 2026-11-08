@@ -3,8 +3,9 @@
 //!
 //! Everything that can be checked is checked before anything is created:
 //! the target is resolved, must not exist, and its parent must pass the
-//! vault path walk; the name must be new in the config; the passphrase and
-//! backup recipients are asked for. Only then are the directory and files
+//! vault path walk; the name must be new in the config; the passphrase is
+//! asked for and the recovery code is shown and typed back
+//! (docs/decisions/0029-recovery-code.md). Only then are the directory and files
 //! made. If a later step fails, exactly what this run created is removed
 //! again, never anything that existed before.
 
@@ -12,15 +13,15 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::os::fd::OwnedFd;
 use std::path::Path;
-use std::str::FromStr;
 
-use age::x25519;
 use rustix::fs::{AtFlags, Mode, mkdirat, openat, statat, unlinkat};
 use rustix::io::Errno;
+use zeroize::Zeroizing;
 
 use crate::config::{self, Config, ConfigError, VaultEntry};
 use crate::crypto::{CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
+use crate::recovery::{CodeError, RecoveryCode};
 use crate::term::{PromptError, Signals, TerminalGuard};
 use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
 use crate::vault::codec::VaultContents;
@@ -40,8 +41,6 @@ const VAULT_FILES: [&str; 4] = [
     IDENTITY_BACKUP_FILE,
     VAULT_FILE,
 ];
-/// More backup recipients than anyone needs; bounds the prompt loop.
-pub const MAX_BACKUP_RECIPIENTS: usize = 8;
 
 /// Why `crystal init` stopped. Fixed text; never a path, name or key.
 #[derive(Debug, PartialEq, Eq)]
@@ -200,55 +199,52 @@ pub fn plan(
     })
 }
 
-/// Asks for one or more backup recipients (`age1…` public keys), echoed
-/// because they are public. An invalid key is asked for again; an empty
-/// line ends the list once there is at least one.
-pub fn read_backup_recipients(
+/// Shows the new vault's recovery code once and has it typed back, so a
+/// copying mistake is found now, not on the day it is needed. A wrong
+/// entry shows the code again. The code is on the alternate screen only,
+/// which the next prompt clears; every copy is wiped when dropped.
+pub fn confirm_recovery_code(
     terminal: &mut TerminalGuard,
     signals: &Signals,
-) -> Result<Vec<x25519::Recipient>, InitError> {
-    let mut recipients: Vec<x25519::Recipient> = Vec::new();
-    let mut note = "identity.backup.age lets you recover this vault without the passphrase.\r\n\
-                    Enter the age public key of a key you keep offline (paper key or second \
-                    hardware key).\r\n\r\n";
-    while recipients.len() < MAX_BACKUP_RECIPIENTS {
-        let n = recipients.len() + 1;
-        let prompt = format!("{note}Backup recipient {n} (age1..., empty line when done): ");
-        let line = terminal
-            .read_public_line(signals, &prompt)
+    code: &RecoveryCode,
+) -> Result<(), InitError> {
+    let mut note = "";
+    loop {
+        let grouped = code.grouped();
+        let shown = Zeroizing::new(format!(
+            "{note}Recovery code for this vault. Write it on paper and keep it away from this \
+             computer.\r\nIt opens the vault if you forget the passphrase; anyone who has it \
+             can open the vault too.\r\n\r\n    {}\r\n\r\n{SHOWN_PROMPT}",
+            grouped.as_str()
+        ));
+        // What is typed here does not matter; it is wiped on drop.
+        terminal
+            .read_public_line(signals, &shown)
             .map_err(InitError::Prompt)?;
-        if is_identity(&line) {
-            // Shown while typed; the next prompt clears the screen, and the
-            // line is wiped when dropped. Nothing of it is stored.
-            note = "That is a private key (AGE-...), not a public key; it was not stored. \
-                    Enter the key's public half (age1...).\r\n";
-            continue;
-        }
-        if line.is_empty() {
-            if recipients.is_empty() {
-                note = "At least one backup recipient is needed.\r\n";
-                continue;
+        let typed = terminal
+            .read_public_line(signals, CONFIRM_PROMPT)
+            .map_err(InitError::Prompt)?;
+        match RecoveryCode::parse(&typed) {
+            Ok(back) if back.passphrase().matches(&code.passphrase()) => return Ok(()),
+            Ok(_) => note = "That is not the code shown; here it is again.\r\n\r\n",
+            Err(e) => {
+                note = match e {
+                    CodeError::WrongLength => {
+                        "That has the wrong length (7 groups of 4); here is the code again.\r\n\r\n"
+                    }
+                    CodeError::BadCharacter | CodeError::Mistyped => {
+                        "That has a typo; here is the code again.\r\n\r\n"
+                    }
+                }
             }
-            break;
-        }
-        match x25519::Recipient::from_str(&line) {
-            Ok(recipient) => {
-                recipients.push(recipient);
-                note = "";
-            }
-            Err(_) => note = "That is not an age X25519 public key (age1...); try again.\r\n",
         }
     }
-    Ok(recipients)
 }
 
-/// Whether `line` is an age identity rather than a recipient: a secret
-/// key (`AGE-SECRET-KEY-1...`) or a plugin identity (`AGE-PLUGIN-...`).
-/// Compared in place, case-insensitively, without copying the line.
-fn is_identity(line: &str) -> bool {
-    line.get(..4)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("AGE-"))
-}
+/// The last line of the screen that shows the recovery code.
+pub const SHOWN_PROMPT: &str = "Press Enter once you have written it down.";
+/// The prompt to type the recovery code back.
+pub const CONFIRM_PROMPT: &str = "Type the recovery code to confirm: ";
 
 /// What this run created, to remove again if a later step fails.
 #[derive(Default)]
@@ -267,7 +263,7 @@ pub fn create(
     plan: Plan,
     name: &VaultName,
     pass: &Passphrase,
-    backup: &[x25519::Recipient],
+    recovery: &RecoveryCode,
     mut cfg: Config,
     home: &OsStr,
     config_dir: &ConfigDir,
@@ -278,7 +274,7 @@ pub fn create(
         &plan,
         name,
         pass,
-        backup,
+        recovery,
         &mut cfg,
         home,
         config_dir,
@@ -319,7 +315,7 @@ fn build(
     plan: &Plan,
     name: &VaultName,
     pass: &Passphrase,
-    backup: &[x25519::Recipient],
+    recovery: &RecoveryCode,
     cfg: &mut Config,
     home: &OsStr,
     config_dir: &ConfigDir,
@@ -367,7 +363,7 @@ fn build(
     write(
         IDENTITY_BACKUP_FILE,
         &identity
-            .seal_to_recipients(backup)
+            .seal_with_passphrase(&recovery.passphrase())
             .map_err(InitError::Crypto)?,
     )?;
     let empty = VaultContents {
@@ -424,23 +420,6 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
     use zeroize::Zeroizing;
-
-    // S7: a secret key pasted at the backup prompt is recognised, in any
-    // case; recipients and other text are not.
-    #[test]
-    fn identities_are_recognised() {
-        for line in [
-            "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
-            "age-secret-key-1qqqq",
-            "AGE-PLUGIN-YUBIKEY-1QQQQ",
-            "AGE-",
-        ] {
-            assert!(is_identity(line), "{line}");
-        }
-        for line in ["", "AGE", "age1qqqq", "ssh-ed25519", "AGEX-1"] {
-            assert!(!is_identity(line), "{line}");
-        }
-    }
 
     fn pass(s: &str) -> Passphrase {
         Passphrase::new(Zeroizing::new(s.as_bytes().to_vec())).unwrap()
@@ -500,12 +479,12 @@ mod tests {
             self.home.join(".config/crystal/config.age").exists()
         }
 
-        fn create(&self, plan: Plan, n: &str, backup: &VaultIdentity) -> Result<(), InitError> {
+        fn create(&self, plan: Plan, n: &str, backup: &RecoveryCode) -> Result<(), InitError> {
             create(
                 plan,
                 &name(n),
                 &pass("pw"),
-                &[backup.recipient()],
+                backup,
                 Config::new(),
                 self.home.as_os_str(),
                 &self.config,
@@ -519,7 +498,7 @@ mod tests {
     #[test]
     fn creates_the_documented_layout() {
         let world = World::new("layout");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let plan = world.plan(None, "diary").unwrap();
         assert!(matches!(plan.parent, Parent::CreateIn { .. }));
         world.create(plan, "diary", &backup).unwrap();
@@ -572,16 +551,23 @@ mod tests {
             Ok(Some(1))
         );
 
-        // Recovery without the passphrase: the backup key opens
+        // Recovery without the passphrase: the recovery code opens
         // identity.backup.age, and the identity inside opens vault.age.
-        let secret = decrypt_with_identity(
+        let recovered = VaultIdentity::open_with_passphrase(
             &fs::read(vault.join("identity.backup.age")).unwrap(),
-            &backup,
+            &backup.passphrase(),
         )
         .unwrap();
-        let recovered = x25519::Identity::from_str(std::str::from_utf8(&secret).unwrap()).unwrap();
         let vault_age = fs::read(vault.join("vault.age")).unwrap();
-        assert!(age::decrypt(&recovered, &vault_age).is_ok());
+        assert!(decrypt_with_identity(&vault_age, &recovered).is_ok());
+        // The passphrase does not open it.
+        assert!(
+            VaultIdentity::open_with_passphrase(
+                &fs::read(vault.join("identity.backup.age")).unwrap(),
+                &pass("pw"),
+            )
+            .is_err()
+        );
     }
 
     // Regression: ~/Vaults was once found by trimming "Vaults" off the
@@ -589,7 +575,7 @@ mod tests {
     #[test]
     fn home_ending_in_vaults() {
         let world = World::with_home("home_vaults", "Vaults");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let plan = world.plan(None, "diary").unwrap();
         assert!(matches!(plan.parent, Parent::CreateIn { .. }));
         world.create(plan, "diary", &backup).unwrap();
@@ -600,7 +586,7 @@ mod tests {
     #[test]
     fn at_names_the_vault_directory_itself() {
         let world = World::new("at");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let synced = world.base.join("synced");
         fs::create_dir(&synced).unwrap();
         fs::set_permissions(&synced, fs::Permissions::from_mode(0o755)).unwrap();
@@ -666,14 +652,14 @@ mod tests {
         let world = World::new("cleanup_fails");
         let plan = world.plan(None, "diary").unwrap();
         let mut created = Created::default();
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let config_dir = world.home.join(".config/crystal");
         fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o500)).unwrap();
         let err = build(
             &plan,
             &name("diary"),
             &pass("pw"),
-            &[backup.recipient()],
+            &backup,
             &mut Config::new(),
             world.home.as_os_str(),
             &world.config,
@@ -704,7 +690,7 @@ mod tests {
     #[test]
     fn config_gen_failure_keeps_the_registered_vault() {
         let world = World::new("gen_fails");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let plan = world.plan(None, "diary").unwrap();
         let state_dir = world.home.join(".local/state/crystal");
         fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500)).unwrap();
@@ -728,7 +714,7 @@ mod tests {
     fn config_written_but_not_synced_keeps_the_vault() {
         use crate::vault::atomic::FailAt;
         let world = World::new("dirfsync_config");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let plan = world.plan(None, "diary").unwrap();
         let err = {
             let _armed = FailAt::arm_for(Step::DirFsync, config::CONFIG_FILE);
@@ -778,7 +764,7 @@ mod tests {
     fn vault_file_not_synced_rolls_back() {
         use crate::vault::atomic::FailAt;
         let world = World::new("dirfsync_vault");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let plan = world.plan(None, "diary").unwrap();
         let err = {
             let _armed = FailAt::arm_for(Step::DirFsync, "vault.age");
@@ -794,7 +780,7 @@ mod tests {
     #[test]
     fn late_failure_removes_what_was_created() {
         let world = World::new("rollback");
-        let backup = VaultIdentity::generate();
+        let backup = RecoveryCode::generate().unwrap();
         let config = world.home.join(".config/crystal");
         let plan = world.plan(None, "diary").unwrap();
         // config.age cannot be written: the last step fails.

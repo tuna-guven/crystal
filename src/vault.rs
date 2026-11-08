@@ -46,9 +46,10 @@ impl fmt::Debug for VaultName {
 
 impl VaultName {
     pub const MAX_LEN: usize = 64;
-    /// The command words (`crystal init`, `add`, `remove`, `help`): a vault
-    /// with one of these names could not be opened as `crystal NAME`.
-    pub const RESERVED: [&str; 4] = ["init", "add", "remove", "help"];
+    /// The command words (`crystal init`, `add`, `remove`, `recover`,
+    /// `help`): a vault with one of these names could not be opened as
+    /// `crystal NAME`.
+    pub const RESERVED: [&str; 5] = ["init", "add", "remove", "recover", "help"];
 
     pub fn new(name: OsString) -> Option<Self> {
         let bytes = name.as_bytes();

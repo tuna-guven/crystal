@@ -7,7 +7,6 @@
 
 mod common;
 
-use age::secrecy::ExposeSecret;
 use common::*;
 use std::path::{Path, PathBuf};
 
@@ -19,10 +18,10 @@ fn home_with_vault(test: &str) -> (PathBuf, PathBuf) {
     (home, vault)
 }
 
-/// Runs `crystal init NAME` in `home` with passphrase `pass`.
-fn init(home: &Path, name: &str, pass: &str) {
-    let recipient = age::x25519::Identity::generate().to_public().to_string();
-    let mut steps = init_steps(&recipient);
+/// Runs `crystal init NAME` in `home` with passphrase `pass`; returns the
+/// output, which shows the recovery code (`recovery_code_in`).
+fn init(home: &Path, name: &str, pass: &str) -> String {
+    let mut steps = init_steps();
     if pass != PASS {
         steps[0].1 = format!("{pass}\r").into_bytes();
         steps[1].1 = format!("{pass}\r").into_bytes();
@@ -37,6 +36,7 @@ fn init(home: &Path, name: &str, pass: &str) {
     }
     let (ok, output) = dialog(&format!("'{BIN}' init {name}"), home, &steps);
     assert!(ok, "init {name}: {output}");
+    output
 }
 
 /// Unlocks `name` with `pass` and quits at the placeholder screen.
@@ -252,12 +252,11 @@ fn init_at_then_unlock() {
     let synced = home.join("synced");
     std::fs::create_dir(&synced).unwrap();
     set_mode(&synced, 0o755);
-    let recipient = age::x25519::Identity::generate().to_public().to_string();
     let target = synced.join("work");
     let (ok, output) = dialog(
         &format!("'{BIN}' init work --at '{}'", target.display()),
         &home,
-        &init_steps(&recipient),
+        &init_steps(),
     );
     assert!(ok, "{output}");
     assert_eq!(mode(&target), 0o700);
@@ -743,46 +742,69 @@ fn init_refuses_mismatched_new_passphrase() {
     assert!(!config_file(&home).exists());
 }
 
-/// The backup prompt insists on at least one key, explains a bad one and
-/// asks again, and the key finally given recovers the vault.
+/// The recovery code is shown once and must be typed back. A wrong or
+/// mistyped entry shows the code again; lowercase without dashes is
+/// accepted. The code then opens identity.backup.age, and appears in no
+/// file and not in the config.
 #[test]
-fn init_backup_recipient_prompts() {
-    let home = private_home("init_recipients");
-    let backup = age::x25519::Identity::generate();
+fn init_recovery_code_confirmation() {
+    let home = private_home("init_recovery_confirm");
     let steps = vec![
         (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
         (REPEAT, format!("{PASS}\r").into_bytes()),
-        (BACKUP_1, b"\r".to_vec()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
         (
-            "At least one backup recipient is needed.",
-            format!("{}\r", backup.to_string().expose_secret()).into_bytes(),
+            RECOVERY_CONFIRM,
+            b"0000-0000-0000-0000-0000-0000-0000\r".to_vec(),
         ),
-        (
-            "That is a private key (AGE-...), not a public key",
-            b"age1notakey\r".to_vec(),
+        ("That is not the code shown; here it is again.", Vec::new()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
+        (RECOVERY_CONFIRM, b"K7QM-3XRD\r".to_vec()),
+        ("That has the wrong length", Vec::new()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
+        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE.to_vec()),
+    ];
+    // TYPE_RECOVERY_CODE types the code as shown; this test then checks
+    // lowercase without dashes separately, below, through age.
+    let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(
+        output.contains(
+            "Crystal recommends a passphrase of 8 or more random words, generated with \
+             KeePassDX or KeePassXC."
         ),
-        (
-            "That is not an age X25519 public key",
-            b"ssh-ed25519 AAAA\r".to_vec(),
-        ),
-        (
-            "That is not an age X25519 public key",
-            format!("{}\r", backup.to_public()).into_bytes(),
-        ),
-        (BACKUP_2, b"\r".to_vec()),
+        "{output}"
+    );
+    let code = recovery_code_in(&output);
+    let canonical = code.replace('-', "");
+    let vault = home.join("Vaults/diary");
+    let by_code = age::scrypt::Identity::new(canonical.clone().into());
+    let key = age_decrypt(&by_code, &vault.join("identity.backup.age"));
+    assert!(key.starts_with(b"AGE-SECRET-KEY-1"));
+    for file in std::fs::read_dir(&vault).unwrap() {
+        let bytes = std::fs::read(file.unwrap().path()).unwrap();
+        assert!(!contains(&bytes, &canonical) && !contains(&bytes, &code));
+    }
+    assert!(!contains(&config_plain(&home), &canonical));
+    unlock_ok(&home, "diary", PASS);
+}
+
+/// A typo in the code typed back (one symbol changed) is caught by the
+/// check symbol, and the code is shown again.
+#[test]
+fn init_recovery_code_typo_is_caught() {
+    let home = private_home("init_recovery_typo");
+    let steps = vec![
+        (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
+        (REPEAT, format!("{PASS}\r").into_bytes()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
+        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE_WITH_TYPO.to_vec()),
+        ("That has a typo; here is the code again.", Vec::new()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
+        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE_LOWERCASE.to_vec()),
     ];
     let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
     assert!(ok, "{output}");
-    let vault = home.join("Vaults/diary");
-    let key = age_decrypt(&backup, &vault.join("identity.backup.age"));
-    assert!(key.starts_with(b"AGE-SECRET-KEY-1"));
-    // The pasted backup secret is in no file Crystal wrote.
-    let secret = backup.to_string();
-    for file in std::fs::read_dir(&vault).unwrap() {
-        let bytes = std::fs::read(file.unwrap().path()).unwrap();
-        assert!(!contains(&bytes, secret.expose_secret()));
-    }
-    assert!(!contains(&config_plain(&home), secret.expose_secret()));
 }
 
 /// decision 0028: init and add on a device without a config refuse a new
@@ -803,40 +825,6 @@ fn new_passphrase_needs_twenty_characters() {
     assert!(!ok && output.contains("at least 20 characters"), "{output}");
     assert!(!config_file(&home).exists());
     assert!(state_files(&home).is_empty());
-}
-
-/// Up to 8 backup recipients, each able to recover the vault; after the
-/// 8th, init stops asking.
-#[test]
-fn init_takes_at_most_eight_backup_recipients() {
-    let home = private_home("init_eight");
-    let backups: Vec<_> = (0..8).map(|_| age::x25519::Identity::generate()).collect();
-    let mut steps = vec![
-        (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
-        (REPEAT, format!("{PASS}\r").into_bytes()),
-    ];
-    for (i, backup) in backups.iter().enumerate() {
-        let prompt: &'static str = [
-            "Backup recipient 1",
-            "Backup recipient 2",
-            "Backup recipient 3",
-            "Backup recipient 4",
-            "Backup recipient 5",
-            "Backup recipient 6",
-            "Backup recipient 7",
-            "Backup recipient 8",
-        ][i];
-        steps.push((prompt, format!("{}\r", backup.to_public()).into_bytes()));
-    }
-    let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
-    assert!(ok, "{output}");
-    assert!(!output.contains("Backup recipient 9"), "{output}");
-    let file = home.join("Vaults/diary/identity.backup.age");
-    let first = age_decrypt(&backups[0], &file);
-    for backup in &backups[1..] {
-        assert_eq!(age_decrypt(backup, &file), first);
-    }
-    unlock_ok(&home, "diary", PASS);
 }
 
 /// remove forgets one name; the other vaults still unlock, the removed
@@ -939,4 +927,165 @@ fn add_explains_a_vault_under_another_passphrase() {
         "{output}"
     );
     assert!(!config_file(&fresh).exists());
+}
+
+// ---- crystal recover ----
+
+const NEW_PASS: &str = "a-new-passphrase-after-recovery";
+
+/// `crystal recover NAME DIR` with `steps`.
+fn recover(home: &Path, name: &str, dir: &Path, steps: &[(&str, Vec<u8>)]) -> (bool, String) {
+    dialog(
+        &format!("'{BIN}' recover {name} '{}'", dir.display()),
+        home,
+        steps,
+    )
+}
+
+fn code_step(code: &str) -> (&'static str, Vec<u8>) {
+    (
+        "Recovery code (written down at crystal init): ",
+        format!("{code}\r").into_bytes(),
+    )
+}
+
+fn new_pass_steps() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        (NEW_PROMPT, format!("{NEW_PASS}\r").into_bytes()),
+        (REPEAT, format!("{NEW_PASS}\r").into_bytes()),
+    ]
+}
+
+/// The main story: the passphrase is forgotten. The recovery code written
+/// down at init opens the vault; this device's config, locked with the
+/// forgotten passphrase, is replaced after typing `replace`; the new
+/// passphrase unlocks the vault and the old one no longer does.
+#[test]
+fn recover_after_forgetting_the_passphrase() {
+    let home = private_home("recover_forgotten");
+    let code = recovery_code_in(&init(&home, "diary", PASS));
+    let vault = home.join("Vaults/diary");
+    let mut steps = vec![
+        code_step(&code.to_lowercase()),
+        ("press Enter if you forgot it too", b"\r".to_vec()),
+        ("Type replace to continue: ", b"replace\r".to_vec()),
+    ];
+    steps.extend(new_pass_steps());
+    let (ok, output) = recover(&home, "diary", &vault, &steps);
+    assert!(ok, "{output}");
+    assert!(!output.contains(NEW_PASS), "{output}");
+    unlock_ok(&home, "diary", NEW_PASS);
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &pass_step(PASS));
+    assert!(
+        !ok && output.contains("config.age: wrong passphrase"),
+        "{output}"
+    );
+}
+
+/// On a device without a config (a new computer), recover sets the new
+/// passphrase directly: no replace question.
+#[test]
+fn recover_on_a_new_device() {
+    let first = private_home("recover_new_device_a");
+    let code = recovery_code_in(&init(&first, "diary", PASS));
+    let vault = first.join("Vaults/diary");
+    let home = private_home("recover_new_device_b");
+    let mut steps = vec![code_step(&code)];
+    steps.extend(new_pass_steps());
+    let (ok, output) = recover(&home, "diary", &vault, &steps);
+    assert!(ok, "{output}");
+    assert!(!output.contains("replace"), "{output}");
+    unlock_ok(&home, "diary", NEW_PASS);
+}
+
+/// identity.age lost, passphrase still known: the device's passphrase is
+/// given, the config is kept, and the vault opens with it again.
+#[test]
+fn recover_a_lost_identity_with_the_known_passphrase() {
+    let home = private_home("recover_lost_identity");
+    let code = recovery_code_in(&init(&home, "diary", PASS));
+    let vault = home.join("Vaults/diary");
+    std::fs::remove_file(vault.join("identity.age")).unwrap();
+    let config = std::fs::read(config_file(&home)).unwrap();
+    let steps = vec![
+        code_step(&code),
+        (
+            "press Enter if you forgot it too",
+            format!("{PASS}\r").into_bytes(),
+        ),
+    ];
+    let (ok, output) = recover(&home, "diary", &vault, &steps);
+    assert!(ok, "{output}");
+    assert_eq!(std::fs::read(config_file(&home)).unwrap(), config);
+    unlock_ok(&home, "diary", PASS);
+}
+
+/// Anything but `replace` keeps everything as it was.
+#[test]
+fn recover_declined_replace_changes_nothing() {
+    let home = private_home("recover_declined");
+    let code = recovery_code_in(&init(&home, "diary", PASS));
+    let vault = home.join("Vaults/diary");
+    let config = std::fs::read(config_file(&home)).unwrap();
+    let identity = std::fs::read(vault.join("identity.age")).unwrap();
+    let steps = vec![
+        code_step(&code),
+        ("press Enter if you forgot it too", b"\r".to_vec()),
+        ("Type replace to continue: ", b"yes\r".to_vec()),
+    ];
+    let (ok, output) = recover(&home, "diary", &vault, &steps);
+    assert!(
+        !ok && output.contains("not replaced; nothing was changed"),
+        "{output}"
+    );
+    assert_eq!(std::fs::read(config_file(&home)).unwrap(), config);
+    assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
+    unlock_ok(&home, "diary", PASS);
+}
+
+/// A typo, a short code, and another vault's code are refused with their
+/// own messages, before any passphrase is asked for; nothing changes.
+#[test]
+fn recover_refuses_wrong_codes() {
+    let home = private_home("recover_wrong_codes");
+    let code = recovery_code_in(&init(&home, "diary", PASS));
+    let other_code = recovery_code_in(&init(&home, "other", PASS));
+    let vault = home.join("Vaults/diary");
+    let identity = std::fs::read(vault.join("identity.age")).unwrap();
+    let typo = format!(
+        "{}{}",
+        if code.starts_with('A') { "B" } else { "A" },
+        &code[1..]
+    );
+    for (typed, expected) in [
+        (typo.as_str(), "that recovery code has a typo"),
+        ("K7QM-3XRD", "a recovery code has 28 characters"),
+        (
+            other_code.as_str(),
+            "this recovery code does not open the vault's identity.backup.age",
+        ),
+    ] {
+        let (ok, output) = recover(&home, "diary", &vault, &[code_step(typed)]);
+        assert!(!ok && output.contains(expected), "{typed}: {output}");
+        assert!(
+            !output.contains("Passphrase"),
+            "asked for a passphrase: {output}"
+        );
+        assert_no_leak(&home, &output);
+    }
+    assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
+}
+
+/// DIR is checked before any prompt, as for `crystal add`.
+#[test]
+fn recover_checks_the_directory_first() {
+    let home = private_home("recover_checks_dir");
+    init(&home, "diary", PASS);
+    set_mode(&home.join("Vaults"), 0o770);
+    let (ok, output) = recover(&home, "diary", &home.join("Vaults/diary"), &[]);
+    assert!(
+        !ok && output.contains("writable by group or others"),
+        "{output}"
+    );
+    assert!(!output.contains("Recovery code"), "prompted: {output}");
 }

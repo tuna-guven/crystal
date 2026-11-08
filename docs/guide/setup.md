@@ -104,17 +104,21 @@ exist, and its parent must be owned by root or you, not writable by group
 or others, and reached without symlinks. Then it asks for:
 
 1. **The passphrase.** On a device without a config, a new one, twice; it
-   protects both the config and the vault's `identity.age`. A new
-   passphrase needs at least 20 characters, for example five or more
-   random words ([decision 0028](../decisions/0028-passphrase-minimum.md)):
+   protects both the config and the vault's `identity.age`. Crystal
+   recommends a passphrase of 8 or more random words, generated with
+   KeePassDX or KeePassXC. It must have at least 20 characters
+   ([decision 0028](../decisions/0028-passphrase-minimum.md)):
    `identity.age` travels with the vault, so anyone with a copy of it can
    guess offline. On a device with a config, the config's passphrase.
-2. **One or more backup recipients**: `age1…` public keys of keys you keep
-   offline, such as a paper key made with `age-keygen` or a second
-   hardware key. They go into `identity.backup.age`, which recovers the
-   vault if you lose the passphrase. An empty line ends the list. Keep the
-   matching secret key off this machine. A secret key (`AGE-SECRET-KEY-1…`)
-   pasted here by mistake is refused and not stored.
+2. **The recovery code.** Crystal generates a code of 7 groups of 4
+   characters, such as `K7QM-3XRD-HW9P-T2NB-FG4S-ZE8V-YC6J`, and shows it
+   once. Write it on paper, press Enter, and type it back to confirm; a
+   mistake shows the code again. It opens `identity.backup.age`, so it
+   recovers the vault if you forget the passphrase
+   ([decision 0029](../decisions/0029-recovery-code.md)). Keep the paper
+   like a house key: off the computer, and away from where the vault is
+   synced or backed up, because the code and a copy of the vault together
+   open your notes.
 
 Only then is anything created: `~/Vaults` (mode 0700) if needed, the vault
 directory (0700) and its four files (0600). If a step fails, what was
@@ -129,6 +133,32 @@ the vault's `identity.age` must open with the same passphrase: a device
 has one passphrase for its config and all its vaults. A vault can be
 registered only once per device, under one name. `crystal remove NAME`
 forgets a vault and leaves its files alone.
+
+### If you forget the passphrase
+
+```sh
+crystal recover diary ~/Vaults/diary
+```
+
+`crystal recover NAME DIR` opens a vault with its recovery code and sets a
+passphrase again. It checks DIR as `crystal add` does, then asks for the
+code. Case, dashes and spaces do not matter, and O, I and L are read as 0,
+1 and 1. A typo is reported as such; another vault's code is refused.
+Then it asks for this device's passphrase:
+
+- **You know it** (only `identity.age` was lost or damaged): type it. The
+  vault opens with it again, and the config is kept.
+- **You forgot it too:** press Enter. The config on this device opens only
+  with the forgotten passphrase, so it is replaced by a new one holding just
+  this vault; type `replace` to agree, then a new passphrase twice. Other
+  vaults registered here used the same forgotten passphrase, so each needs
+  `crystal recover` with its own code. Anything other than `replace`
+  changes nothing.
+- **A new device without a config:** a new passphrase is asked for
+  straight away.
+
+Nothing is written until the code, the vault and its rollback counter are
+checked. The recovery code stays the same afterwards; keep the paper.
 
 ### Opening a vault
 

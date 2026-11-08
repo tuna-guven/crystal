@@ -233,12 +233,12 @@ mod tests {
                 &self.state,
             )
             .unwrap();
-            let backup = VaultIdentity::generate().recipient();
+            let backup = crate::recovery::RecoveryCode::generate().unwrap();
             init::create(
                 plan,
                 &name(n),
                 &pass("pw"),
-                &[backup],
+                &backup,
                 cfg,
                 self.home.as_os_str(),
                 &self.config,

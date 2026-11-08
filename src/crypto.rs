@@ -276,21 +276,12 @@ impl VaultIdentity {
         self.0.to_public()
     }
 
-    /// `identity.age` for passphrase unlock: the identity's age string
+    /// `identity.age` (sealed with the passphrase) and `identity.backup.age`
+    /// (sealed with the recovery code): the identity's age string
     /// (`AGE-SECRET-KEY-1…`), encrypted to the passphrase alone.
     pub fn seal_with_passphrase(&self, pass: &Passphrase) -> Result<Ciphertext, CryptoError> {
         let secret = self.0.to_string();
         encrypt_to_passphrase(secret.expose_secret().as_bytes(), pass)
-    }
-
-    /// `identity.backup.age`: the same string, encrypted to the offline
-    /// backup recipient(s).
-    pub fn seal_to_recipients(
-        &self,
-        recipients: &[x25519::Recipient],
-    ) -> Result<Ciphertext, CryptoError> {
-        let secret = self.0.to_string();
-        encrypt_to_recipients(secret.expose_secret().as_bytes(), recipients)
     }
 
     /// Unlock: decrypts `identity.age` and parses the identity. Content
@@ -312,7 +303,7 @@ pub fn encrypt_to_passphrase(secret: &[u8], pass: &Passphrase) -> Result<Ciphert
 }
 
 /// Encrypts `secret` to X25519 recipients: the vault recipient for
-/// `vault.age`, the backup recipients for `identity.backup.age`.
+/// `vault.age`.
 pub fn encrypt_to_recipients(
     secret: &[u8],
     recipients: &[x25519::Recipient],
@@ -561,11 +552,13 @@ mod tests {
             b"notes"
         );
 
-        // identity.backup.age opens with the backup key.
-        let backup = VaultIdentity::generate();
-        let file = id.seal_to_recipients(&[backup.recipient()]).unwrap();
-        let text = decrypt_with_identity(&file.0, &backup).unwrap();
-        assert!(text.starts_with(b"AGE-SECRET-KEY-1"));
+        // identity.backup.age is sealed the same way, with the recovery
+        // code as the passphrase; another passphrase does not open it.
+        let backup = id.seal_with_passphrase(&pass("RECOVERYCODE")).unwrap();
+        let opened = VaultIdentity::open_with_passphrase(&backup.0, &pass("RECOVERYCODE")).unwrap();
+        assert_eq!(opened.recipient().to_string(), id.recipient().to_string());
+        let err = VaultIdentity::open_with_passphrase(&backup.0, &pass("pw")).err();
+        assert_eq!(err, Some(CryptoError::WrongPassphrase));
 
         // Decrypts, but is not an identity.
         let junk = sealed_with("pw", b"not a key");

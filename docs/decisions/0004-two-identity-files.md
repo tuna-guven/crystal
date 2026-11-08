@@ -1,7 +1,8 @@
 # 0004 Two identity files
 
 - **Date:** 2026-11-06
-- **Status:** Accepted
+- **Status:** Accepted; `identity.backup.age` is now sealed to a recovery
+  code instead of backup recipients ([0029](0029-recovery-code.md))
 
 ## Context
 

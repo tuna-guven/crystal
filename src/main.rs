@@ -17,6 +17,8 @@ mod harden;
 mod init;
 mod md;
 mod model;
+mod recover;
+mod recovery;
 mod sys;
 mod term;
 mod ui;
@@ -68,6 +70,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
         cli::Command::Init { name, at } => return init_vault(tty, &name, at.as_ref()),
         cli::Command::Add { name, dir } => return add_vault(tty, &name, &dir),
         cli::Command::Remove { name } => return remove_vault(tty, &name),
+        cli::Command::Recover { name, dir } => return recover_vault(tty, &name, &dir),
     };
     let home = harden::env_var(harden::EnvVar::Home);
     // Step 7. Opening never creates the config directory (only `crystal init` and
@@ -133,7 +136,9 @@ fn startup() -> Result<(), Box<dyn Error>> {
 }
 
 const PROMPT: &str = "Passphrase: ";
-const NEW_PROMPT: &str = "New passphrase for this device's Crystal config: ";
+const NEW_PROMPT: &str = "Crystal recommends a passphrase of 8 or more random words, generated \
+                          with KeePassDX or KeePassXC.\r\n\r\nNew passphrase for this \
+                          device's Crystal config: ";
 const REPEAT: &str = "Repeat passphrase: ";
 
 /// HOME, which the config and state directory checks have already
@@ -156,14 +161,7 @@ fn add_vault(
     let home = home_dir()?;
     let config_dir = vault::ConfigDir::create(Some(&home))?;
     let state_dir = vault::StateDir::open_or_create(Some(&home))?;
-    // The config stores fully resolved paths: the vault check refuses any
-    // symlink (/home is one on Fedora Atomic).
-    let resolved = std::fs::canonicalize(dir.as_path())
-        .map_err(|e| format!("cannot resolve the vault directory ({})", e.kind()))?;
-    let resolved = resolved
-        .into_os_string()
-        .into_string()
-        .map_err(|_| "the vault directory's path must be valid UTF-8")?;
+    let resolved = resolve_vault_dir(dir)?;
     let vault_dir = vault::vault_dir::VaultDir::open_checked(
         resolved.as_ref(),
         &home,
@@ -219,11 +217,91 @@ fn add_vault(
     Ok(())
 }
 
+/// DIR fully resolved, as the config stores it: the vault check refuses
+/// any symlink (/home is one on Fedora Atomic). For `add` and `recover`.
+fn resolve_vault_dir(dir: &cli::ArgPath) -> Result<String, Box<dyn Error>> {
+    let resolved = std::fs::canonicalize(dir.as_path())
+        .map_err(|e| format!("cannot resolve the vault directory ({})", e.kind()))?;
+    Ok(resolved
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "the vault directory's path must be valid UTF-8")?)
+}
+
+/// `crystal recover NAME DIR` (docs/decisions/0029-recovery-code.md): the
+/// vault in DIR is opened with its recovery code; its key is sealed again
+/// with this device's passphrase and the vault is registered as NAME. On a
+/// device whose config opens only with a forgotten passphrase, that config
+/// is replaced once the user types `replace`. DIR is checked before any
+/// prompt, as for `crystal add`.
+fn recover_vault(
+    tty: term::Tty,
+    name: &vault::VaultName,
+    dir: &cli::ArgPath,
+) -> Result<(), Box<dyn Error>> {
+    use recover::RecoverError;
+    let home = home_dir()?;
+    let config_dir = vault::ConfigDir::create(Some(&home))?;
+    let state_dir = vault::StateDir::open_or_create(Some(&home))?;
+    let resolved = resolve_vault_dir(dir)?;
+    let vault_dir = vault::vault_dir::VaultDir::open_checked(
+        resolved.as_ref(),
+        &home,
+        &config_dir,
+        &state_dir,
+    )?;
+    let has_config = config::exists(&config_dir)?;
+
+    let signals = term::Signals::register()?;
+    let mut terminal = term::TerminalGuard::enter(tty)?;
+    let typed = terminal.read_public_line(&signals, recover::CODE_PROMPT)?;
+    let code = recovery::RecoveryCode::parse(&typed).map_err(RecoverError::Code)?;
+    drop(typed);
+    let opened = recover::open_backup(&vault_dir, &code)?;
+    drop(code);
+
+    let device_pass = if has_config {
+        terminal.read_passphrase_or_empty(&signals, recover::DEVICE_PROMPT)?
+    } else {
+        None
+    };
+    let (pass, cfg) = match device_pass {
+        Some(pass) => {
+            let (cfg, _) = config::load(&config_dir, &state_dir, &pass)?
+                .ok_or(config::ConfigError::Missing)?;
+            (pass, cfg)
+        }
+        None => {
+            if has_config {
+                let answer = terminal.read_public_line(&signals, recover::REPLACE_PROMPT)?;
+                if answer.as_str() != recover::REPLACE_WORD {
+                    return Err(RecoverError::NotReplaced.into());
+                }
+            }
+            let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
+            (pass, config::fresh(&state_dir)?)
+        }
+    };
+    drop(terminal);
+    recover::finish(
+        opened,
+        name,
+        resolved,
+        &pass,
+        cfg,
+        &vault_dir,
+        &config_dir,
+        &state_dir,
+    )?;
+    Ok(())
+}
+
 /// `crystal init NAME [--at DIR]`: create a vault and register it, then exit
 /// (docs/design/storage.md, "Key design"). The target is resolved and
 /// checked first; then the passphrase (the config's, or a new one twice on
-/// a device without a config) and the backup recipients are asked for;
-/// only then is anything created, and a failure removes it again.
+/// a device without a config) is asked for, and the new recovery code is
+/// shown and typed back; only then is anything created, and a failure
+/// removes it again.
 fn init_vault(
     tty: term::Tty,
     name: &vault::VaultName,
@@ -255,13 +333,14 @@ fn init_vault(
     if cfg.find(name).is_some() {
         return Err(config::ConfigError::NameTaken.into());
     }
-    let backup = init::read_backup_recipients(&mut terminal, &signals)?;
+    let recovery = recovery::RecoveryCode::generate().map_err(init::InitError::Random)?;
+    init::confirm_recovery_code(&mut terminal, &signals, &recovery)?;
     drop(terminal);
     init::create(
         plan,
         name,
         &pass,
-        &backup,
+        &recovery,
         cfg,
         &home,
         &config_dir,

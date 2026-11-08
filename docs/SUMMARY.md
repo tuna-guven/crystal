@@ -54,6 +54,8 @@
   - [0026 Locked memory floor of 512 MiB](decisions/0026-memlock-floor-512.md)
   - [0027 scrypt: one fixed work factor, log N 18](decisions/0027-scrypt-fixed.md)
   - [0028 New passphrases: at least 20 characters](decisions/0028-passphrase-minimum.md)
+  - [0029 Recovery code instead of a backup recipient](decisions/0029-recovery-code.md)
+  - [0030 Viewer dependencies: ratatui-core and ratatui-widgets, own backend](decisions/0030-viewer-dependencies.md)
 
 # Development
 

@@ -2,11 +2,11 @@
 
 Crystal defends notes at rest and during use against storage, sync, theft and malicious content; it does not defend against root, kernel compromise or a hostile terminal emulator.
 
-**Assets:** note content; note metadata (titles, links, tags, note count, sizes); the config file (vault names, locations, pinned ids); the vault identity key; the user's passphrase or hardware key.
+**Assets:** note content; note metadata (titles, links, tags, note count, sizes); the config file (vault names, locations, pinned ids); the vault identity key; the user's passphrase or hardware key; the recovery code on paper.
 
 | Adversary | Capability | Scope | Primary defense |
 | --- | --- | --- | --- |
-| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding; against offline guessing of a copied `identity.age`, a passphrase of at least 20 characters ([0028](../decisions/0028-passphrase-minimum.md)) under scrypt log N 18 ([0027](../decisions/0027-scrypt-fixed.md)) |
+| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding; against offline guessing of a copied `identity.age`, a passphrase of at least 20 characters ([0028](../decisions/0028-passphrase-minimum.md)) under scrypt log N 18 ([0027](../decisions/0027-scrypt-fixed.md)); `identity.backup.age` is sealed to a generated 135-bit recovery code that cannot be guessed ([0029](../decisions/0029-recovery-code.md)) |
 | A2 Device thief, machine off | Full disk read | In | No plaintext ever written; full-disk encryption assumed as a second layer |
 | A3 Malicious note content (imported, synced, pasted) | Terminal escape injection, parser bugs | In | Sanitizer on every text node, fuzzed parser and renderer, sandbox limits impact |
 | A4 Supply chain (malicious or compromised crate) | Arbitrary code in the process | In | Minimal deps, cargo-vet, cargo-deny, sandbox blocks network and exec |
@@ -14,6 +14,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 | A6 Same-user malware, vault unlocked | ptrace, /proc reads, screen capture | Partial | Non-dumpable process blocks ptrace and /proc/pid/mem; screen capture not preventable |
 | A7 Root, kernel exploit, cold boot, evil maid | Everything | Out | Handled at OS level (verified boot, TPM, hardened kernel) |
 | A8 Shoulder surfing, screen recording | Sees the screen | Out | Idle auto-lock reduces exposure |
+| A9 Someone who finds the recovery code (paper) | Opens any copy of the vault it belongs to with `crystal recover` | Partial | The code alone is useless without a copy of the vault; the setup guide says to keep it off the computer and apart from the vault's sync and backup locations; a new code (Phase 8) makes the old paper useless for later copies ([0029](../decisions/0029-recovery-code.md)) |
 
 **Trust boundaries:** the kernel; the terminal emulator (it receives every rendered character); the age crate; the compiled binary and its build chain; the installed copy in `~/.local/bin`, which is user-writable unless marked immutable ([Installation](../guide/installation.md)).
 

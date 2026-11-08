@@ -6,7 +6,7 @@ Crystal backs up automatically and fully offline by copying ciphertext only, so 
 | --- | --- | --- | --- |
 | Local snapshots | `vault/.snapshots/` on the same disk | After every save | Accidental edits and deletes, bad sync merges |
 | External drive | A drive you plug in, marked by an encrypted `crystal-backup.age` file bound to the `vault_id` | On unlock, on lock, and by a udev or systemd user trigger when the drive is mounted | Disk failure, theft, a wiped laptop |
-| Key backup | `identity.backup.age`: the vault identity encrypted to an offline backup recipient (paper key or a second YubiKey) | At init and after every key rotation | Losing the passphrase or hardware key |
+| Key backup | `identity.backup.age`: the vault identity encrypted to the recovery code, which you keep on paper ([decision 0029](../decisions/0029-recovery-code.md)); `crystal recover` uses it | At init and after every key rotation | Losing the passphrase, the hardware key or `identity.age` |
 
 **Store format.** Each backup location holds `snapshots/<UTC timestamp>-<sha256 prefix>.age`, byte-for-byte copies of `vault.age`, plus a `SHA256SUMS` file. A text vault of a thousand notes is a few MB, so full copies are cheap; add delta storage only if the vault grows large.
 

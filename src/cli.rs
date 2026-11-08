@@ -17,6 +17,7 @@ usage: crystal [--lock-after MINUTES] NAME   open the vault NAME
        crystal init NAME [--at DIR]          create a vault in ~/Vaults/NAME or in DIR
        crystal add NAME DIR                  register an existing vault as NAME
        crystal remove NAME                   forget NAME; its files are kept
+       crystal recover NAME DIR              open DIR with its recovery code, set a new passphrase
        crystal help";
 
 pub const MAX_LOCK_AFTER_MINUTES: u32 = 24 * 60;
@@ -38,6 +39,12 @@ pub enum Command {
     /// `remove NAME`: drop a vault from the config; no files are deleted.
     Remove {
         name: VaultName,
+    },
+    /// `recover NAME DIR`: open the vault in DIR with its recovery code,
+    /// seal its key with this device's passphrase, register it as NAME.
+    Recover {
+        name: VaultName,
+        dir: ArgPath,
     },
     Help,
 }
@@ -122,6 +129,7 @@ pub enum CliError {
     BadPath,
     AtWithoutInit,
     AddNeedsDir,
+    RecoverNeedsDir,
     LockAfterOnlyForRun,
 }
 
@@ -133,12 +141,13 @@ impl fmt::Display for CliError {
             Self::ExtraArgument => "too many arguments",
             Self::BadVaultName => {
                 "vault name must be 1 to 64 letters, digits, - or _, starting with a letter or \
-                 digit, and not init, add, remove or help"
+                 digit, and not init, add, remove, recover or help"
             }
             Self::BadLockAfter => "--lock-after needs whole minutes from 1 to 1440",
             Self::BadPath => "a directory must be a non-empty path that does not start with -",
             Self::AtWithoutInit => "--at works only with crystal init",
             Self::AddNeedsDir => "crystal add needs a vault name and a directory",
+            Self::RecoverNeedsDir => "crystal recover needs a vault name and a directory",
             Self::LockAfterOnlyForRun => "--lock-after works only when opening a vault",
         };
         write!(f, "{msg}\n{USAGE}")
@@ -154,6 +163,7 @@ enum Mode {
     Init,
     Add,
     Remove,
+    Recover,
 }
 
 /// Parses the arguments after the program name. Options and positional
@@ -222,6 +232,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                     b"init" => mode = Mode::Init,
                     b"add" => mode = Mode::Add,
                     b"remove" => mode = Mode::Remove,
+                    b"recover" => mode = Mode::Recover,
                     b"help" => return Ok(Command::Help),
                     _ => positionals.push(value),
                 }
@@ -254,6 +265,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             let dir = second.ok_or(CliError::AddNeedsDir)?;
             let dir = ArgPath::new(dir).ok_or(CliError::BadPath)?;
             Ok(Command::Add { name, dir })
+        }
+        Mode::Recover => {
+            let dir = second.ok_or(CliError::RecoverNeedsDir)?;
+            let dir = ArgPath::new(dir).ok_or(CliError::BadPath)?;
+            Ok(Command::Recover { name, dir })
         }
         _ if second.is_some() => Err(CliError::ExtraArgument),
         Mode::Run => Ok(Command::Run(RunArgs {
@@ -341,6 +357,21 @@ mod tests {
             parse_strs(&["remove", "v"]),
             Ok(Command::Remove { name: name("v") })
         );
+        assert_eq!(
+            parse_strs(&["recover", "v", "/sync/v"]),
+            Ok(Command::Recover {
+                name: name("v"),
+                dir: path("/sync/v"),
+            })
+        );
+        assert_eq!(
+            parse_strs(&["recover", "v"]),
+            Err(CliError::RecoverNeedsDir)
+        );
+        assert_eq!(
+            parse_strs(&["recover", "v", "/d", "x"]),
+            Err(CliError::ExtraArgument)
+        );
     }
 
     #[test]
@@ -367,7 +398,7 @@ mod tests {
     // after the first word is a (refused) name, not a second command.
     #[test]
     fn command_words_are_not_vault_names() {
-        for word in ["init", "add", "remove", "help"] {
+        for word in ["init", "add", "remove", "recover", "help"] {
             assert!(VaultName::new(OsString::from(word)).is_none(), "{word}");
         }
         assert_eq!(parse_strs(&["init", "init"]), Err(CliError::BadVaultName));

@@ -102,7 +102,28 @@ pub fn pty_dialog(cmd: &str, home: &Path, steps: &[(&str, &[u8])]) -> (bool, Str
                 text(&output)
             );
         }
-        stdin.write_all(keys).unwrap();
+        let marker = [
+            TYPE_RECOVERY_CODE,
+            TYPE_RECOVERY_CODE_WITH_TYPO,
+            TYPE_RECOVERY_CODE_LOWERCASE,
+        ]
+        .iter()
+        .position(|m| m == keys);
+        if let Some(kind) = marker {
+            let code = recovery_code_in(&text(&output));
+            let typed = match kind {
+                0 => code,
+                // The first symbol changed to another valid one.
+                1 => {
+                    let other = if code.starts_with('A') { "B" } else { "A" };
+                    format!("{other}{}", &code[1..])
+                }
+                _ => code.replace('-', "").to_lowercase(),
+            };
+            stdin.write_all(format!("{typed}\r").as_bytes()).unwrap();
+        } else {
+            stdin.write_all(keys).unwrap();
+        }
         stdin.flush().unwrap();
     }
     while next(&mut output) {}
@@ -116,9 +137,42 @@ pub const REPEAT: &str = "Repeat passphrase: ";
 
 pub const NEW_PROMPT: &str = "New passphrase";
 
-pub const BACKUP_1: &str = "Backup recipient 1";
+/// The screen that shows `crystal init`'s recovery code ends with this.
+pub const RECOVERY_SHOWN: &str = "Press Enter once you have written it down.";
 
-pub const BACKUP_2: &str = "Backup recipient 2";
+pub const RECOVERY_CONFIRM: &str = "Type the recovery code to confirm: ";
+
+/// As the keys of a dialog step: type the last recovery code shown so far,
+/// then Enter.
+pub const TYPE_RECOVERY_CODE: &[u8] = b"\0type the recovery code shown\0";
+
+/// As `TYPE_RECOVERY_CODE`, with the first symbol changed: a typo the
+/// check symbol must catch.
+pub const TYPE_RECOVERY_CODE_WITH_TYPO: &[u8] = b"\0type it with a typo\0";
+
+/// As `TYPE_RECOVERY_CODE`, in lowercase without dashes.
+pub const TYPE_RECOVERY_CODE_LOWERCASE: &[u8] = b"\0type it in lowercase\0";
+
+/// The last recovery code (`XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`, Crockford
+/// base32) in `output`.
+pub fn recovery_code_in(output: &str) -> String {
+    const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    let bytes = output.as_bytes();
+    let is_code = |w: &[u8]| {
+        w.iter().enumerate().all(|(i, &b)| {
+            if i % 5 == 4 {
+                b == b'-'
+            } else {
+                ALPHABET.contains(&b)
+            }
+        })
+    };
+    let at = bytes
+        .windows(34)
+        .rposition(is_code)
+        .unwrap_or_else(|| panic!("no recovery code shown: {output:?}"));
+    output[at..at + 34].to_owned()
+}
 
 pub const PASS: &str = "correct-horse-battery";
 
@@ -129,13 +183,14 @@ pub fn private_home(test: &str) -> PathBuf {
     home
 }
 
-/// The answers for `crystal init` on a device without a config.
-pub fn init_steps(recipient: &str) -> Vec<(&'static str, Vec<u8>)> {
+/// The answers for `crystal init` on a device without a config: the
+/// passphrase twice, then the recovery code typed back.
+pub fn init_steps() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
         (REPEAT, format!("{PASS}\r").into_bytes()),
-        (BACKUP_1, format!("{recipient}\r").into_bytes()),
-        (BACKUP_2, b"\r".to_vec()),
+        (RECOVERY_SHOWN, b"\r".to_vec()),
+        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE.to_vec()),
     ]
 }
 

@@ -334,23 +334,21 @@ fn refuses_missing_or_relative_home() {
     }
 }
 
-/// Phase 2 end to end: `crystal init` creates the documented layout, the backup
-/// key alone recovers the vault, and the vault can be removed from and
-/// added back to the config. The passphrase never appears in the output.
+/// Phase 2 end to end: `crystal init` creates the documented layout, the
+/// recovery code alone recovers the vault, and the vault can be removed
+/// from and added back to the config. The passphrase never appears in the
+/// output.
 #[test]
 fn init_remove_add_end_to_end() {
     use std::str::FromStr;
     let home = private_home("init_e2e");
-    let backup = age::x25519::Identity::generate();
-    let recipient = backup.to_public().to_string();
 
-    let (ok, output) = dialog(
-        &format!("'{BIN}' init diary"),
-        &home,
-        &init_steps(&recipient),
-    );
+    let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &init_steps());
     assert!(ok, "{output}");
     assert!(!output.contains(PASS), "passphrase shown: {output:?}");
+    // The code typed back was the code shown; age's scrypt passphrase is
+    // its 28 symbols without dashes.
+    let code = recovery_code_in(&output).replace('-', "");
 
     // Acceptance: the layout matches docs/design/storage.md.
     let vault = home.join("Vaults/diary");
@@ -391,7 +389,8 @@ fn init_remove_add_end_to_end() {
 
     // Acceptance: identity.backup.age recovers the vault without the
     // passphrase, and holds the same identity as identity.age.
-    let from_backup = age_decrypt(&backup, &vault.join("identity.backup.age"));
+    let by_code = age::scrypt::Identity::new(code.into());
+    let from_backup = age_decrypt(&by_code, &vault.join("identity.backup.age"));
     let recovered =
         age::x25519::Identity::from_str(std::str::from_utf8(&from_backup).unwrap()).unwrap();
     age_decrypt(&recovered, &vault.join("vault.age"));
@@ -445,13 +444,12 @@ fn init_remove_add_end_to_end() {
 }
 
 /// Every interruption before creation leaves nothing behind: cancelling at
-/// the passphrase, the repeat or the backup prompt creates no vault and no
-/// config.age.
+/// the passphrase, the repeat, the recovery code screen or its
+/// confirmation creates no vault and no config.age.
 #[test]
 fn init_cancelled_leaves_no_vault() {
-    let recipient = age::x25519::Identity::generate().to_public().to_string();
-    let all = init_steps(&recipient);
-    for cut in 0..3 {
+    let all = init_steps();
+    for cut in 0..all.len() {
         let home = private_home(&format!("init_cancel_{cut}"));
         let mut steps = all[..cut].to_vec();
         steps.push((all[cut].0, b"abc\x03".to_vec()));

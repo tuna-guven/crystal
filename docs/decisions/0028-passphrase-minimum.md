@@ -1,7 +1,8 @@
 # 0028 New passphrases: at least 20 characters
 
 - **Date:** 2026-11-07 (Phase 2 review)
-- **Status:** Accepted
+- **Status:** Accepted; the backup-prompt part is superseded by
+  [0029](0029-recovery-code.md), which removed that prompt
 
 ## Context
 
