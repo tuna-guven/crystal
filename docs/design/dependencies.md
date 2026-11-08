@@ -1,13 +1,13 @@
 # Dependencies
 
-About a dozen direct dependencies, all pure Rust, no async runtime, no C libraries. Pin exact versions in `Cargo.lock` and check each crate's compatibility with the ratatui version you choose.
+About a dozen direct dependencies, all pure Rust, no async runtime, no C libraries. Crates that handle secrets or untrusted input are pinned exactly in `Cargo.toml`.
 
 | Need | Crate | Notes |
 | --- | --- | --- |
-| TUI layout and widgets | `ratatui` | Immediate-mode rendering; use only the widgets you need |
-| Terminal backend | `crossterm` | Raw mode, alternate screen, events, bracketed paste |
-| Editor widget | `tui-textarea` | Start here; replace with your own on `ropey` if its copying worries you |
-| Markdown parser | `pulldown-cmark` | `default-features = false`, no HTML feature; you write the renderer |
+| TUI layout and widgets | `ratatui-core` =0.1.2 (`std` only), `ratatui-widgets` =0.3.2 (no default features) | Buffer, layout, text and a few widgets; no backend crate ([decision 0030](../decisions/0030-viewer-dependencies.md)) |
+| Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` (decision 0030) |
+| Editor widget | `tui-textarea` | Phase 4; it depends on the full `ratatui` and a backend crate, so check for a version on `ratatui-core` or build an own widget (decision 0030) |
+| Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
 | Encryption | `age` | The library crate of the rage project; X25519 and scrypt recipients; enable the plugin feature only for YubiKey or TPM unlock |
 | Secret types | `secrecy`, `zeroize` | `SecretString` to hand passphrases and keys to age; `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext. The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions/0013-identity-box.md)) |
 | Hashing | `sha2` | Already in age's tree; used for backup snapshot hashes |
@@ -31,7 +31,8 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | --- | --- | --- | --- |
 | Encryption primitives | Reuse `age` | n/a | Never roll your own crypto |
 | Markdown parsing | Reuse `pulldown-cmark` | n/a | Parsers are where bugs live |
-| Terminal I/O and layout | Reuse `crossterm` + `ratatui` | n/a | Mature, widely used |
+| Layout and widgets | Reuse `ratatui-core` + `ratatui-widgets` | n/a | Unicode width, clipping and wrapping are easy to get wrong |
+| Terminal output | Build | 150 lines | Crystal already owns the tty; every byte to the terminal passes through its code (decision 0030) |
 | Sandbox plumbing | Reuse `landlock` + `seccompiler` | n/a | Kernel ABI details are easy to get wrong |
 | Vault format | Build | 600 lines | Defines integrity, rollback and metadata hiding |
 | Atomic writer | Build | 80 lines | Ciphertext-only, temp + fsync + rename + dir fsync |
