@@ -1,7 +1,8 @@
 # 0024 Subcommands: crystal init, add, remove
 
 - **Date:** 2026-11-06
-- **Status:** Accepted
+- **Status:** Accepted; `add` and `remove` are superseded by
+  [0032](0032-fixed-locations.md) (`rm`, `check-code`)
 
 ## Context
 

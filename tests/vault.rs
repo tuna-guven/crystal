@@ -204,7 +204,7 @@ fn refuses_vault_below_writable_parent() {
     assert_refused(&home, "writable by group or others");
 }
 
-/// Phase 2 refuses a vault with a Syncthing conflict copy; #31 merges.
+/// Phase 2 refuses a vault with a Syncthing conflict copy; Phase 4 merges.
 #[test]
 fn refuses_sync_conflict() {
     let (home, vault) = home_with_vault("sync_conflict");

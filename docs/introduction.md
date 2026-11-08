@@ -1,13 +1,14 @@
 # Crystal
 
 Crystal is a single static Rust binary that opens an age-encrypted Markdown
-vault in a full-screen terminal UI, decrypts notes only into locked memory,
+vault in a full-screen shell, decrypts notes only into locked memory,
 and never writes plaintext to disk.
 
-> **Status: in development, not ready for real notes.** Phases 0 and 1
-> (skeleton, hardening bootstrap, terminal guard) are done; Phase 2 (crypto,
-> vault format, config) is in progress. Crystal becomes usable for daily
-> notes after Phase 4. See [Roadmap and status](development/roadmap.md).
+> **Status: in development, not ready for real notes.** Phases 0 to 2
+> (skeleton, hardening, terminal guard, crypto and vault format) are done;
+> Phase 3 (the Crystal shell and viewer) is in progress, after a redesign
+> (decisions 0032 to 0036). Crystal becomes usable for daily notes after
+> Phase 4. See [Roadmap and status](development/roadmap.md).
 
 ## How to read this book
 

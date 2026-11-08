@@ -2,7 +2,7 @@
 
 Crystal defends notes at rest and during use against storage, sync, theft and malicious content; it does not defend against root, kernel compromise or a hostile terminal emulator.
 
-**Assets:** note content; note metadata (titles, links, tags, note count, sizes); the config file (vault names, locations, pinned ids); the vault identity key; the user's passphrase or hardware key; the recovery code on paper.
+**Assets:** note content; note metadata (titles, links, tags, note count, sizes); vault names (the directory names in `~/.local/share/crystal`); the vault identity key; the user's passphrase or hardware key; the recovery code on paper.
 
 | Adversary | Capability | Scope | Primary defense |
 | --- | --- | --- | --- |
@@ -10,8 +10,8 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 | A2 Device thief, machine off | Full disk read | In | No plaintext ever written; full-disk encryption assumed as a second layer |
 | A3 Malicious note content (imported, synced, pasted) | Terminal escape injection, parser bugs | In | Sanitizer on every text node, fuzzed parser and renderer, sandbox limits impact |
 | A4 Supply chain (malicious or compromised crate) | Arbitrary code in the process | In | Minimal deps, cargo-vet, cargo-deny, sandbox blocks network and exec |
-| A5 Same-user malware, vault locked | Read files, log keystrokes, replace or shadow `~/.local/bin/crystal`, write `config.age` | Partial | Notes stay encrypted; hardware key with touch defeats passphrase logging; optional immutable binary ([Installation](../guide/installation.md)); config paths checked as untrusted ([Config file](storage.md#config-file)) |
-| A6 Same-user malware, vault unlocked | ptrace, /proc reads, screen capture | Partial | Non-dumpable process blocks ptrace and /proc/pid/mem; screen capture not preventable |
+| A5 Same-user malware, vault locked | Read files, log keystrokes, replace or shadow `~/.local/bin/crystal`, change the pin and rollback counters | Partial | Notes stay encrypted; hardware key with touch defeats passphrase logging; optional immutable binary ([Installation](../guide/installation.md)); no config file, vaults only in one fixed, checked place ([0032](../decisions/0032-fixed-locations.md)) |
+| A6 Same-user malware, vault unlocked | ptrace, /proc reads, screen capture, reading the system clipboard | Partial | Non-dumpable process blocks ptrace and /proc/pid/mem; screen capture not preventable; note text reaches the system clipboard only by an explicit copy and is cleared after 45 seconds ([0035](../decisions/0035-clipboard.md)) |
 | A7 Root, kernel exploit, cold boot, evil maid | Everything | Out | Handled at OS level (verified boot, TPM, hardened kernel) |
 | A8 Shoulder surfing, screen recording | Sees the screen | Out | Idle auto-lock reduces exposure |
 | A9 Someone who finds the recovery code (paper) | Opens any copy of the vault it belongs to with `crystal recover` | Partial | The code alone is useless without a copy of the vault; the setup guide says to keep it off the computer and apart from the vault's sync and backup locations; a new code (Phase 8) makes the old paper useless for later copies ([0029](../decisions/0029-recovery-code.md)) |
@@ -22,7 +22,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 
 - Confidentiality of note content and titles at rest
 - Integrity of each note and of the vault as a set (no swapped, injected or deleted notes go unnoticed)
-- Rollback detection relative to the newest state this device has seen ([Storage, Rollback](storage.md#rollback)); a same-user process (A5) can lower the plaintext counters, which is accepted
+- Rollback detection relative to the newest state this device has seen ([Storage, Rollback](storage.md#rollback)); an older vault opens only after you type `restore` ([0036](../decisions/0036-backups-external.md)); a same-user process (A5) can lower the plaintext counters, which is accepted
 - No plaintext persisted by Crystal itself, including on crash
 
 **Accepted leaks:** the vault's Padmé size bucket and when it was last saved. Note count, note sizes and which note changed stay hidden.

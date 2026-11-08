@@ -57,6 +57,11 @@
   - [0029 Recovery code instead of a backup recipient](decisions/0029-recovery-code.md)
   - [0030 Viewer dependencies: ratatui-core and ratatui-widgets, own backend](decisions/0030-viewer-dependencies.md)
   - [0031 Own screen grid instead of ratatui](decisions/0031-own-grid.md)
+  - [0032 Fixed locations, no config file, one `rm`](decisions/0032-fixed-locations.md)
+  - [0033 The Crystal shell](decisions/0033-shell.md)
+  - [0034 Vault format 2: folders as metadata, links and tags from the text](decisions/0034-vault-format-2.md)
+  - [0035 Two clipboards: internal, and the system clipboard through OSC 52](decisions/0035-clipboard.md)
+  - [0036 Backups with dedicated tools; restoring an older vault](decisions/0036-backups-external.md)
 
 # Development
 

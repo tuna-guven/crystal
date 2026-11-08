@@ -76,7 +76,7 @@ wrapper names.
 | `read` | `public_file::read_bounded` | Read up to the limit plus one byte | the file's fd |
 | `close` | `public_file::read_bounded` | Release the file's fd | none |
 | `openat` | `unlock::has_sync_conflict`, at unlock | A separate fd for `.` to list the vault directory | vault directory fd, `.`; flags `O_RDONLY`, `O_DIRECTORY`, `O_CLOEXEC` |
-| `getdents64` | `unlock::has_sync_conflict` (rustix `Dir`) | Refuse a `vault.sync-conflict-*.age` until the merge exists (#31) | the listing fd |
+| `getdents64` | `unlock::has_sync_conflict` (rustix `Dir`) | Refuse a `vault.sync-conflict-*.age` until the merge exists (Phase 4) | the listing fd |
 | `close` | `main::startup`, after unlock | Close the config directory fd before the session (and, from Phase 6, before the sandbox), so the config is unreachable afterwards | the config directory fd |
 | `getrandom` | `crypto::fill_random` (rustix `rand::getrandom`), from `model::NoteId::random`, `model::VaultId::random` and `recovery::RecoveryCode::generate` | Random ids for new notes and vaults, and the 135 random bits of a vault's recovery code (`crystal init`), from the kernel's secure generator; no flags, so it blocks until the pool is seeded instead of returning weak bytes, and needs no `/dev/urandom` file access. Not called by a normal run until #10/#14; already on the planned seccomp allowlist (startup chapter) | buffer of 16, 17 or 32 bytes, flags 0 |
 | `ioctl` | `term::Tty::open` (rustix `isatty`) | Confirm `/dev/tty` is a terminal | `TIOCGWINSZ` only |

@@ -3,7 +3,8 @@
 - **Date:** 2026-11-08 (Phase 2 follow-up)
 - **Status:** Accepted. Supersedes the backup-recipient part of
   [0022](0022-init.md) and the backup-prompt part of
-  [0028](0028-passphrase-minimum.md).
+  [0028](0028-passphrase-minimum.md). The config and DIR parts of
+  `recover` are superseded by [0032](0032-fixed-locations.md).
 
 ## Context
 

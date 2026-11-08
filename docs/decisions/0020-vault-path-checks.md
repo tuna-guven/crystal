@@ -1,7 +1,8 @@
 # 0020 Vault paths: walk from /, compare by inode
 
 - **Date:** 2026-11-06 (#12)
-- **Status:** Accepted
+- **Status:** Superseded by [0032](0032-fixed-locations.md): vaults are
+  only in `~/.local/share/crystal`, so no configured path is walked
 
 ## Context
 

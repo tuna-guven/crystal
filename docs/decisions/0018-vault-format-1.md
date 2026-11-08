@@ -1,7 +1,8 @@
 # 0018 Vault format 1
 
 - **Date:** 2026-11-06 (#10)
-- **Status:** Accepted
+- **Status:** Accepted; the note layout and the `VERSION` rule are
+  superseded by [0034](0034-vault-format-2.md) (format 2)
 
 ## Context
 

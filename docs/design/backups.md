@@ -1,21 +1,43 @@
 # Backups
 
-Crystal backs up automatically and fully offline by copying ciphertext only, so backups never need the key and never hold plaintext.
+Crystal has no backup code. Back up `~/.local/share/crystal` with a dedicated tool, such as restic or borg ([decision 0036](../decisions/0036-backups-external.md)). They already do deduplication, encrypted repositories, retention and verification, and do them well; Crystal stays small.
 
-| Layer | Location | When it runs | Protects against |
-| --- | --- | --- | --- |
-| Local snapshots | `vault/.snapshots/` on the same disk | After every save | Accidental edits and deletes, bad sync merges |
-| External drive | A drive you plug in, marked by an encrypted `crystal-backup.age` file bound to the `vault_id` | On unlock, on lock, and by a udev or systemd user trigger when the drive is mounted | Disk failure, theft, a wiped laptop |
-| Key backup | `identity.backup.age`: the vault identity encrypted to the recovery code, which you keep on paper ([decision 0029](../decisions/0029-recovery-code.md)); `crystal recover` uses it | At init and after every key rotation | Losing the passphrase, the hardware key or `identity.age` |
+Deleting a note or a vault is final ([decision 0032](../decisions/0032-fixed-locations.md)), so a backup is part of setting up Crystal, not an extra.
 
-**Store format.** Each backup location holds `snapshots/<UTC timestamp>-<sha256 prefix>.age`, byte-for-byte copies of `vault.age`, plus a `SHA256SUMS` file. A text vault of a thousand notes is a few MB, so full copies are cheap; add delta storage only if the vault grows large.
+## What to back up
 
-**Headless mode.** `crystal backup --headless` copies `vault.age` when its hash is new and verifies the copy. It never unlocks or encrypts anything, so it needs no secrets and is safe to run from a udev rule when the drive appears; backups happen even when Crystal is closed. It runs under the same Landlock and seccomp policy, scoped to the vault and the backup drive.
+| Path | Holds | Needed for |
+| --- | --- | --- |
+| `~/.local/share/crystal/NAME/` | `VERSION`, `identity.age`, `identity.backup.age`, `vault.age`: ciphertext and a format number | Everything |
+| The recovery code, on paper | Opens `identity.backup.age` | A forgotten passphrase |
 
-**Append-only.** Crystal only adds snapshots. The single exception is retention pruning, which runs after a successful verify and never touches the newest 10 snapshots. Default retention: every snapshot for 7 days, one per day for 30 days, one per month for 12 months.
+Do not back up `~/.local/state/crystal`: its pin and rollback counters belong to one device.
 
-**Verification.** On each interactive unlock, Crystal decrypts the newest snapshot on every reachable backup and compares it with the live vault. `crystal backup verify --full` decrypts everything. A failed verify shows a warning on the status line and blocks pruning.
+## Why Crystal's files suit a backup tool
 
-**Restore.** `crystal restore --from <path> --snapshot <timestamp>` writes the restored state as a new generation above the current one, so rollback detection stays valid. Restores are always explicit, never automatic, and refuse snapshots whose `vault_id` does not match.
+- **Ciphertext only.** The tool never sees plaintext; its own repository password is a second layer.
+- **Atomic writes.** A backup taken during a save holds the old or the new `vault.age`, never half of one; a leftover temp file is swept on the next save.
+- **One fixed directory**, so one backup path covers every vault.
 
-**Operational rules.** Unplug the drive between runs, since a mounted drive is reachable by anything running as your user. Put LUKS on the drive to also hide note count and snapshot history. Keep a second drive off-site if you can. Test a full restore to a scratch directory once a month.
+**Deduplication barely applies, by design.** Each save makes `vault.age` an entirely new ciphertext, so the tool stores each changed version in full. Making it deduplicate would mean encrypting in fixed chunks or deterministically, which would show which part of the vault, and roughly which note, changed: what the single padded blob hides. For text the cost is small: a 5 MB vault backed up daily is under 2 GB a year before pruning.
+
+## Restoring
+
+1. Restore `~/.local/share/crystal/NAME` with your tool (into an empty place, or over the current vault).
+2. Run `crystal NAME`. If the restored vault is older than the newest version this device has seen, Crystal stops and explains that it is older: restored from a backup, or put back by someone else. Type `restore` to accept it, and only if you restored it yourself. The rollback counter then starts again from the restored version ([Storage, Rollback](storage.md#rollback)).
+3. On a new device, there is no counter yet: the first unlock accepts the vault and pins it.
+
+If the passphrase is lost too, `crystal recover NAME` with the recovery code sets a new one. `crystal check-code NAME` checks the code on paper against the vault without changing anything; run it once after `crystal init`.
+
+## A restic setup
+
+The setup guide walks through it ([Setup](../guide/setup.md)); in short:
+
+```sh
+restic init --repo /run/media/you/backup/crystal
+restic --repo /run/media/you/backup/crystal backup ~/.local/share/crystal
+restic --repo /run/media/you/backup/crystal forget --keep-daily 7 --keep-weekly 5 --keep-monthly 12 --prune
+restic --repo /run/media/you/backup/crystal check
+```
+
+Run the backup from a systemd user timer, keep one repository off-site, and test a restore into a scratch directory now and then.

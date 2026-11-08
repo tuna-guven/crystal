@@ -1,7 +1,9 @@
 # 0023 Unlock: one prompt, fail closed, pinned vault id
 
 - **Date:** 2026-11-06 (#15)
-- **Status:** Accepted
+- **Status:** Accepted; the config steps are superseded by
+  [0032](0032-fixed-locations.md) (no config, a pin in the state
+  directory)
 
 ## Context
 

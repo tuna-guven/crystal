@@ -70,46 +70,50 @@ the command: `crystal diary 5>&-`. List what is open with
 
 ## Vaults
 
+> **Being changed (step L1, [decision 0032](../decisions/0032-fixed-locations.md)).**
+> This section describes the design. Until L1 is built, Crystal still has
+> `crystal add`, `crystal remove`, `init --at DIR` and `~/.config/crystal/config.age`.
+
 Vaults are opened by name: `crystal diary`. Names are 1 to 64 characters
-from `A-Z a-z 0-9 - _`, starting with a letter or digit. The encrypted
-config file `~/.config/crystal/config.age` maps each name to its vault
-directory ([On-disk layout](../design/storage.md#on-disk-layout)).
+from `A-Z a-z 0-9 - _`, starting with a letter or digit. Every vault lives
+in `~/.local/share/crystal/NAME`; there is no option to put it elsewhere
+and no config file ([On-disk layout](../design/storage.md#on-disk-layout)).
 
 ```text
-crystal [--lock-after MINUTES] NAME   open the vault NAME
-crystal init NAME [--at DIR]          create a vault in ~/Vaults/NAME or in DIR
-crystal add NAME DIR                  register an existing vault as NAME
-crystal remove NAME                   forget NAME; its files are kept
+crystal NAME                 open the vault NAME (the Crystal shell)
+crystal init NAME            create a vault
+crystal recover NAME         set a new passphrase with the recovery code
+crystal check-code NAME      check the recovery code on paper; changes nothing
+crystal rm NAME              delete a vault for good
+crystal help
 ```
 
-`~/.config/crystal` must be yours and mode 0700, and `~/.config` must be
-yours and not writable by group or others; neither may be a symlink.
-Crystal checks this at every start and never fixes a mode itself. Only
-`crystal init` and `crystal add` create the directory; a normal run refuses to start
-without it:
+`~/.local/share/crystal` and every vault in it must be yours and mode
+0700; `~/.local` and `~/.local/share` must be yours and not writable by
+group or others; none of them may be a symlink. Crystal checks this at
+every start and never fixes a mode itself.
 
-```text
-crystal: ~/.config/crystal does not exist; see docs/guide/setup.md
-```
+To sync a vault between devices (Syncthing, for example), sync its
+directory `~/.local/share/crystal/NAME`. A vault that arrives on a new
+device is opened with `crystal NAME`; the first unlock there pins it and
+says so.
 
 ### Creating a vault
 
 ```sh
-crystal init diary                  # ~/Vaults/diary
-crystal init work --at ~/Sync/work  # the directory itself; must not exist
+crystal init diary
 ```
 
-`crystal init` first checks where the vault will go: the directory must not
-exist, and its parent must be owned by root or you, not writable by group
-or others, and reached without symlinks. Then it asks for:
+`crystal init` first checks that `~/.local/share/crystal/diary` does not
+exist yet. Then it asks for:
 
-1. **The passphrase.** On a device without a config, a new one, twice; it
-   protects both the config and the vault's `identity.age`. Crystal
-   recommends a passphrase of 8 or more random words, generated with
-   KeePassDX or KeePassXC. It must have at least 20 characters
+1. **A new passphrase**, twice. It protects this vault's `identity.age`;
+   each vault has its own (using the same one for several is your choice).
+   Crystal recommends a passphrase of 8 or more random words, generated
+   with KeePassDX or KeePassXC. It must have at least 20 characters
    ([decision 0028](../decisions/0028-passphrase-minimum.md)):
    `identity.age` travels with the vault, so anyone with a copy of it can
-   guess offline. On a device with a config, the config's passphrase.
+   guess offline.
 2. **The recovery code.** Crystal generates a code of 7 groups of 4
    characters, such as `K7QM-3XRD-HW9P-T2NB-FG4S-ZE8V-YC6J`, and shows it
    once. Write it on paper, press Enter, and type it back to confirm; a
@@ -118,54 +122,85 @@ or others, and reached without symlinks. Then it asks for:
    ([decision 0029](../decisions/0029-recovery-code.md)). Keep the paper
    like a house key: off the computer, and away from where the vault is
    synced or backed up, because the code and a copy of the vault together
-   open your notes.
+   open your notes. Run `crystal check-code diary` once afterwards to make
+   sure the paper is right.
 
-Only then is anything created: `~/Vaults` (mode 0700) if needed, the vault
-directory (0700) and its four files (0600). If a step fails, what was
-created is removed again.
-
-### Registering and forgetting vaults
-
-`crystal add NAME DIR` registers a vault that already exists, for example one
-made by `crystal init` on another device and synced here. It asks for the
-config's passphrase, or for a new one if this device has no config yet;
-the vault's `identity.age` must open with the same passphrase: a device
-has one passphrase for its config and all its vaults. A vault can be
-registered only once per device, under one name. `crystal remove NAME`
-forgets a vault and leaves its files alone.
+Only then is anything created: `~/.local/share/crystal` (mode 0700) if
+needed, the vault directory (0700) and its four files (0600). If a step
+fails, what was created is removed again.
 
 ### If you forget the passphrase
 
 ```sh
-crystal recover diary ~/Vaults/diary
+crystal recover diary
 ```
 
-`crystal recover NAME DIR` opens a vault with its recovery code and sets a
-passphrase again. It checks DIR as `crystal add` does, then asks for the
-code. Case, dashes and spaces do not matter, and O, I and L are read as 0,
-1 and 1. A typo is reported as such; another vault's code is refused.
-Then it asks for this device's passphrase:
+`crystal recover NAME` asks for the recovery code. Case, dashes and spaces
+do not matter, and O, I and L are read as 0, 1 and 1. A typo is reported
+as such; another vault's code is refused. Then it asks for a new
+passphrase twice and rewrites `identity.age`. Nothing is written until the
+code, the vault and its rollback counter are checked. The recovery code
+stays the same afterwards; keep the paper.
 
-- **You know it** (only `identity.age` was lost or damaged): type it. The
-  vault opens with it again, and the config is kept.
-- **You forgot it too:** press Enter. The config on this device opens only
-  with the forgotten passphrase, so it is replaced by a new one holding just
-  this vault; type `replace` to agree, then a new passphrase twice. Other
-  vaults registered here used the same forgotten passphrase, so each needs
-  `crystal recover` with its own code. Anything other than `replace`
-  changes nothing.
-- **A new device without a config:** a new passphrase is asked for
-  straight away.
+### Deleting a vault
 
-Nothing is written until the code, the vault and its rollback counter are
-checked. The recovery code stays the same afterwards; keep the paper.
+```sh
+crystal rm diary
+```
+
+Type the name again to confirm. Deleting is final: there is no trash, and
+only a backup can bring the vault back. Files in the vault directory that
+Crystal did not make are left alone, and so is the directory then.
 
 ### Opening a vault
 
-`crystal NAME` asks for the passphrase once and unlocks the vault. Until
-the viewer exists (Phase 3), it only shows how many notes the vault holds;
-any key locks it again and quits. The first unlock of a vault on a device
-says so: rollback detection starts from that point.
+`crystal NAME` asks for the passphrase once and unlocks the vault into the
+Crystal shell ([decision 0033](../decisions/0033-shell.md)): a prompt at
+the bottom of the screen, output above it. Commands include `ls`,
+`view NAME`, `search TEXT`, `find TEXT`, `tags`, `copy NAME`, `help`,
+`lock` and `quit`. Nothing you see there stays in the terminal's
+scrollback. Until the shell exists (end of Phase 3), Crystal only shows how
+many notes the vault holds. The first unlock of a vault on a device says
+so: rollback detection starts from that point.
+
+### Backups
+
+Crystal has no backup code; use restic, borg or any file-level tool on
+`~/.local/share/crystal` ([Backups](../design/backups.md)). Since deleting
+is final, set this up together with Crystal. With restic and an external
+drive:
+
+```sh
+restic init --repo /run/media/$USER/backup/crystal      # its own password, not Crystal's
+restic --repo /run/media/$USER/backup/crystal backup ~/.local/share/crystal
+restic --repo /run/media/$USER/backup/crystal forget --keep-daily 7 --keep-weekly 5 --keep-monthly 12 --prune
+restic --repo /run/media/$USER/backup/crystal check
+```
+
+To restore, put the vault directory back with `restic restore` and open
+it. If it is older than what this device last saw, Crystal says so and
+asks you to type `restore`. Type it only if you restored the vault
+yourself; otherwise someone may have put back an old copy.
+
+### Copying to the clipboard
+
+Crystal has two clipboards ([decision 0035](../decisions/0035-clipboard.md)):
+an internal one (`y` in the pager, `Ctrl+C`/`Ctrl+V` in the editor) that
+never leaves Crystal, and the system clipboard (`Y`, `Alt+C`, `copy NAME`),
+which it clears after 45 seconds and on lock or exit. While note text is on
+the system clipboard, every program you run can read it, and a clipboard
+manager may keep a copy in its history.
+
+The system clipboard works through the terminal (OSC 52). Check yours:
+
+```sh
+printf '\e]52;c;%s\a' "$(printf 'crystal-test' | base64)"
+```
+
+Then paste somewhere. If `crystal-test` does not arrive, the terminal
+ignores OSC 52 (VTE-based terminals such as GNOME Terminal and Ptyxis
+have historically done so); foot, kitty, Alacritty, WezTerm and Ghostty
+support it. Under tmux, add `set -g set-clipboard on`.
 
 ## Memory locking (required)
 

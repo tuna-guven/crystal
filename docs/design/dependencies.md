@@ -42,7 +42,7 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Markdown renderer | Build | 300 lines | Small subset, full control over output |
 | Sanitizer | Build | 60 lines | Strips C0, C1, ESC, BiDi overrides from every rendered span |
 | Wikilink and backlink index | Build | 200 lines | Simple map over titles, rebuilt on unlock |
-| Fuzzy finder and search | Build | 150 lines | Subsequence scorer plus case-insensitive substring search |
+| `find` and `search` | Build | 150 lines | Subsequence scorer over names, case-insensitive full-text search ([decision 0033](../decisions/0033-shell.md)) |
 | Terminal guard | Build | 120 lines | Alt screen, raw mode, clear on exit, panic hook, signals |
 | Hardening bootstrap | Build | 150 lines | prctl, rlimits, mlockall, env scrub, tty checks |
 | Passphrase prompt | Build | 60 lines | Reads from /dev/tty in raw mode into zeroizing memory |

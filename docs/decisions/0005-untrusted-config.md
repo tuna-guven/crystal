@@ -1,7 +1,7 @@
 # 0005 Encrypted per-device config, treated as untrusted
 
 - **Date:** 2026-11-06
-- **Status:** Accepted
+- **Status:** Superseded by [0032](0032-fixed-locations.md) (no config file)
 
 ## Context
 

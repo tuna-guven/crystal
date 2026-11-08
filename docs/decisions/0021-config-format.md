@@ -1,7 +1,7 @@
 # 0021 Config format 1 and vault pinning
 
 - **Date:** 2026-11-06 (#13)
-- **Status:** Accepted
+- **Status:** Superseded by [0032](0032-fixed-locations.md) (no config file)
 
 ## Context
 

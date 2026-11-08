@@ -40,7 +40,7 @@ pub enum UnlockError {
     /// the one pinned in the config.
     ForeignVault,
     Generation(GenError),
-    /// A sync conflict copy of `vault.age` is present (merge: #31).
+    /// A sync conflict copy of `vault.age` is present (merge: Phase 4).
     SyncConflict,
     ListDir(Errno),
 }

@@ -1,7 +1,9 @@
 # 0019 Generation counters for rollback detection
 
 - **Date:** 2026-11-06 (#11)
-- **Status:** Accepted
+- **Status:** Accepted; `config.gen` is superseded by
+  [0032](0032-fixed-locations.md) (no config), and "never lowered" by
+  [0036](0036-backups-external.md) (an explicit `restore`)
 
 ## Context
 

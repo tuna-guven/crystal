@@ -1,7 +1,8 @@
 # 0012 Two plaintext exceptions: VERSION and .gen
 
 - **Date:** 2026-11-06 (#7)
-- **Status:** Accepted
+- **Status:** Accepted; [0032](0032-fixed-locations.md) adds a third
+  fixed public format, the `NAME.pin` file
 
 ## Context
 

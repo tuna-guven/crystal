@@ -27,15 +27,15 @@ Matches the [startup order](startup.md).
 
 1. Process hardening (section 4; [startup](startup.md) steps 1 to 4).
 2. Open `/dev/tty` directly and require a real terminal (step 5).
-3. Parse arguments (step 6): a vault name, not a path. Open `~/Vaults` and then `~/Vaults/<name>` relative to it, and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
+3. Parse arguments (step 6): a vault name, not a path. Open `~/.local/share/crystal` and then `NAME` relative to it ([decision 0032](../decisions/0032-fixed-locations.md)), and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
 5. Unlock: decrypt `identity.age` with the passphrase (read in raw mode from `/dev/tty`) or an age plugin (step 8). Plugins are separate binaries, so this is the last moment `execve` works. Only the identity is decrypted here, not the vault.
 6. Apply Landlock (section 5; step 9).
 7. Apply the seccomp filter (section 6; step 10). Requires no_new_privs, which step 1 already set.
-8. Decrypt the vault, build the index, start the TUI loop (step 11).
+8. Decrypt the vault, build the indexes, start the shell (step 11).
 
 Rules:
-- Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups run synchronously after a save; `crystal backup --headless` is a separate process with the same sandbox.
+- Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions/0036-backups-external.md)), never by Crystal.
 - MUST NOT continue to step 8 if steps 1, 6 or 7 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
 - All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(&SandboxConfig) -> Result<SandboxReport, SandboxError>`.
 
@@ -79,16 +79,15 @@ Rules (path beneath, from the directory fds opened at startup):
 
 | Path | Rights |
 |------|--------|
-| The opened vault, `~/Vaults/<name>` (not all of `~/Vaults`) | READ_FILE, READ_DIR, WRITE_FILE, TRUNCATE, MAKE_REG, REMOVE_FILE, MAKE_DIR (for `.snapshots/`, Phase 7) |
+| The opened vault, `~/.local/share/crystal/NAME` (not all of `~/.local/share/crystal`) | READ_FILE, READ_DIR, WRITE_FILE, TRUNCATE, MAKE_REG, REMOVE_FILE |
 | State dir (`~/.local/state/crystal`) | READ_FILE, READ_DIR, WRITE_FILE, TRUNCATE, MAKE_REG, REMOVE_FILE |
-| External backup dir (Phase 7, only when the drive is present) | READ_FILE, READ_DIR, WRITE_FILE, TRUNCATE, MAKE_REG, REMOVE_FILE |
 | Extra read-only paths | Only those proven necessary in log mode (section 6), e.g. `/etc/localtime` |
 
 Notes:
 - Always grant `WRITE_FILE` and `TRUNCATE` together (kernel docs recommendation).
 - Atomic save MUST write the temp file in the same directory as the target, then `rename`. This avoids needing `REFER`. Replacing the target needs `REMOVE_FILE` and `MAKE_REG` on that directory.
-- Backups are copies, not cross-directory renames. Do not grant `REFER`.
-- No `REMOVE_DIR` anywhere: snapshot pruning removes files only.
+- Do not grant `REFER`.
+- No `REMOVE_DIR` and no `MAKE_DIR` anywhere: `crystal init` and `crystal rm` create and remove directories before the sandbox and then exit.
 - Do not grant `EXECUTE` anywhere.
 - The TTY fd is opened before restriction, so `IOCTL_DEV` does not affect it. Do not grant `IOCTL_DEV`.
 
@@ -112,7 +111,7 @@ There is no weaker mode and no flag to allow one: Crystal never runs with a part
 Module: `src/harden/seccomp.rs`. Crate: `seccompiler`.
 
 - Mode: allowlist. Default action `KillProcess` in release builds, `Log` when built with the cargo feature `sandbox-audit`. CI checks that release builds never enable `sandbox-audit`.
-- Build the allowlist from a full session (open vault, edit, save, backup, search, quit) in `sandbox-audit` mode, collecting logged syscalls with `run0 ausearch -m SECCOMP -c crystal`. This works with secureblue's `deny_ptrace` on; `strace -f -c` also works where ptrace is allowed (CI, or `deny_ptrace` off temporarily, see [Setup](../guide/setup.md)). Every allowed syscall gets a row in [Syscalls](../reference/syscalls.md).
+- Build the allowlist from a full session (open vault, view, search, copy, edit, save, quit) in `sandbox-audit` mode, collecting logged syscalls with `run0 ausearch -m SECCOMP -c crystal`. This works with secureblue's `deny_ptrace` on; `strace -f -c` also works where ptrace is allowed (CI, or `deny_ptrace` off temporarily, see [Setup](../guide/setup.md)). Every allowed syscall gets a row in [Syscalls](../reference/syscalls.md).
 - MUST deny (the allowlist omits them; tests cover each): `socket`, `socketpair`, `connect`, `bind`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `userfaultfd`, `perf_event_open`, `keyctl`, `add_key`, `mount`, `unshare`, `setns`, `personality`, `memfd_create`, `clone`, `clone3`.
 - `ioctl`: allow only by argument: `TCGETS2`, `TCSETS2`, `TCSETSF2` (the termios requests rustix actually uses; its fallback to `TCGETS` happens only on an error return, which a seccomp kill never gives), `TIOCGWINSZ`, and `FIONREAD` only if log mode proves it necessary. `TIOCSTI` and `TIOCLINUX` MUST be denied (defense in depth, even though modern kernels require `CAP_SYS_ADMIN` for them).
 - `kill`: own pid only and `SIGSTOP` only (suspend on Ctrl+Z or `SIGTSTP`: Crystal restores the terminal, then stops itself). `getpid` is allowed for the same reason.
@@ -127,14 +126,14 @@ Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.
 
 - `crystal_t`: process domain.
 - `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install ([Installation](../guide/installation.md)). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` ([Setup, Installing](../guide/setup.md#installing)). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
-- `crystal_vault_t`: label for `~/Vaults` and everything under it, and for the external backup directory.
+- `crystal_vault_t`: label for `~/.local/share/crystal` and everything under it.
 - `crystal_state_t`: label for `~/.local/state/crystal`.
-- `crystal_config_t`: label for `~/.config/crystal` (the encrypted `config.age`). `crystal_t` reads it before the sandbox; only `crystal init`, `crystal add` and `crystal remove` write it.
+- `crystal_config_t`: label for `~/.config/crystal` (plain-text settings, from Phase 5). `crystal_t` reads it before the sandbox and never writes it.
 
 ### 7.2 Policy intent
 
 - Domain transition `unconfined_t` -> `crystal_t` on exec of `crystal_exec_t`.
-- Allow: manage files and dirs of `crystal_vault_t` and `crystal_state_t`; create `crystal_state_t` dirs under `~/.local/state`; read/write the user TTY/PTY (`user_tty_device_t`, `user_devpts_t`); read locale and timezone files.
+- Allow: manage files and dirs of `crystal_vault_t` and `crystal_state_t`; create `crystal_vault_t` dirs under `~/.local/share` and `crystal_state_t` dirs under `~/.local/state`; read `crystal_config_t`; read/write the user TTY/PTY (`user_tty_device_t`, `user_devpts_t`); read locale and timezone files.
 - Phase 8 only: execute the age plugin binary for hardware-key unlock, as narrowly as possible (one plugin type, no transition to anything broader). Crystal sets `PR_SET_NO_NEW_PRIVS` in startup step 2, before the plugin runs, so a transition from `crystal_t` to a plugin domain needs `allow crystal_t <plugin>_t:process2 nnp_transition;` or a bounded plugin domain. Otherwise run the plugin in `crystal_t` with no transition.
 - Deny by omission: all network classes, `execute` on anything else, access to other `user_home_t` content, D-Bus, X11/Wayland sockets, `ptrace`, `userns_create`.
 - Do not use `unconfined_domain()` or broad `*_home_t` manage macros.
@@ -144,11 +143,11 @@ Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.
 ```
 HOME_DIR/\.local/bin/crystal              --  gen_context(system_u:object_r:crystal_exec_t,s0)
 HOME_DIR/\.config/crystal(/.*)?               gen_context(system_u:object_r:crystal_config_t,s0)
-HOME_DIR/Vaults(/.*)?                         gen_context(system_u:object_r:crystal_vault_t,s0)
+HOME_DIR/\.local/share/crystal(/.*)?          gen_context(system_u:object_r:crystal_vault_t,s0)
 HOME_DIR/\.local/state/crystal(/.*)?          gen_context(system_u:object_r:crystal_state_t,s0)
 ```
 
-The static rule covers every vault in the default location `~/Vaults`. A vault created with `crystal init NAME --at DIR` or registered with `crystal add` elsewhere needs a one-time rule: `run0 semanage fcontext -a -t crystal_vault_t 'DIR(/.*)?'` then `restorecon -Rv DIR`. Without it, that vault runs without the SELinux layer (Landlock and seccomp still apply), and `--sandbox-status` reports it. Label the backup drive with a `context=` mount option or the same `semanage` command for its mount point (Phase 7).
+Vaults exist only in `~/.local/share/crystal`, so the static rule covers every vault; no per-vault `semanage` rule is ever needed.
 
 ### 7.4 Development workflow
 
@@ -156,7 +155,7 @@ The static rule covers every vault in the default location `~/Vaults`. A vault c
 sepolicy generate --application ~/.local/bin/crystal -n crystal    # starting template only
 make -f /usr/share/selinux/devel/Makefile crystal.pp
 run0 semodule -i crystal.pp
-run0 restorecon -Rv ~/.local/bin/crystal ~/.config/crystal ~/.local/state/crystal ~/Vaults
+run0 restorecon -Rv ~/.local/bin/crystal ~/.config/crystal ~/.local/state/crystal ~/.local/share/crystal
 run0 semanage permissive -a crystal_t           # domain-level permissive while developing
 # exercise a full session, then:
 run0 ausearch -m AVC -c crystal | audit2allow -R
@@ -180,9 +179,8 @@ name=$1; shift
 case $name in                                       # same rule as Crystal's; checked here
   ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) echo "invalid vault name" >&2; exit 1 ;;
 esac                                                # too, so a bad name binds nothing
-vault=$HOME/Vaults/$name
+vault=$HOME/.local/share/crystal/$name
 state=$HOME/.local/state/crystal
-config=$HOME/.config/crystal
 bin=$HOME/.local/bin/crystal
 mkdir -p -m 700 "$state"                            # must exist to be bound
 exec bwrap \
@@ -190,19 +188,18 @@ exec bwrap \
   --clearenv \
   --setenv HOME "$HOME" --setenv TERM "$TERM" \
   --ro-bind "$bin" "$bin" \
-  --ro-bind "$config" "$config" \
   --proc /proc --dev /dev --tmpfs /tmp \
   --ro-bind-try /etc/localtime /etc/localtime \
-  --perms 0700 --dir "$HOME/Vaults" \
+  --perms 0700 --dir "$HOME/.local/share/crystal" \
   --bind "$vault" "$vault" \
   --bind "$state" "$state" \
   "$bin" "$@" "$name"
 ```
 
 - `--clearenv` plus `--setenv` mirrors Crystal's own environment allowlist (`HOME`, `TERM`).
-- Only the one vault is bound; `--perms 0700 --dir` recreates an empty `~/Vaults` so Crystal's owner and mode check on the root passes. The other vaults do not exist inside the sandbox.
-- The launcher opens existing vaults only; run `crystal init NAME` directly to create one.
-- The config is encrypted, so the launcher cannot look up a vault's path: it supports vaults in the default location `~/Vaults/<name>` only. A vault registered at another path runs without the bwrap layer. The config is bound read-only, so `crystal add` and `crystal remove` must also run directly.
+- Only the one vault is bound; `--perms 0700 --dir` recreates an empty `~/.local/share/crystal` so Crystal's owner and mode check on it passes. The other vaults do not exist inside the sandbox.
+- The launcher opens existing vaults only; run `crystal init`, `crystal recover`, `crystal check-code` and `crystal rm` directly.
+- Settings in `~/.config/crystal` (Phase 5) will be bound read-only once they exist.
 - Do not bind D-Bus, Wayland, X11 or PulseAudio/PipeWire sockets.
 - `--new-session` is not used: it breaks TUI job control, and `TIOCSTI` is blocked by seccomp (section 6).
 - `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.
@@ -224,7 +221,7 @@ Status checks are made by the test process from outside, through `/proc/<pid>/st
 - [ ] `ioctl(tty, TIOCSTI, ...)` is killed or denied
 - [ ] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`
 - [ ] `cat /proc/<crystal pid>/mem` from another shell fails
-- [ ] Save, atomic rename and backup still work inside the sandbox
+- [ ] Save and atomic rename still work inside the sandbox
 - [ ] `ps -eZ` shows `crystal_t` (when policy installed; manual check)
 - [ ] A kernel below ABI 9 makes Crystal refuse to start (test on a kernel or VM without it, or with Landlock disabled)
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode

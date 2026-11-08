@@ -11,7 +11,7 @@ One process, one crypto boundary: everything above the age layer handles plainte
                                                    v
 +-- Crystal process: mlocked, non-dumpable, Landlock + seccomp ------------+
 | +----------------------------------------------------------------------+ |
-| | Terminal guard + UI (own grid and backend)                           | |
+| | Terminal guard + shell, pager, editor (own grid and backend)         | |
 | | alt screen, raw mode, cleared on exit, panic and signals             | |
 | +----------------------------------------------------------------------+ |
 |             |                                    ^                       |
@@ -24,8 +24,8 @@ One process, one crypto boundary: everything above the age layer handles plainte
 |             ^                                    ^                       |
 |             |                                    v                       |
 | +----------------------------------------------------------------------+ |
-| | Note model                                                           | |
-| | all notes, titles, links and tags, in zeroizing memory               | |
+| | Note model + indexes built at unlock (names, links, tags)            | |
+| | all notes, folders and titles, in zeroizing memory                   | |
 | +----------------------------------------------------------------------+ |
 |                                    ^                                     |
 |                                    |  plaintext                          |
@@ -47,14 +47,14 @@ One process, one crypto boundary: everything above the age layer handles plainte
                                      |  ciphertext only
                                      v
                   +------------------------------------+
-                  | Vault directory                    |
+                  | ~/.local/share/crystal/NAME        |
                   | vault.age and identity*.age only   |
                   +------------------------------------+
                                      |  copied, never decrypted
                                      v
                   +------------------------------------+
-                  | Backup snapshots                   |
-                  | external drive, ciphertext copies  |
+                  | Your backup tool (restic, borg)    |
+                  | ciphertext copies                  |
                   +------------------------------------+
 ```
 
