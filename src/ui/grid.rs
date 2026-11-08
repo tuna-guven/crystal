@@ -27,6 +27,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use zeroize::Zeroize;
 
+use super::layout::Rect;
 use crate::model::assert_not_impl;
 
 /// The longest grapheme a cell holds, in bytes. Longer ones (stacked
@@ -194,6 +195,19 @@ impl Cell {
     }
 }
 
+/// The columns `grapheme` takes in a grid: exactly what `Grid::put_str`
+/// gives it, so wrapping and drawing always agree (0 means left out).
+pub fn grapheme_width(grapheme: &str) -> u8 {
+    shape(grapheme).1
+}
+
+/// The columns `text` takes when drawn on one row with room to spare.
+pub fn display_width(text: &str) -> usize {
+    text.graphemes(true)
+        .map(|g| usize::from(grapheme_width(g)))
+        .sum()
+}
+
 /// What a grapheme is drawn as, and its width; width 0 means it is left
 /// out (a lone zero-width character, such as a joiner at the start).
 fn shape(grapheme: &str) -> (&str, u8) {
@@ -231,6 +245,21 @@ impl Grid {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    /// The whole grid as a rectangle.
+    pub fn area(&self) -> Rect {
+        Rect::new(0, 0, self.width, self.height)
+    }
+
+    /// Blanks every cell of `area` (clipped to the grid) in `style`.
+    pub fn fill(&mut self, area: Rect, style: Style) {
+        let area = area.intersection(self.area());
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                self.put(x, y, " ", 1, style);
+            }
+        }
     }
 
     /// Blanks every cell; the text they held is wiped.
@@ -490,6 +519,23 @@ mod tests {
                     assert!(!symbol.contains(is_forbidden), "{c:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn display_width_matches_what_is_drawn() {
+        for text in [
+            "",
+            "abc",
+            "日本x",
+            "e\u{301}",
+            "a\u{1b}b",
+            "\u{200D}a",
+            "🇩🇪!",
+        ] {
+            let mut grid = Grid::new(40, 1);
+            let drawn = grid.put_str(0, 0, text, Style::PLAIN, 40);
+            assert_eq!(display_width(text), usize::from(drawn), "{text:?}");
         }
     }
 
