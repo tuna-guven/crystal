@@ -890,3 +890,20 @@ fn shell_paste_is_never_a_command() {
         "OSC 52 reached the terminal: {output:?}"
     );
 }
+
+/// The read-only commands answer on an empty vault (notes come with the
+/// editor; the unit tests in commands.rs cover full vaults).
+#[test]
+fn shell_commands_on_an_empty_vault() {
+    let (home, _) = home_with_vault("shell_commands");
+    let mut steps = pass_step(PASS);
+    // Only cells that change are redrawn, so each step waits for a word
+    // the previous answer did not have in the same place.
+    steps.push((SHELL_READY, b"ls\r".to_vec()));
+    steps.push(("notes yet.", b"tags\r".to_vec()));
+    steps.push(("tags yet.", b"search anything\r".to_vec()));
+    steps.push(("found.", b"find x\r".to_vec()));
+    steps.push(("matching", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+}

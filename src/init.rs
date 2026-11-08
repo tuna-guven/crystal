@@ -367,7 +367,9 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
-        state.sort();
+        // Sorted by a fixed key: the random id may sort either side of
+        // the pin.
+        state.sort_by_key(|f| f.ends_with(".pin"));
         assert_eq!(state, [format!("{}.gen", id.hex()), "diary.pin".to_owned()]);
 
         // The passphrase opens identity.age, and that opens vault.age.

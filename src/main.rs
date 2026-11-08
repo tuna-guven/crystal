@@ -10,11 +10,13 @@
 #![cfg_attr(test, deny(unsafe_code))]
 
 mod cli;
+mod commands;
 mod crypto;
 mod harden;
 mod init;
 mod md;
 mod model;
+mod notes;
 mod recover;
 mod recovery;
 mod rm;
@@ -138,15 +140,17 @@ fn startup() -> Result<(), Box<dyn Error>> {
         ""
     };
     let mut shell = shell::Shell::new(&args.name);
-    let notes = unlocked.contents.notes.len();
+    let notes = notes::Notes::new(unlocked.contents);
+    let count = notes.len();
     shell.print(
-        &format!("{notes} notes unlocked.{first}{restored}"),
+        &format!("{count} notes unlocked.{first}{restored}"),
         ui::grid::Style::PLAIN,
     );
     shell.print("Type help for the commands.", ui::grid::Style::PLAIN);
-    run_shell(&mut terminal, &signals, &mut shell)?;
+    run_shell(&mut terminal, &signals, &mut shell, &notes)?;
     drop(shell);
-    drop(unlocked);
+    drop(notes);
+    drop(unlocked.vault_dir);
     drop(state_dir);
     Ok(())
 }
@@ -157,6 +161,7 @@ fn run_shell(
     terminal: &mut term::TerminalGuard,
     signals: &term::Signals,
     shell: &mut shell::Shell,
+    notes: &notes::Notes,
 ) -> Result<(), Box<dyn Error>> {
     let mut screen = ui::screen::Screen::new(terminal.size()?);
     let mut decoder = shell::keys::Decoder::new();
@@ -173,14 +178,7 @@ fn run_shell(
                     match shell.key(key) {
                         shell::Action::Nothing => {}
                         shell::Action::Quit => return Ok(()),
-                        // The vault commands come in L6.
-                        shell::Action::Command(words) => {
-                            let name = words.first().map_or("", |w| w.as_str());
-                            shell.print(
-                                &format!("unknown command: {name} (type help)"),
-                                shell::ERROR_STYLE,
-                            );
-                        }
+                        shell::Action::Command(words) => commands::run(notes, &words, shell),
                     }
                 }
             }

@@ -33,9 +33,15 @@ const CURSOR_STYLE: Style = Style::PLAIN.mods(Mods::REVERSED);
 
 pub const HELP: &str = "\
 Commands:
-  help        this list
-  clear       clear the screen (Ctrl+L)
-  quit        lock the vault and leave (also exit, or Ctrl+D on an empty line)
+  ls [FOLDER]   notes and folders as a tree
+  ls #TAG       the notes with a tag
+  tags          every tag, with how many notes have it
+  find TEXT     names that hold TEXT's letters in order, best first
+  search TEXT   notes whose name or text holds TEXT (ignoring case)
+  help          this list
+  clear         clear the screen (Ctrl+L)
+  quit          lock the vault and leave (also exit, or Ctrl+D on an empty line)
+Names with spaces go in quotes: search \"two words\".
 Keys: arrows, Home and End move; Ctrl+U, Ctrl+K and Ctrl+W delete; Up and Down
 recall commands; PgUp and PgDn scroll; Ctrl+C clears the line.";
 
@@ -73,6 +79,12 @@ impl Shell {
             scroll: 0,
             page: 1,
         }
+    }
+
+    /// How many output entries there are (tests).
+    #[cfg(test)]
+    pub fn output_len(&self) -> usize {
+        self.output.len()
     }
 
     /// Adds output (sanitized by the scrollback).
@@ -262,7 +274,7 @@ mod tests {
         type_text(&mut s, "help");
         assert_eq!(screen(&mut s, 30, 2)[1], "crystal:diary> help");
         assert!(matches!(s.key(Key::Enter), Action::Nothing));
-        let rows = screen(&mut s, 80, 10);
+        let rows = screen(&mut s, 80, 30);
         assert!(rows.iter().any(|r| r == "crystal:diary> help"), "{rows:?}");
         assert!(rows.iter().any(|r| r.starts_with("Commands:")), "{rows:?}");
     }

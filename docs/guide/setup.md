@@ -155,9 +155,18 @@ Crystal shell ([decision 0033](../decisions/0033-shell.md)): a prompt at
 the bottom of the screen, output above it. Commands include `ls`,
 `view NAME`, `search TEXT`, `find TEXT`, `tags`, `copy NAME`, `help`,
 `lock` and `quit`. Nothing you see there stays in the terminal's
-scrollback. So far the shell knows `help`, `clear` and `quit` (also
-`exit`, or Ctrl+D on an empty line); the vault commands come with the rest
-of Phase 3. On the prompt line, the arrow keys, Home and End move,
+scrollback. So far the shell knows:
+
+| Command | Does |
+| --- | --- |
+| `ls [FOLDER]` | Notes and folders as a tree (folders first, ignoring case) |
+| `ls #TAG`, `tags` | The notes with a tag; every tag with its count |
+| `find TEXT` | Names holding TEXT's letters in order, best match first |
+| `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
+| `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
+
+Put a name with spaces in quotes: `search "two words"`. `view`, links and
+copying come with the rest of Phase 3. On the prompt line, the arrow keys, Home and End move,
 Ctrl+U, Ctrl+K and Ctrl+W delete, Up and Down recall earlier commands,
 PgUp and PgDn scroll the output, Ctrl+C clears the line and Ctrl+L the
 screen. Pasted text is always inserted as text, never run. The first

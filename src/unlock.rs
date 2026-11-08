@@ -73,10 +73,6 @@ impl std::error::Error for UnlockError {}
 /// An unlocked vault. The vault and state fds stay open for the session
 /// (the Landlock rule fds in Phase 6); nothing else does.
 pub struct Unlocked {
-    #[expect(
-        dead_code,
-        reason = "held open for the session; the Landlock rule fd in Phase 6"
-    )]
     pub vault_dir: VaultDir,
     pub contents: VaultContents,
     /// `New` on the first unlock of this vault on this device.
