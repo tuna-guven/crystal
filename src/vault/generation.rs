@@ -153,6 +153,36 @@ pub fn remove(state: &OwnedFd, counter: Counter) -> Result<(), rustix::io::Errno
     }
 }
 
+/// An opened vault is older than the newest one this device has seen:
+/// restored from a backup, or put back by someone else. Only the user can
+/// tell (docs/decisions/0036-backups-external.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Older {
+    pub seen: u64,
+    pub stored: u64,
+}
+
+/// After a successful decrypt, for an open the user can still confirm: as
+/// `accept_on_open`, but an older vault is reported as `Older` and the
+/// counter is left as it is.
+pub fn open_or_older(
+    state: &OwnedFd,
+    counter: Counter,
+    seen: u64,
+) -> Result<Result<Seen, Older>, GenError> {
+    match accept_on_open(state, counter, seen) {
+        Ok(result) => Ok(Ok(result)),
+        Err(GenError::Rollback { seen, stored, .. }) => Ok(Err(Older { seen, stored })),
+        Err(e) => Err(e),
+    }
+}
+
+/// The user typed `restore` for an `Older` vault: the counter goes back to
+/// its generation. The only way a counter is ever lowered.
+pub fn restore(state: &OwnedFd, counter: Counter, older: Older) -> Result<(), GenError> {
+    store(state, counter, older.seen)
+}
+
 /// After a successful decrypt: refuse a rollback, else remember the
 /// highest generation seen. A corrupt counter is refused, never reset.
 pub fn accept_on_open(state: &OwnedFd, counter: Counter, seen: u64) -> Result<Seen, GenError> {
@@ -290,6 +320,27 @@ mod tests {
         assert_eq!(load(&state, VAULT), Ok(Some(6)));
         // A crash before the rename leaves generation 6 on disk: fine too.
         assert_eq!(accept_on_open(&state, VAULT, 6), Ok(Seen::Known));
+    }
+
+    // An older vault is reported, not refused, and changes nothing until
+    // the user restores it; then the counter follows it down.
+    #[test]
+    fn older_is_reported_then_restored() {
+        let (path, state) = fresh_dir("older");
+        accept_on_open(&state, VAULT, 9).unwrap();
+        assert_eq!(open_or_older(&state, VAULT, 9), Ok(Ok(Seen::Known)));
+        let older = open_or_older(&state, VAULT, 4).unwrap().unwrap_err();
+        assert_eq!(older, Older { seen: 4, stored: 9 });
+        assert_eq!(load(&state, VAULT), Ok(Some(9)), "unchanged until restored");
+        restore(&state, VAULT, older).unwrap();
+        assert_eq!(load(&state, VAULT), Ok(Some(4)));
+        assert_eq!(open_or_older(&state, VAULT, 4), Ok(Ok(Seen::Known)));
+        // A corrupt counter is still an error, never "older".
+        fs::write(vault_file(&path), b"x\n").unwrap();
+        assert_eq!(
+            open_or_older(&state, VAULT, 4),
+            Err(GenError::Corrupt { what: "vault" })
+        );
     }
 
     #[test]

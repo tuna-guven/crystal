@@ -58,20 +58,22 @@ impl std::error::Error for OpenVaultError {}
 /// Crystal uses afterwards (and, from Phase 6, a Landlock rule fd).
 pub struct VaultDir {
     fd: OwnedFd,
+    /// The number in `VERSION`: the newest blob format allowed here.
+    version: u16,
 }
 
 impl VaultDir {
     /// Opens `NAME` in the data directory with `O_NOFOLLOW`; it must be
     /// ours, mode 0700, and hold a valid `VERSION`.
     pub fn open(data: &DataDir, name: &VaultName) -> Result<Self, OpenVaultError> {
-        let dir = Self::open_private(data, name)?;
-        read_version(&dir.fd).map_err(OpenVaultError::Version)?;
+        let mut dir = Self::open_private(data, name)?;
+        dir.version = read_version(&dir.fd).map_err(OpenVaultError::Version)?;
         Ok(dir)
     }
 
     /// As `open`, without reading `VERSION`: for `crystal rm`, which must
     /// also remove a vault whose `VERSION` is damaged or from a newer
-    /// Crystal.
+    /// Crystal. Its `version` is 0, so it can never open `vault.age`.
     pub fn open_for_removal(data: &DataDir, name: &VaultName) -> Result<Self, OpenVaultError> {
         Self::open_private(data, name)
     }
@@ -93,11 +95,16 @@ impl VaultDir {
         if mode != 0o700 {
             return Err(OpenVaultError::BadMode(mode));
         }
-        Ok(Self { fd })
+        Ok(Self { fd, version: 0 })
     }
 
     pub fn fd(&self) -> &OwnedFd {
         &self.fd
+    }
+
+    /// The vault's `VERSION` (0 after `open_for_removal`).
+    pub fn version(&self) -> u16 {
+        self.version
     }
 }
 

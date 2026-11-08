@@ -353,7 +353,7 @@ mod tests {
         for file in &files {
             assert_eq!(mode(&vault.join(file)), 0o600, "{file}");
         }
-        assert_eq!(fs::read(vault.join("VERSION")).unwrap(), b"1\n");
+        assert_eq!(fs::read(vault.join("VERSION")).unwrap(), b"2\n");
 
         // The vault is pinned and its counter is at generation 1.
         let id = pin::load(world.state.fd(), &name("diary"))
@@ -376,7 +376,11 @@ mod tests {
             &pass("pw"),
         )
         .unwrap();
-        let contents = format::open(&fs::read(vault.join("vault.age")).unwrap(), &identity);
+        let contents = format::open(
+            &fs::read(vault.join("vault.age")).unwrap(),
+            &identity,
+            crate::vault::codec::FORMAT,
+        );
         assert!(contents.unwrap().vault_id == id);
 
         // Recovery without the passphrase: the recovery code opens

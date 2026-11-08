@@ -46,7 +46,7 @@ If a step in 4 fails, the files, the vault directory and the pin are removed aga
 
 The decrypted vault is a small database of note records: postcard, then Padmé-padded and encrypted. Folders are metadata, and links and tags are read from the text ([decision 0034](../decisions/0034-vault-format-2.md)).
 
-**Format 2** (`vault::codec`, from step L2). Postcard writes integers as varints, and strings and lists with a varint length first:
+**Format 2** (`vault::codec`, written since step L2; name rules in `model::name`). Postcard writes integers as varints, and strings and lists with a varint length first:
 
 ```text
 format: u16 = 2 | vault_id: [u8; 32] | generation: u64 | notes: [Note]
@@ -56,8 +56,9 @@ Note = id: [u8; 16] | folder: str | title: str | created: u64 | modified: u64 | 
 - *Names:* a note's name is `folder/title`, or `title` when `folder` is empty. `folder` is segments joined by `/`, at most 32 levels and 1 KiB. A title or folder segment is 1 to 255 bytes, has no leading or trailing space, is not `.` or `..`, and contains none of `[ ] # ^ | \ / : * ? " < >` and no control or BiDi character. Names are unique per vault, compared case-insensitively. These are Obsidian's rules, and valid file names for an export.
 - *Links:* Obsidian syntax in the body: `[[name]]`, `[[name|shown text]]`, `[[name#Heading]]`, `[[name#^block-id]]`, `[[#Heading]]`. A target without `/` matches a unique title. A block id `^id` ends a paragraph or list item. `mv` rewrites links to the renamed note in the same save; a broken link is reported, never silently changed.
 - *Tags:* `#tag` in the body outside code (letters, digits, `_`, `-`, `/`, not only digits).
+- *Plain text:* a note whose title ends in `.txt` is shown as written, with no Markdown, links or tags read from it ([decision 0038](../decisions/0038-plain-text-notes.md)); every other note is Markdown.
 - *Indexes:* name, title, tag, links, backlinks, headings and block ids are built in zeroizing memory at unlock and after every save, never stored.
-- *Format 1* ([decision 0018](../decisions/0018-vault-format-1.md)), as built today, has no `folder` and a separate `tags: [str]` field after `title`. It is still read: the folder is empty and its tags are appended to the body as `#tag`; the next save writes format 2.
+- *Format 1* ([decision 0018](../decisions/0018-vault-format-1.md)), written by Crystal before step L2, has no `folder` and a separate `tags: [str]` field after `title`. It is still read: the folder is empty and its tags are appended to the body as `#tag`, after an empty line. Its notes must meet format 2's name rules (non-empty titles without `/` and the other reserved characters, unique ignoring case); otherwise the vault is refused, never renamed silently. The next save writes format 2.
 
 `created` and `modified` are seconds since the Unix epoch. The format number is decoded on its own first, so an unknown format is refused before anything else is parsed. A golden-bytes test pins each format's exact encoding.
 
@@ -79,7 +80,7 @@ Note ids and names must be unique, and no bytes may follow the last note. Limits
 
 ## VERSION
 
-The vault directory's `VERSION` file holds the newest blob format the directory may contain; unlock accepts a `vault.age` whose format is at most that number ([decision 0034](../decisions/0034-vault-format-2.md)). A save that first writes a newer format writes `VERSION` before `vault.age`, so a crash in between leaves a readable vault. The file holds the format number in ASCII decimal and one newline (`1\n`): no sign, no leading zero, no `\r`, spaces or second line. It is plaintext by design ([decision 0012](../decisions/0012-public-bytes.md)) and is read first at unlock, so an unknown format is refused before anything is decrypted. `vault::format::read_version` opens it with `O_NOFOLLOW` and `O_NONBLOCK` (a FIFO cannot block the open), refuses anything but a regular file, and reads at most seven bytes whatever the file's size. A directory without `VERSION` is not a vault. `crystal init` writes it through the atomic writer.
+The vault directory's `VERSION` file holds the newest blob format the directory may contain; unlock accepts a `vault.age` whose format is at most that number ([decision 0034](../decisions/0034-vault-format-2.md)). A save that first writes a newer format writes `VERSION` before `vault.age`, so a crash in between leaves a readable vault (the save comes in Phase 4; `crystal init` writes `2`). A `vault.age` in a newer format than `VERSION` allows is refused after decryption. The file holds the format number in ASCII decimal and one newline (`2\n`): no sign, no leading zero, no `\r`, spaces or second line. It is plaintext by design ([decision 0012](../decisions/0012-public-bytes.md)) and is read first at unlock, so an unknown format is refused before anything is decrypted. `vault::format::read_version` opens it with `O_NOFOLLOW` and `O_NONBLOCK` (a FIFO cannot block the open), refuses anything but a regular file, and reads at most seven bytes whatever the file's size. A directory without `VERSION` is not a vault. `crystal init` writes it through the atomic writer.
 
 ## Integrity
 
@@ -95,7 +96,7 @@ age proves a file is authentic, not that it is the newest. Someone who controls 
 
 - **Format:** the generation in ASCII decimal and one newline (`42\n`), with exactly one valid spelling, the same rules as `VERSION`. Written through the atomic writer (`PublicBytes::generation`), mode 0600.
 - **On open** (`vault::generation::accept_on_open`), after a successful decrypt: equal or higher is accepted and the counter set to it. No counter means the first unlock on this device; rollback detection starts from there, and the user is told.
-- **Older vault: restore or attack** ([decision 0036](../decisions/0036-backups-external.md), step L3): a generation lower than the counter stops the unlock with both numbers and an explanation: the vault was restored from a backup, or someone put back an old copy. Typing `restore` accepts it and sets the counter to the vault's generation; anything else exits and changes nothing. The text says not to type `restore` unless you restored the vault yourself. This is the only way a counter is lowered.
+- **Older vault: restore or attack** ([decision 0036](../decisions/0036-backups-external.md); `generation::open_or_older`, `restore`): a generation lower than the counter stops the unlock, and `crystal recover`, with both numbers and an explanation: the vault was restored from a backup, or someone put back an old copy. Typing `restore` accepts it and sets the counter to the vault's generation; anything else exits and changes nothing. The text says not to type `restore` unless you restored the vault yourself. This is the only way a counter is lowered.
 - **On save** (`record_save`): the counter is written after the rename of the new file has committed. A crash in between leaves the counter one behind the file, which the next open accepts and catches up. A saved generation below the counter (another writer got ahead) is reported, and the counter is not lowered.
 - **Fail closed:** a counter that is not exactly a decimal number and a newline, or is not a regular file, is refused. Crystal never resets a counter it cannot read; the user must look at it.
 - **Limits:** detection is relative to what *this device* has seen. A fresh device, or one whose state directory was lost, accepts whatever it sees first. The counters are plaintext, so a process running as you can lower or delete them (A5); this is accepted, see the decision record.

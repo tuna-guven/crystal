@@ -1,8 +1,9 @@
-//! Note model: notes, titles, links and tags in zeroizing memory, plus the
-//! wikilink/backlink index and search.
+//! Note model: notes, folders and titles in zeroizing memory, the name
+//! rules (`name`), and later the link, tag and backlink indexes built from
+//! the text (docs/decisions/0034-vault-format-2.md).
 //!
 //! Type-level rule (docs/design/leakage.md): note
-//! content, including titles and tags, only ever exists as `NoteText`,
+//! content, including folders and titles, only ever exists as `NoteText`,
 //! which implements neither Debug, Display, Serialize nor Clone. The only
 //! ways out are the renderer, the editor and the vault codec, which
 //! borrows `as_str()` straight into the buffer that gets encrypted.
@@ -15,6 +16,8 @@ use rustix::io::Errno;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::fill_random;
+
+pub mod name;
 
 /// Fails the build if `$ty` implements any of the listed traits; each
 /// trait gets its own check. How: `AmbiguousIfImpl` has a blanket impl
@@ -51,7 +54,7 @@ const _: fn() = || {
     wiped_on_drop::<Note>();
 };
 
-/// Note content: a body, a title or a tag. The buffer is wiped when the
+/// Note content: a body, a title or a folder. The buffer is wiped when the
 /// value is dropped. Deliberately no Debug, Display, Serialize or Clone:
 /// it can't reach a log, an error, a panic message or a `format!` string,
 /// and can't be copied into memory that is not wiped.
@@ -108,14 +111,16 @@ impl NoteId {
     }
 }
 
-/// One note. Every field, including the title and the tags, is note
-/// content and is wiped on drop. No Debug, Serialize or Clone: the vault
+/// One note. Every field, including the folder and the title, is note
+/// content and is wiped on drop. Tags and links are read from the body
+/// (Obsidian's `#tag` and `[[name]]`), never stored apart. No Debug, Serialize or Clone: the vault
 /// codec writes it through a borrowed wire struct.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Note {
     pub id: NoteId,
+    /// `""` at the top level, else segments joined by `/` (`name`).
+    pub folder: NoteText,
     pub title: NoteText,
-    pub tags: Vec<NoteText>,
     /// Seconds since the Unix epoch.
     pub created: u64,
     /// Seconds since the Unix epoch.
@@ -245,24 +250,22 @@ mod tests {
 
     // `note.zeroize()` is exactly what Drop runs (ZeroizeOnDrop, checked
     // at compile time above), so this shows dropping a Note wipes every
-    // field. Tags are wiped one by one like the title (the test above),
-    // then freed by Vec::clear, so their memory can't be read afterwards.
+    // field.
     #[test]
     fn zeroize_wipes_every_field_of_a_note() {
         let mut note = Note {
             id: NoteId::from_bytes([0x5a; 16]),
+            folder: roomy_text("work/projects"),
             title: roomy_text("secret title"),
-            tags: vec![roomy_text("tag-a"), roomy_text("tag-b")],
             created: 1_700_000_000,
             modified: 1_700_000_001,
             body: roomy_text(&"secret body ".repeat(50)),
         };
         note.zeroize();
-        for t in [&mut note.title, &mut note.body] {
+        for t in [&mut note.folder, &mut note.title, &mut note.body] {
             assert!(t.is_empty());
             assert!(wiped_allocation(t).iter().all(|&b| b == 0));
         }
-        assert!(note.tags.is_empty());
         assert_eq!(note.id.as_bytes(), &[0; 16]);
         assert_eq!((note.created, note.modified), (0, 0));
     }

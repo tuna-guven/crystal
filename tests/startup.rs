@@ -368,7 +368,7 @@ fn init_then_rm_end_to_end() {
     for file in &files {
         assert_eq!(mode(&vault.join(file)), 0o600, "{file}");
     }
-    assert_eq!(std::fs::read(vault.join("VERSION")).unwrap(), b"1\n");
+    assert_eq!(std::fs::read(vault.join("VERSION")).unwrap(), b"2\n");
     assert!(!home.join(".config").exists(), "no config file");
     let state_dir = home.join(".local/state/crystal");
     let mut state: Vec<String> = std::fs::read_dir(&state_dir)

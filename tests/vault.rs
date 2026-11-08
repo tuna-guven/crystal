@@ -163,16 +163,45 @@ fn refuses_bit_flipped_vault() {
     assert_refused(&home, "vault.age: the encrypted file is damaged");
 }
 
-/// An older vault.age restored after this device saw a newer one: the
-/// device's counter is ahead of the file.
+/// An older vault.age than this device has seen (the counter is ahead
+/// of the file): restored from a backup, or put back by someone else.
+/// Crystal explains and asks; anything but `restore` changes nothing.
 #[test]
-fn refuses_rolled_back_vault() {
+fn older_vault_needs_restore() {
     let (home, _) = home_with_vault("vault_rollback");
-    std::fs::write(vault_counter(&home, "diary"), b"2\n").unwrap();
-    assert_refused(
-        &home,
-        "the vault is older than the last one this device has seen (generation 1, last seen 2)",
+    let counter = vault_counter(&home, "diary");
+    std::fs::write(&counter, b"2\n").unwrap();
+    let question = "Type restore to accept: ";
+
+    let mut steps = pass_step(PASS);
+    steps.push((question, b"yes\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(
+        !ok && output.contains("not restored; nothing was changed"),
+        "{output}"
     );
+    assert!(
+        output.contains(
+            "older than the newest version this device has seen (generation 1, last seen 2)"
+        ),
+        "{output}"
+    );
+    assert!(output.contains("do not type restore"), "{output}");
+    assert!(!output.contains("notes unlocked"), "{output}");
+    assert_no_leak(&home, &output);
+    assert_eq!(std::fs::read(&counter).unwrap(), b"2\n");
+
+    let mut steps = pass_step(PASS);
+    steps.push((question, b"restore\r".to_vec()));
+    steps.push(("notes unlocked", b"q".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(
+        ok && output.contains("The restored vault was accepted"),
+        "{output}"
+    );
+    assert_eq!(std::fs::read(&counter).unwrap(), b"1\n");
+    let output = unlock_ok(&home, "diary", PASS);
+    assert!(!output.contains("older than"), "{output}");
 }
 
 /// Another of your vaults moved in under this name: it decrypts with the
@@ -385,7 +414,7 @@ fn refuses_bad_version() {
         ),
         (
             "version_unknown",
-            |f| std::fs::write(f, b"2\n").unwrap(),
+            |f| std::fs::write(f, b"3\n").unwrap(),
             "a format this version of Crystal cannot read",
         ),
     ];
@@ -394,6 +423,18 @@ fn refuses_bad_version() {
         damage(&vault.join("VERSION"));
         assert_refused_before_prompt(&home, expected);
     }
+}
+
+/// VERSION names the newest blob format the directory may hold: a vault
+/// written in format 2 under a VERSION of 1 is refused after decryption.
+#[test]
+fn refuses_vault_newer_than_its_version() {
+    let (home, vault) = home_with_vault("version_older_than_blob");
+    std::fs::write(vault.join("VERSION"), b"1\n").unwrap();
+    assert_refused(
+        &home,
+        "the vault's contents are in a newer format than its VERSION file allows",
+    );
 }
 
 #[test]
@@ -632,6 +673,25 @@ fn recover_after_forgetting_the_passphrase() {
         "{output}"
     );
     assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before);
+}
+
+/// A backup restored after the passphrase was forgotten: recover asks
+/// for `restore` before the new passphrase, and then works.
+#[test]
+fn recover_an_older_vault() {
+    let home = private_home("recover_older");
+    let code = recovery_code_in(&init(&home, "diary", PASS));
+    let counter = vault_counter(&home, "diary");
+    std::fs::write(&counter, b"5\n").unwrap();
+    let mut steps = vec![
+        code_step(&code),
+        ("Type restore to accept: ", b"restore\r".to_vec()),
+    ];
+    steps.extend(new_pass_steps());
+    let (ok, output) = recover(&home, &steps);
+    assert!(ok, "{output}");
+    assert_eq!(std::fs::read(&counter).unwrap(), b"1\n");
+    unlock_ok(&home, "diary", NEW_PASS);
 }
 
 /// identity.age lost: recover writes it again with a new passphrase.

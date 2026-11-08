@@ -39,8 +39,8 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Sandbox plumbing | Reuse `landlock` + `seccompiler` | n/a | Kernel ABI details are easy to get wrong |
 | Vault format | Build | 600 lines | Defines integrity, rollback and metadata hiding |
 | Atomic writer | Build | 80 lines | Ciphertext-only, temp + fsync + rename + dir fsync |
-| Markdown renderer | Build | 300 lines | Small subset, full control over output |
-| Sanitizer | Build | 60 lines | Strips C0, C1, ESC, BiDi overrides from every rendered span |
+| Markdown renderer | Build | 450 lines | `md::render`: a small subset as styled, wrapped lines over the sanitized text, plain text for `*.txt`; one pass, no recursion, lines kept flat ([decision 0038](../decisions/0038-plain-text-notes.md)) |
+| Sanitizer | Build | 80 lines | Spells out C0, C1 (ESC, CSI) and BiDi controls as dimmed `<U+XXXX>` in every rendered span; only its `SafeText` reaches a widget ([decision 0037](../decisions/0037-visible-escapes.md)) |
 | Wikilink and backlink index | Build | 200 lines | Simple map over titles, rebuilt on unlock |
 | `find` and `search` | Build | 150 lines | Subsequence scorer over names, case-insensitive full-text search ([decision 0033](../decisions/0033-shell.md)) |
 | Terminal guard | Build | 120 lines | Alt screen, raw mode, clear on exit, panic hook, signals |

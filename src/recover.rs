@@ -21,7 +21,7 @@ use crate::vault::atomic::{FileName, Payload, WriteError, atomic_write};
 use crate::vault::format::{
     self, IDENTITY_BACKUP_FILE, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError,
 };
-use crate::vault::generation::{self, Counter, GenError};
+use crate::vault::generation::{self, Counter, GenError, Older};
 use crate::vault::pin::{self, PinError};
 use crate::vault::public_file::{ReadError, read_bounded};
 use crate::vault::vault_dir::VaultDir;
@@ -117,6 +117,7 @@ pub fn open_backup(vault_dir: &VaultDir, code: &RecoveryCode) -> Result<Opened, 
     let contents = format::open(
         &read(vault_dir, VAULT_FILE, crypto::MAX_CIPHERTEXT)?,
         &identity,
+        vault_dir.version(),
     )
     .map_err(RecoverError::Vault)?;
     Ok(Opened {
@@ -127,17 +128,29 @@ pub fn open_backup(vault_dir: &VaultDir, code: &RecoveryCode) -> Result<Opened, 
 }
 
 /// `recover`, before the new passphrase is asked for: the vault must be
-/// the one pinned to `name` (or is pinned now), and not older than the
-/// newest version seen here.
-pub fn check_seen(opened: &Opened, name: &VaultName, state: &StateDir) -> Result<(), RecoverError> {
+/// the one pinned to `name` (or is pinned now). An older vault than seen
+/// here is reported, with the counter unchanged, for the user to accept
+/// with `restore` (`accept_restore`) or not.
+pub fn check_seen(
+    opened: &Opened,
+    name: &VaultName,
+    state: &StateDir,
+) -> Result<Option<Older>, RecoverError> {
     pin::check(state.fd(), name, &opened.vault_id).map_err(RecoverError::Pin)?;
-    generation::accept_on_open(
+    let result = generation::open_or_older(
         state.fd(),
         Counter::Vault(opened.vault_id),
         opened.generation,
     )
     .map_err(RecoverError::Generation)?;
-    Ok(())
+    Ok(result.err())
+}
+
+/// The user typed `restore`: the counter goes back to this vault's
+/// generation.
+pub fn accept_restore(opened: &Opened, state: &StateDir, older: Older) -> Result<(), RecoverError> {
+    generation::restore(state.fd(), Counter::Vault(opened.vault_id), older)
+        .map_err(RecoverError::Generation)
 }
 
 /// `recover`: writes a new `identity.age`, the vault key sealed with
@@ -235,7 +248,9 @@ mod tests {
         fn recover(&self, n: &str, code: &RecoveryCode, new: &str) -> Result<(), RecoverError> {
             let dir = self.dir(n);
             let opened = open_backup(&dir, code)?;
-            check_seen(&opened, &name(n), &self.state)?;
+            if let Some(older) = check_seen(&opened, &name(n), &self.state)? {
+                accept_restore(&opened, &self.state, older)?;
+            }
             finish(opened, &pass(new), &dir)
         }
     }
@@ -304,23 +319,34 @@ mod tests {
         );
     }
 
+    // An older vault (restored from a backup) is reported before anything
+    // is written; once accepted, recover goes on and the counter follows.
     #[test]
-    fn refuses_a_rolled_back_vault_and_writes_nothing() {
-        let world = World::new("rolled_back");
+    fn reports_an_older_vault_before_writing() {
+        let world = World::new("older");
         let code = world.init("diary");
         let id = pin::load(world.state.fd(), &name("diary"))
             .unwrap()
             .unwrap();
         generation::store(world.state.fd(), Counter::Vault(id), 9).unwrap();
         let identity = fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap();
-        assert!(matches!(
-            world.recover("diary", &code, "new-pw"),
-            Err(RecoverError::Generation(GenError::Rollback { .. }))
-        ));
+        let opened = open_backup(&world.dir("diary"), &code).unwrap();
+        let older = check_seen(&opened, &name("diary"), &world.state).unwrap();
+        assert_eq!(older, Some(Older { seen: 1, stored: 9 }));
         assert_eq!(
             fs::read(world.vault("diary").join(IDENTITY_FILE)).unwrap(),
             identity
         );
+        assert_eq!(
+            generation::load(world.state.fd(), Counter::Vault(id)),
+            Ok(Some(9))
+        );
+        world.recover("diary", &code, "new-pw").unwrap();
+        assert_eq!(
+            generation::load(world.state.fd(), Counter::Vault(id)),
+            Ok(Some(1))
+        );
+        assert!(world.unlocks("diary", "new-pw"));
     }
 
     #[test]

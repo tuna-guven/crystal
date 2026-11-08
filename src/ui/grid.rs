@@ -7,7 +7,7 @@
 //!   holds note text.
 //! - Text enters only through `put_str`, which splits it into graphemes,
 //!   measures them with `unicode-width`, and replaces anything unsafe or
-//!   unmeasurable with U+FFFD: a control or BiDi character (`is_forbidden`),
+//!   unmeasurable with `?`: a control or BiDi character (`is_forbidden`),
 //!   a grapheme wider than 2 columns, or one longer than `MAX_CELL_BYTES`.
 //! - A wide grapheme takes two cells: the first holds it, the second is a
 //!   continuation (width 0). Overwriting either half blanks the other, so
@@ -31,12 +31,16 @@ use super::layout::Rect;
 use crate::model::assert_not_impl;
 
 /// The longest grapheme a cell holds, in bytes. Longer ones (stacked
-/// combining marks, "Zalgo" text) are drawn as U+FFFD: they could not be
+/// combining marks, "Zalgo" text) are drawn as `?`: they could not be
 /// shown sensibly in one cell anyway.
 pub const MAX_CELL_BYTES: usize = 16;
 
-/// Drawn in place of a grapheme that must not, or cannot, be shown.
-pub const REPLACEMENT: &str = "\u{FFFD}";
+/// Drawn in place of a grapheme that must not, or cannot, be shown: plain
+/// ASCII, so every font has it (U+FFFD is missing from some terminal
+/// fonts and then shows as nothing; docs/decisions/0037-visible-escapes.md).
+/// Note text normally reaches the grid sanitized (`md::safe`), with hidden
+/// characters spelled out; this is the last line of defence.
+pub const REPLACEMENT: &str = "?";
 
 /// True for characters that must never reach the terminal: C0 controls,
 /// DEL and C1 controls (`char::is_control`, which covers ESC, CSI U+009B
@@ -498,12 +502,12 @@ mod tests {
         for text in cases {
             let mut grid = Grid::new(3, 1);
             assert_eq!(grid.put_str(0, 0, text, Style::PLAIN, 3), 1, "{text:?}");
-            assert_eq!(row(&grid, 0), "\u{FFFD}  ", "{text:?}");
+            assert_eq!(row(&grid, 0), "?  ", "{text:?}");
         }
         // An escape sequence: ESC is replaced, the rest is plain text.
         let mut grid = Grid::new(6, 1);
         grid.put_str(0, 0, "\u{1b}[2J", Style::PLAIN, 6);
-        assert_eq!(row(&grid, 0), "\u{FFFD}[2J  ");
+        assert_eq!(row(&grid, 0), "?[2J  ");
     }
 
     #[test]

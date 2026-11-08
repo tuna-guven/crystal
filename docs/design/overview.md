@@ -4,7 +4,7 @@ Crystal is a single static Rust binary that opens an age-encrypted Markdown vaul
 
 **Goals**
 
-- Obsidian-compatible core: a vault of Markdown notes in virtual folders, `[[wikilinks]]` to notes, headings and blocks, backlinks, `#tags`, full-text search ([decision 0034](../decisions/0034-vault-format-2.md))
+- Obsidian-compatible core: a vault of Markdown notes, and plain text notes named `*.txt` ([decision 0038](../decisions/0038-plain-text-notes.md)), in virtual folders, `[[wikilinks]]` to notes, headings and blocks, backlinks, `#tags`, full-text search ([decision 0034](../decisions/0034-vault-format-2.md))
 - A command shell like gopass's (`ls`, `view`, `search`, `find`, `edit`, `mv`, `rm`), with a full-screen pager and an in-process editor ([decision 0033](../decisions/0033-shell.md))
 - Copy and paste: an internal clipboard, and the system clipboard by an explicit action, cleared after 45 seconds ([decision 0035](../decisions/0035-clipboard.md))
 - Vaults in one fixed place, `~/.local/share/crystal`, with no config file ([decision 0032](../decisions/0032-fixed-locations.md))

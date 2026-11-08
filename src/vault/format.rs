@@ -15,7 +15,7 @@ use age::x25519;
 use rustix::io::Errno;
 
 use super::atomic::{FileName, Payload, PublicBytes, WriteError, atomic_write};
-use super::codec::{self, CodecError, FORMAT, VaultContents};
+use super::codec::{self, CodecError, FORMAT, OLDEST_FORMAT, VaultContents};
 use super::padme::{self, PadError};
 use super::public_file::{ReadError, parse_decimal_line, read_bounded};
 use crate::crypto::{self, Ciphertext, CryptoError, VaultIdentity};
@@ -55,11 +55,17 @@ pub fn seal(
 
 /// The vault back from `vault.age`: decrypt, unpad, decode. age
 /// authenticates the whole file, so a changed byte anywhere fails at
-/// decryption, before padding or contents are looked at.
-pub fn open(ciphertext: &[u8], identity: &VaultIdentity) -> Result<VaultContents, VaultError> {
+/// decryption, before padding or contents are looked at. `version` is the
+/// vault's `VERSION`: a blob in a newer format is refused
+/// (docs/decisions/0034-vault-format-2.md).
+pub fn open(
+    ciphertext: &[u8],
+    identity: &VaultIdentity,
+    version: u16,
+) -> Result<VaultContents, VaultError> {
     let padded = crypto::decrypt_with_identity(ciphertext, identity).map_err(VaultError::Crypto)?;
     let encoded = padme::unpad(&padded).map_err(VaultError::Padding)?;
-    codec::decode(encoded).map_err(VaultError::Codec)
+    codec::decode_at_most(encoded, version).map_err(VaultError::Codec)
 }
 
 // The vault directory's files (docs/design/storage.md, "Key design"),
@@ -112,13 +118,15 @@ impl fmt::Display for VersionError {
 impl std::error::Error for VersionError {}
 
 /// Parses `VERSION` strictly (`public_file::parse_decimal_line`: one
-/// spelling per number) and accepts only `FORMAT`.
-pub fn check_version(bytes: &[u8]) -> Result<(), VersionError> {
+/// spelling per number). It names the newest blob format the directory
+/// may hold (docs/decisions/0034-vault-format-2.md), so every format from
+/// the oldest this build reads up to `FORMAT` is accepted. Returns it.
+pub fn check_version(bytes: &[u8]) -> Result<u16, VersionError> {
     let number = parse_decimal_line(bytes)
         .and_then(|n| u16::try_from(n).ok())
         .ok_or(VersionError::Malformed)?;
-    if number == FORMAT {
-        Ok(())
+    if (OLDEST_FORMAT..=FORMAT).contains(&number) {
+        Ok(number)
     } else {
         Err(VersionError::Unknown)
     }
@@ -126,8 +134,8 @@ pub fn check_version(bytes: &[u8]) -> Result<(), VersionError> {
 
 /// Reads and checks `VERSION` in the vault directory `dir`: first, before
 /// any decryption. Regular file only, at most a few bytes, whatever the
-/// file's size (`public_file::read_bounded`).
-pub fn read_version(dir: &OwnedFd) -> Result<(), VersionError> {
+/// file's size (`public_file::read_bounded`). Returns the number.
+pub fn read_version(dir: &OwnedFd) -> Result<u16, VersionError> {
     let bytes = read_bounded(dir, VERSION_FILE, MAX_VERSION_LEN)
         .map_err(|e| match e {
             ReadError::NotARegularFile => VersionError::NotARegularFile,
@@ -172,8 +180,8 @@ mod tests {
                 .iter()
                 .map(|(id, title, body)| Note {
                     id: NoteId::from_bytes([*id; 16]),
+                    folder: text("work"),
                     title: text(title),
-                    tags: vec![text("tag")],
                     created: 1,
                     modified: 2,
                     body: text(body),
@@ -189,7 +197,7 @@ mod tests {
         #[test]
         fn seal_open_round_trip(
             generation in any::<u64>(),
-            notes in prop::collection::vec((".{0,20}", any::<String>()), 0..6),
+            notes in prop::collection::vec(("[a-z][a-z0-9]{0,19}", any::<String>()), 0..6),
         ) {
             let identity = VaultIdentity::generate();
             let contents = VaultContents {
@@ -200,8 +208,9 @@ mod tests {
                     .enumerate()
                     .map(|(i, (title, body))| Note {
                         id: NoteId::from_bytes([i as u8; 16]),
+                        // Unique names whatever titles were drawn.
+                        folder: text(&format!("f{i}")),
                         title: text(title),
-                        tags: vec![],
                         created: 0,
                         modified: 0,
                         body: text(body),
@@ -209,7 +218,7 @@ mod tests {
                     .collect(),
             };
             let sealed = seal(&contents, &identity.recipient()).unwrap();
-            let back = open(sealed.as_bytes(), &identity).unwrap();
+            let back = open(sealed.as_bytes(), &identity, FORMAT).unwrap();
             prop_assert_eq!(back.vault_id, contents.vault_id);
             prop_assert_eq!(back.generation, generation);
             prop_assert_eq!(back.notes.len(), notes.len());
@@ -225,15 +234,15 @@ mod tests {
         let identity = VaultIdentity::generate();
         let sealed = seal(&vault(&[(1, "T", "secret body")]), &identity.recipient()).unwrap();
         let other = VaultIdentity::generate();
-        let err = open(sealed.as_bytes(), &other).err();
+        let err = open(sealed.as_bytes(), &other, FORMAT).err();
         assert_eq!(err, Some(VaultError::Crypto(CryptoError::NotForThisKey)));
 
         let mut bad = sealed.as_bytes().to_vec();
         let last = bad.len() - 1;
         bad[last] ^= 1;
-        let err = open(&bad, &identity).err();
+        let err = open(&bad, &identity, FORMAT).err();
         assert_eq!(err, Some(VaultError::Crypto(CryptoError::Corrupt)));
-        let err = open(&bad[..last], &identity).err();
+        let err = open(&bad[..last], &identity, FORMAT).err();
         assert_eq!(err, Some(VaultError::Crypto(CryptoError::Corrupt)));
     }
 
@@ -271,9 +280,11 @@ mod tests {
 
     #[test]
     fn version_text_is_strict() {
-        assert_eq!(PublicBytes::version().as_bytes(), b"1\n");
-        assert_eq!(check_version(b"1\n"), Ok(()));
-        for unknown in [&b"0\n"[..], b"2\n", b"65535\n"] {
+        assert_eq!(PublicBytes::version().as_bytes(), b"2\n");
+        // VERSION names the newest format allowed: 1 and 2 are read.
+        assert_eq!(check_version(b"1\n"), Ok(1));
+        assert_eq!(check_version(b"2\n"), Ok(2));
+        for unknown in [&b"0\n"[..], b"3\n", b"65535\n"] {
             assert_eq!(
                 check_version(unknown),
                 Err(VersionError::Unknown),
@@ -317,13 +328,13 @@ mod tests {
         let (path, dir) = fresh_dir("version_ok");
         assert_eq!(read_version(&dir), Err(VersionError::Missing));
         write_version(&dir).unwrap();
-        assert_eq!(fs::read(path.join("VERSION")).unwrap(), b"1\n");
+        assert_eq!(fs::read(path.join("VERSION")).unwrap(), b"2\n");
         let mode = fs::metadata(path.join("VERSION"))
             .unwrap()
             .permissions()
             .mode();
         assert_eq!(mode & 0o7777, 0o600);
-        assert_eq!(read_version(&dir), Ok(()));
+        assert_eq!(read_version(&dir), Ok(FORMAT));
     }
 
     #[test]
@@ -348,7 +359,7 @@ mod tests {
         fs::write(&version, [b"1\n".as_slice(), &[b'0'; 4096]].concat()).unwrap();
         assert_eq!(read_version(&dir), Err(VersionError::Malformed));
 
-        fs::write(&version, b"2\n").unwrap();
+        fs::write(&version, b"3\n").unwrap();
         assert_eq!(read_version(&dir), Err(VersionError::Unknown));
     }
 
@@ -360,7 +371,9 @@ mod tests {
             &identity.recipient(),
         )
         .unwrap();
-        let err = open(&sealed.as_bytes()[..40], &identity).err().unwrap();
+        let err = open(&sealed.as_bytes()[..40], &identity, FORMAT)
+            .err()
+            .unwrap();
         for shown in [err.to_string(), format!("{err:?}")] {
             assert!(
                 !shown.contains("secret") && !shown.contains("Title"),

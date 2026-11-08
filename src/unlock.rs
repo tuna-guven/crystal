@@ -12,7 +12,7 @@ use rustix::io::Errno;
 use crate::crypto::{self, CryptoError, Passphrase, VaultIdentity};
 use crate::vault::codec::VaultContents;
 use crate::vault::format::{self, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError};
-use crate::vault::generation::{self, Counter, GenError, Seen};
+use crate::vault::generation::{self, Counter, GenError, Older, Seen};
 use crate::vault::pin::{self, PinError, Pinned};
 use crate::vault::public_file::{ReadError, read_bounded};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir};
@@ -38,6 +38,8 @@ pub enum UnlockError {
     /// A sync conflict copy of `vault.age` is present (merge: Phase 4).
     SyncConflict,
     ListDir(Errno),
+    /// An older vault was not accepted with `restore`.
+    NotRestored,
 }
 
 impl fmt::Display for UnlockError {
@@ -61,6 +63,7 @@ impl fmt::Display for UnlockError {
                  implemented yet, resolve it by hand"
             ),
             Self::ListDir(errno) => write!(f, "cannot list the vault directory ({errno})"),
+            Self::NotRestored => write!(f, "not restored; nothing was changed"),
         }
     }
 }
@@ -80,6 +83,36 @@ pub struct Unlocked {
     pub pinned: Pinned,
     /// `FirstUse` when this device had no rollback counter for the vault.
     pub seen: Seen,
+    /// The vault is older than this device's counter; until the user types
+    /// `restore` (`restore_prompt`, `accept_restore`), nothing was changed.
+    pub older: Option<Older>,
+}
+
+/// What must be typed to accept an older vault.
+pub const RESTORE_WORD: &str = "restore";
+
+/// The question for an older vault (docs/decisions/0036-backups-external.md):
+/// fixed text and two generation numbers.
+pub fn restore_prompt(older: Older) -> String {
+    format!(
+        "This vault is older than the newest version this device has seen (generation {}, \
+         last seen {}).\r\n\r\nIf you restored it from a backup, type restore to accept it; \
+         rollback detection then starts again from this version.\r\nIf you did not restore \
+         anything, someone may have put back an old copy: do not type restore.\r\n\r\nType \
+         restore to accept: ",
+        older.seen, older.stored
+    )
+}
+
+/// The user typed `restore`: the vault's counter goes back to its
+/// generation.
+pub fn accept_restore(
+    state: &StateDir,
+    vault_id: crate::model::VaultId,
+    older: Older,
+) -> Result<(), UnlockError> {
+    generation::restore(state.fd(), Counter::Vault(vault_id), older)
+        .map_err(UnlockError::Generation)
 }
 
 /// Opens the vault directory `name`. Before any prompt, so a mistyped
@@ -94,7 +127,9 @@ pub fn open_vault_dir(data: &DataDir, name: &VaultName) -> Result<VaultDir, Unlo
 
 /// Step 8: open `identity.age` with `pass`, then wipe the passphrase;
 /// decrypt `vault.age`; require the pinned `vault_id` (or pin it); check
-/// and update the vault's counter.
+/// and update the vault's counter. An older vault is not refused here: it
+/// comes back with `older` set and the counter unchanged, for the user to
+/// accept or not.
 pub fn unlock(
     vault_dir: VaultDir,
     name: &VaultName,
@@ -116,20 +151,29 @@ pub fn unlock(
             .map_err(UnlockError::Identity)?;
     // The passphrase has done its job: wipe it before the vault is read.
     drop(pass);
-    let contents = format::open(&read(VAULT_FILE, crypto::MAX_CIPHERTEXT)?, &identity)
-        .map_err(UnlockError::Vault)?;
+    let contents = format::open(
+        &read(VAULT_FILE, crypto::MAX_CIPHERTEXT)?,
+        &identity,
+        vault_dir.version(),
+    )
+    .map_err(UnlockError::Vault)?;
     let pinned = pin::check(state.fd(), name, &contents.vault_id).map_err(UnlockError::Pin)?;
-    let seen = generation::accept_on_open(
+    let (seen, older) = match generation::open_or_older(
         state.fd(),
         Counter::Vault(contents.vault_id),
         contents.generation,
     )
-    .map_err(UnlockError::Generation)?;
+    .map_err(UnlockError::Generation)?
+    {
+        Ok(seen) => (seen, None),
+        Err(older) => (Seen::Known, Some(older)),
+    };
     Ok(Unlocked {
         vault_dir,
         contents,
         pinned,
         seen,
+        older,
     })
 }
 
@@ -329,16 +373,42 @@ mod tests {
         assert_eq!(world.refused("diary"), UnlockError::Pin(PinError::Mismatch));
     }
 
+    // An older vault opens with `older` set and the counter unchanged;
+    // accepting it lowers the counter, and the next unlock is plain.
     #[test]
-    fn refuses_rolled_back_or_corrupt_counter() {
-        let world = World::new("counter");
+    fn older_vault_waits_for_restore() {
+        let world = World::new("older");
         world.init("diary");
         let id = world.vault_id("diary");
         generation::store(world.state.fd(), Counter::Vault(id), 99).unwrap();
-        assert!(matches!(
-            world.refused("diary"),
-            UnlockError::Generation(GenError::Rollback { stored: 99, .. })
-        ));
+        let unlocked = world.unlock("diary", "pw").unwrap();
+        let older = unlocked.older.unwrap();
+        assert_eq!(
+            older,
+            Older {
+                seen: 1,
+                stored: 99
+            }
+        );
+        assert_eq!(
+            generation::load(world.state.fd(), Counter::Vault(id)),
+            Ok(Some(99))
+        );
+        let prompt = restore_prompt(older);
+        assert!(prompt.contains("generation 1, last seen 99") && !prompt.contains("diary"));
+        accept_restore(&world.state, id, older).unwrap();
+        assert_eq!(
+            generation::load(world.state.fd(), Counter::Vault(id)),
+            Ok(Some(1))
+        );
+        assert_eq!(world.unlock("diary", "pw").unwrap().older, None);
+    }
+
+    #[test]
+    fn refuses_corrupt_counter() {
+        let world = World::new("counter");
+        world.init("diary");
+        let id = world.vault_id("diary");
         let file = world
             .home
             .join(".local/state/crystal")

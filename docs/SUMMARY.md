@@ -55,6 +55,8 @@
   - [0034 Vault format 2: folders as metadata, links and tags from the text](decisions/0034-vault-format-2.md)
   - [0035 Two clipboards: internal, and the system clipboard through OSC 52](decisions/0035-clipboard.md)
   - [0036 Backups with dedicated tools; restoring an older vault](decisions/0036-backups-external.md)
+  - [0037 Hidden characters are spelled out, not replaced by U+FFFD](decisions/0037-visible-escapes.md)
+  - [0038 Plain text notes: titles ending in `.txt`](decisions/0038-plain-text-notes.md)
 
 # Development
 

@@ -1,7 +1,8 @@
 # 0035 Two clipboards: internal, and the system clipboard through OSC 52
 
 - **Date:** 2026-11-08 (Phase 3 redesign)
-- **Status:** Accepted
+- **Status:** Accepted; "ESC becomes U+FFFD" in safeguard 3 is now
+  "ESC is spelled out" ([0037](0037-visible-escapes.md))
 
 ## Context
 

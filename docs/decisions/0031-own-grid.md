@@ -1,7 +1,9 @@
 # 0031 Own screen grid and terminal backend, no ratatui
 
 - **Date:** 2026-11-08 (Phase 3)
-- **Status:** Accepted
+- **Status:** Accepted; the U+FFFD replacement is superseded by
+  [0037](0037-visible-escapes.md) (spelled-out escapes, `?` as the grid's
+  fallback)
 
 ## Context
 

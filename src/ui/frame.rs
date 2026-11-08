@@ -5,7 +5,7 @@
 //! - Every cell's symbol is checked once more right before it is written.
 //!   `Grid::put_str` already replaces forbidden characters, so this is a
 //!   last line of defence: a symbol with a control or BiDi character is
-//!   drawn as U+FFFD, padded to the cell's width.
+//!   drawn as `?`, padded to the cell's width.
 //! - Output goes through one fixed-size chunk that is wiped after every
 //!   flush: frames hold note text, and a growing `Vec` would leave unwiped
 //!   copies behind on every reallocation.
@@ -306,7 +306,7 @@ mod tests {
             !shown.contains(|c| c != '\u{1b}' && is_forbidden(c)),
             "{shown:?}"
         );
-        assert!(shown.contains("a\u{FFFD}[2J\u{FFFD}31m"), "{shown:?}");
+        assert!(shown.contains("a?[2J?31m"), "{shown:?}");
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
         next.put_str(2, 0, "z", Style::PLAIN, 1);
         assert_eq!(
             text(&frame(&Grid::new(4, 1), &next)),
-            "\x1b[0m\x1b[1;1H\u{FFFD} z\x1b[0m"
+            "\x1b[0m\x1b[1;1H? z\x1b[0m"
         );
     }
 

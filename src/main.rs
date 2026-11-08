@@ -115,6 +115,16 @@ fn startup() -> Result<(), Box<dyn Error>> {
     // unlock takes the passphrase and wipes it as soon as identity.age is
     // open, before vault.age is read.
     let unlocked = unlock::unlock(vault_dir, &args.name, pass, &state_dir)?;
+    // An older vault than this device has seen: restored, or put back by
+    // someone else. Only the word `restore` accepts it (decision 0036);
+    // anything else drops the notes and changes nothing.
+    let restored = if let Some(older) = unlocked.older {
+        confirm_restore(&mut terminal, &signals, older)?;
+        unlock::accept_restore(&state_dir, unlocked.contents.vault_id, older)?;
+        "\r\nThe restored vault was accepted: rollback detection starts again from it."
+    } else {
+        ""
+    };
 
     // Phase 2 placeholder for the shell (Phase 3): the note count only,
     // never a title.
@@ -128,7 +138,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
         ""
     };
     terminal.show_status(&format!(
-        "{notes} notes unlocked.{first}\r\nPress any key to lock and quit."
+        "{notes} notes unlocked.{first}{restored}\r\nPress any key to lock and quit."
     ))?;
     // Ctrl+Z suspends, any other key or an exit signal returns, so the
     // guard restores the terminal and the notes are dropped (wiped).
@@ -184,7 +194,10 @@ fn recover_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn 
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
     let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
-    recover::check_seen(&opened, name, &state_dir)?;
+    if let Some(older) = recover::check_seen(&opened, name, &state_dir)? {
+        confirm_restore(&mut terminal, &signals, older)?;
+        recover::accept_restore(&opened, &state_dir, older)?;
+    }
     let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
     drop(terminal);
     recover::finish(opened, &pass, &vault_dir)?;
@@ -209,6 +222,21 @@ fn check_code(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Err
                  key as identity.age.",
     );
     Ok(())
+}
+
+/// Asks whether an older vault is a restore; anything but `restore` is a
+/// refusal, and nothing has been changed yet.
+fn confirm_restore(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    older: vault::generation::Older,
+) -> Result<(), Box<dyn Error>> {
+    let answer = terminal.read_public_line(signals, &unlock::restore_prompt(older))?;
+    if answer.as_str() == unlock::RESTORE_WORD {
+        Ok(())
+    } else {
+        Err(unlock::UnlockError::NotRestored.into())
+    }
 }
 
 /// Asks for the recovery code and opens the vault's backup with it.

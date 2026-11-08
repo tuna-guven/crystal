@@ -7,7 +7,7 @@ Each security property gets a test that would fail if the property broke; tests 
 | Test | What it proves | Tooling |
 | --- | --- | --- |
 | Round-trip properties | Encrypt then decrypt returns the same note; padding is reversible | `proptest` |
-| Tamper suite | A vault with another vault\_id, truncation, bit flips, an older generation: all refused | `tests/vault.rs`: each test makes a vault with `crystal init` through the real binary in a pty, damages one thing (vault or config truncated, bit-flipped, rolled back or swapped, a wrong passphrase, a missing `identity.age`, a writable parent, a sync conflict copy) and checks the fixed refusal |
+| Tamper suite | A vault swapped in under another's name (pin), truncation, bit flips: all refused; an older generation opens only after the word `restore`, and anything else changes nothing | `tests/vault.rs`: each test makes a vault with `crystal init` through the real binary in a pty, damages one thing (vault or config truncated, bit-flipped, rolled back or swapped, a wrong passphrase, a missing `identity.age`, a writable parent, a sync conflict copy) and checks the fixed refusal |
 | Parser and renderer fuzzing | No panics or hangs on hostile Markdown; sanitizer output contains no control bytes | `cargo-fuzz` targets for vault decode and render |
 | Escape-injection corpus | OSC 52 clipboard writes, OSC 8 links, title changes, cursor moves, BiDi tricks are all inert | Golden-file tests on rendered output |
 | Disk leak test | Only `*.age` and ciphertext temp files are ever created | `strace -f`, `inotifywait -r` on home and /tmp during a scripted session |

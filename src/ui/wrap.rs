@@ -42,86 +42,103 @@ pub struct Piece {
 /// A wrapped line.
 pub type Line = Vec<Piece>;
 
-/// One grapheme of the input, by position.
-struct Unit {
+/// A position in the input: a span and a byte offset in its text.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Pos {
     span: usize,
-    range: Range<usize>,
-    width: u16,
-    space: bool,
-    newline: bool,
+    at: usize,
 }
 
 /// Wraps `spans` to `width` columns. Empty input is one empty line; a
-/// width of 0 gives no lines.
+/// width of 0 gives no lines. Collects `wrap_each`.
 pub fn wrap(spans: &[Span], width: u16) -> Vec<Line> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let units: Vec<Unit> = spans
-        .iter()
-        .enumerate()
-        .flat_map(|(span, s)| {
-            s.text.grapheme_indices(true).map(move |(start, g)| Unit {
-                span,
-                range: start..start + g.len(),
-                width: u16::from(grapheme_width(g)),
-                space: g == " ",
-                newline: g == "\n" || g == "\r\n",
-            })
-        })
-        .collect();
-
     let mut lines = Vec::new();
-    let mut start = 0;
-    let mut column: u32 = 0;
-    // Where the line may break: just after the last space.
-    let mut after_space: Option<usize> = None;
-    let mut i = 0;
-    while i < units.len() {
-        let unit = &units[i];
-        if unit.newline {
-            lines.push(pieces(&units[start..i]));
-            start = i + 1;
-            column = 0;
-            after_space = None;
-            i += 1;
-            continue;
-        }
-        let fits = column + u32::from(unit.width) <= u32::from(width);
-        if !fits && !unit.space && i > start {
-            let cut = after_space.filter(|&b| b > start && b <= i).unwrap_or(i);
-            lines.push(pieces(&units[start..cut]));
-            start = cut;
-            column = units[cut..i].iter().map(|u| u32::from(u.width)).sum();
-            after_space = None;
-            // Look at the same grapheme again on the new line.
-            continue;
-        }
-        column += u32::from(unit.width);
-        if unit.space {
-            after_space = Some(i + 1);
-        }
-        i += 1;
-    }
-    lines.push(pieces(&units[start..]));
+    wrap_each(spans, width, |line| lines.push(line.to_vec()));
     lines
 }
 
-/// Consecutive graphemes of one span become one piece.
-fn pieces(units: &[Unit]) -> Line {
+/// Wraps `spans` to `width` columns and hands each line to `emit`, in
+/// one pass: memory holds the current line only, never one entry per
+/// grapheme, so an 8 MiB note wraps in little memory.
+pub fn wrap_each(spans: &[Span], width: u16, mut emit: impl FnMut(&[Piece])) {
+    if width == 0 {
+        return;
+    }
+    let width = u32::from(width);
     let mut line: Line = Vec::new();
-    for unit in units {
-        match line.last_mut() {
-            Some(last) if last.span == unit.span && last.range.end == unit.range.start => {
-                last.range.end = unit.range.end;
+    let mut close = |from: Pos, to: Pos, line: &mut Line| {
+        pieces(spans, from, to, line);
+        emit(line);
+    };
+    let mut start = Pos { span: 0, at: 0 };
+    let mut column: u32 = 0;
+    // Just after the last space on this line, and the column there.
+    let mut after_space: Option<(Pos, u32)> = None;
+    for (span, s) in spans.iter().enumerate() {
+        for (at, g) in s.text.grapheme_indices(true) {
+            let here = Pos { span, at };
+            let next = Pos {
+                span,
+                at: at + g.len(),
+            };
+            if g == "\n" || g == "\r\n" {
+                close(start, here, &mut line);
+                start = next;
+                column = 0;
+                after_space = None;
+                continue;
             }
-            _ => line.push(Piece {
-                span: unit.span,
-                range: unit.range.clone(),
-            }),
+            let w = u32::from(grapheme_width(g));
+            let space = g == " ";
+            if column + w > width && !space && here != start {
+                match after_space.take() {
+                    Some((cut, at_cut)) if cut != start => {
+                        close(start, cut, &mut line);
+                        start = cut;
+                        column -= at_cut;
+                        // The word itself may still be too long.
+                        if column + w > width && here != start {
+                            close(start, here, &mut line);
+                            start = here;
+                            column = 0;
+                        }
+                    }
+                    _ => {
+                        close(start, here, &mut line);
+                        start = here;
+                        column = 0;
+                    }
+                }
+            }
+            column += w;
+            if space {
+                after_space = Some((next, column));
+            }
         }
     }
-    line
+    let end = Pos {
+        span: spans.len(),
+        at: 0,
+    };
+    close(start, end, &mut line);
+}
+
+/// The pieces between `from` and `to`, one per span touched, into `line`
+/// (cleared first).
+fn pieces(spans: &[Span], from: Pos, to: Pos, line: &mut Line) {
+    line.clear();
+    let touched = spans.iter().enumerate().take(to.span + 1).skip(from.span);
+    for (span, s) in touched {
+        let len = s.text.len();
+        let start = if span == from.span { from.at } else { 0 };
+        let end = if span == to.span { to.at } else { len };
+        if start < end {
+            line.push(Piece {
+                span,
+                range: start..end,
+            });
+        }
+    }
 }
 
 /// Draws `line` at (x, y), at most `max` columns; returns the columns used.
