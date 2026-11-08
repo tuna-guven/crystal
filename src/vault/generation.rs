@@ -17,7 +17,7 @@ use std::fmt;
 use std::os::fd::OwnedFd;
 
 use super::atomic::{FileName, Payload, PublicBytes, Step, WriteError, atomic_write};
-use super::public_file::{ReadError, parse_decimal_line, read_small};
+use super::public_file::{ReadError, parse_decimal_line, read_bounded};
 use crate::model::VaultId;
 
 /// Which counter: one per vault, plus one for the config.
@@ -125,7 +125,7 @@ pub fn check(counter: Counter, seen: u64, stored: Option<u64>) -> Result<Seen, G
 /// The stored generation, or `None` if this device has none yet.
 pub fn load(state: &OwnedFd, counter: Counter) -> Result<Option<u64>, GenError> {
     let what = counter.what();
-    let Some(bytes) = read_small(state, &counter.file_name(), MAX_GEN_LEN)
+    let Some(bytes) = read_bounded(state, &counter.file_name(), MAX_GEN_LEN)
         .map_err(|error| GenError::Read { what, error })?
     else {
         return Ok(None);

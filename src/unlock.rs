@@ -11,16 +11,12 @@ use rustix::io::Errno;
 use crate::config::{self, ConfigError};
 use crate::crypto::{self, CryptoError, Passphrase, VaultIdentity};
 use crate::vault::codec::VaultContents;
-use crate::vault::format::{self, VaultError};
+use crate::vault::format::{self, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError};
 use crate::vault::generation::{self, Counter, GenError, Seen};
 use crate::vault::public_file::{ReadError, read_bounded};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir};
 use crate::vault::{ConfigDir, StateDir, VaultName};
 
-const IDENTITY_FILE: &str = "identity.age";
-const VAULT_FILE: &str = "vault.age";
-/// `identity.age` holds one age secret key: far below this.
-const MAX_IDENTITY_FILE: usize = 64 << 10;
 /// Syncthing names a conflict copy `vault.sync-conflict-<date>-<time>-<id>.age`.
 const CONFLICT_PREFIX: &[u8] = b"vault.sync-conflict-";
 const CONFLICT_SUFFIX: &[u8] = b".age";

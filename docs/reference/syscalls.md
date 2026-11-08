@@ -23,7 +23,7 @@ with `|`, which splits cells in many renderers.
 | `renameat2` | `vault::atomic_write` (rustix `renameat_with`, which always uses `renameat2`; plain `renameat` is the old `renameat` syscall on x86_64) | Replace the target with the temp file: the commit point. A symlink at the target name is replaced, not followed | same directory fd for both sides; flags 0 |
 | `fsync` | `vault::atomic_write` | Make the rename itself durable | target's directory fd |
 | `close` | `vault::atomic_write` | Release the temp file and listing fds | none |
-| `openat` | `vault::generation::load` (`public_file::read_small`), on every save and at unlock | Open the vault's or config's `.gen` counter; `O_NOFOLLOW` refuses a symlink, `O_NONBLOCK` keeps a FIFO from blocking the open. A missing file (`ENOENT`) means first use | state directory fd, `<vault_id hex>.gen` or `config.gen`; flags `O_RDONLY`, `O_NOFOLLOW`, `O_NONBLOCK`, `O_CLOEXEC` |
+| `openat` | `vault::generation::load` (`public_file::read_bounded`), on every save and at unlock | Open the vault's or config's `.gen` counter; `O_NOFOLLOW` refuses a symlink, `O_NONBLOCK` keeps a FIFO from blocking the open. A missing file (`ENOENT`) means first use | state directory fd, `<vault_id hex>.gen` or `config.gen`; flags `O_RDONLY`, `O_NOFOLLOW`, `O_NONBLOCK`, `O_CLOEXEC` |
 | `fstat` | `vault::generation::load` | Refuse anything but a regular file | the counter's fd |
 | `read` | `vault::generation::load` | Read at most 22 bytes (the longest valid counter is 21) | the counter's fd |
 | `close` | `vault::generation::load` | Release the counter's fd | none |

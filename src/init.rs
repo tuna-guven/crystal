@@ -24,7 +24,9 @@ use crate::model::VaultId;
 use crate::term::{PromptError, Signals, TerminalGuard};
 use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
 use crate::vault::codec::VaultContents;
-use crate::vault::format::{self, VaultError};
+use crate::vault::format::{
+    self, IDENTITY_BACKUP_FILE, IDENTITY_FILE, VAULT_FILE, VERSION_FILE, VaultError,
+};
 use crate::vault::generation::{self, Counter, GenError};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir, components, open_parent_checked};
 use crate::vault::{ConfigDir, OPEN_DIR_FLAGS, StateDir, VaultName};
@@ -33,10 +35,10 @@ use crate::vault::{ConfigDir, OPEN_DIR_FLAGS, StateDir, VaultName};
 const VAULTS_DIR: &str = "Vaults";
 /// Every file `crystal init` creates in the vault directory, in order.
 const VAULT_FILES: [&str; 4] = [
-    "VERSION",
-    "identity.age",
-    "identity.backup.age",
-    "vault.age",
+    VERSION_FILE,
+    IDENTITY_FILE,
+    IDENTITY_BACKUP_FILE,
+    VAULT_FILE,
 ];
 /// More backup recipients than anyone needs; bounds the prompt loop.
 pub const MAX_BACKUP_RECIPIENTS: usize = 8;
@@ -357,13 +359,13 @@ fn build(
         atomic_write(dir, &name, Payload::Ciphertext(sealed)).map_err(InitError::Write)
     };
     write(
-        VAULT_FILES[1],
+        IDENTITY_FILE,
         &identity
             .seal_with_passphrase(pass)
             .map_err(InitError::Crypto)?,
     )?;
     write(
-        VAULT_FILES[2],
+        IDENTITY_BACKUP_FILE,
         &identity
             .seal_to_recipients(backup)
             .map_err(InitError::Crypto)?,
@@ -374,7 +376,7 @@ fn build(
         notes: Vec::new(),
     };
     write(
-        VAULT_FILES[3],
+        VAULT_FILE,
         &format::seal(&empty, &identity.recipient()).map_err(InitError::Vault)?,
     )?;
 

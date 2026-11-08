@@ -22,7 +22,9 @@ use crate::cli::MAX_LOCK_AFTER_MINUTES;
 use crate::crypto::{self, Ciphertext, CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
 use crate::vault::atomic::{FileName, Payload, WriteError, atomic_write};
-use crate::vault::format::{self as vault_format, VaultError};
+use crate::vault::format::{
+    self as vault_format, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError,
+};
 use crate::vault::generation::{self, Counter, GenError, Seen};
 use crate::vault::padme::{self, PadError};
 use crate::vault::public_file::{ReadError, read_bounded};
@@ -30,8 +32,6 @@ use crate::vault::vault_dir::{VaultDir, components};
 use crate::vault::{ConfigDir, StateDir, VaultName};
 
 pub const CONFIG_FILE: &str = "config.age";
-const IDENTITY_FILE: &str = "identity.age";
-const VAULT_FILE: &str = "vault.age";
 
 /// The config format this build reads and writes.
 pub const CONFIG_FORMAT: u16 = 1;
@@ -40,8 +40,6 @@ pub const CONFIG_FORMAT: u16 = 1;
 pub const MAX_VAULTS: usize = 256;
 /// PATH_MAX without the terminating NUL.
 const MAX_PATH_BYTES: usize = 4095;
-/// `identity.age` holds one age secret key: far below this.
-const MAX_IDENTITY_FILE: usize = 64 << 10;
 
 /// One registered vault. `vault_id` is pinned when the vault is added
 /// (`crystal init`, `crystal add`), so a normal session never writes the config.

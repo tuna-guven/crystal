@@ -77,11 +77,6 @@ pub fn read_bounded(
     Ok(Some(buf))
 }
 
-/// `read_bounded` for the two small plaintext formats.
-pub fn read_small(dir: &OwnedFd, name: &str, max_len: usize) -> Result<Option<Vec<u8>>, ReadError> {
-    read_bounded(dir, name, max_len)
-}
-
 /// Parses "decimal number, newline" with exactly one spelling per number:
 /// ASCII digits without sign or leading zero (`0` itself is fine), then
 /// one `\n`, nothing else (no `\r`, spaces or second line). `None` for

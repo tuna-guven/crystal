@@ -17,7 +17,7 @@ use rustix::io::Errno;
 use super::atomic::{FileName, Payload, PublicBytes, WriteError, atomic_write};
 use super::codec::{self, CodecError, FORMAT, VaultContents};
 use super::padme::{self, PadError};
-use super::public_file::{ReadError, parse_decimal_line, read_small};
+use super::public_file::{ReadError, parse_decimal_line, read_bounded};
 use crate::crypto::{self, Ciphertext, CryptoError, VaultIdentity};
 
 /// Why sealing or opening `vault.age` failed. Each part holds only a fixed
@@ -62,7 +62,15 @@ pub fn open(ciphertext: &[u8], identity: &VaultIdentity) -> Result<VaultContents
     codec::decode(encoded).map_err(VaultError::Codec)
 }
 
-const VERSION_FILE: &str = "VERSION";
+// The vault directory's files (docs/design/storage.md, "Key design"),
+// named once for every module that reads or writes them.
+pub const VERSION_FILE: &str = "VERSION";
+pub const IDENTITY_FILE: &str = "identity.age";
+pub const IDENTITY_BACKUP_FILE: &str = "identity.backup.age";
+pub const VAULT_FILE: &str = "vault.age";
+/// `identity.age` holds one age secret key (74 bytes) under one scrypt
+/// stanza: far below this.
+pub const MAX_IDENTITY_FILE: usize = 64 << 10;
 
 /// The longest valid `VERSION`: `65535\n`.
 const MAX_VERSION_LEN: usize = 6;
@@ -118,9 +126,9 @@ pub fn check_version(bytes: &[u8]) -> Result<(), VersionError> {
 
 /// Reads and checks `VERSION` in the vault directory `dir`: first, before
 /// any decryption. Regular file only, at most a few bytes, whatever the
-/// file's size (`public_file::read_small`).
+/// file's size (`public_file::read_bounded`).
 pub fn read_version(dir: &OwnedFd) -> Result<(), VersionError> {
-    let bytes = read_small(dir, VERSION_FILE, MAX_VERSION_LEN)
+    let bytes = read_bounded(dir, VERSION_FILE, MAX_VERSION_LEN)
         .map_err(|e| match e {
             ReadError::NotARegularFile => VersionError::NotARegularFile,
             ReadError::Open(errno) => VersionError::Open(errno),

@@ -34,6 +34,7 @@ Nine phases, each ending in a commit with passing acceptance tests; security lay
    - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied.
 8. **Phase 7: Backups.** Local snapshot store, external drive marker, headless mode with udev trigger, retention, verify, restore.
    - Accept: delete the vault, restore from the drive, every note matches; a tampered snapshot is refused; a headless run copies a new vault.age without the key.
+   - Accept: `crystal verify-backup NAME` checks `identity.backup.age` with the backup key: it must decrypt and hold the same identity as `identity.age`, so a broken or mismatched key backup is found before it is needed (until then nothing reads `identity.backup.age`; Phase 2 review, S6).
 9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), passphrase change and key rotation (with an optional stronger scrypt setting, see Storage, Open questions), explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`, per-user install to `~/.local/bin` with the optional immutable flag ([Installation](../guide/installation.md)).
    - Accept: two clean builds produce identical hashes; the signature verifies.
 
