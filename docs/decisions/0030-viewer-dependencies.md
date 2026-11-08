@@ -1,7 +1,8 @@
 # 0030 Viewer dependencies: ratatui-core and ratatui-widgets, own backend
 
 - **Date:** 2026-11-08 (Phase 3)
-- **Status:** Accepted
+- **Status:** Accepted; the ratatui part is superseded by
+  [0031](0031-own-grid.md) (Crystal's own grid)
 
 ## Context
 

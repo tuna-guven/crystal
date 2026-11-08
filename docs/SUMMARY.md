@@ -56,6 +56,7 @@
   - [0028 New passphrases: at least 20 characters](decisions/0028-passphrase-minimum.md)
   - [0029 Recovery code instead of a backup recipient](decisions/0029-recovery-code.md)
   - [0030 Viewer dependencies: ratatui-core and ratatui-widgets, own backend](decisions/0030-viewer-dependencies.md)
+  - [0031 Own screen grid instead of ratatui](decisions/0031-own-grid.md)
 
 # Development
 

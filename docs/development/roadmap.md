@@ -26,7 +26,7 @@ Nine phases, each ending in a commit with passing acceptance tests; security lay
    - Accept: round-trip property tests; tamper suite refuses foreign, truncated, bit-flipped and rolled-back vaults and configs; a config pointing at a symlinked path, a group-writable parent, `$HOME`, `~/.ssh` (no `VERSION`), or the config or state directory is refused.
 4. **Phase 3: Read-only viewer.** Fuzzy finder over titles, renderer and sanitizer, wikilink navigation, backlinks pane.
    - Accept: the escape-injection corpus renders as inert text; renderer fuzzing runs clean for an hour.
-5. **Phase 4: Editor.** `tui-textarea` integration, save, new, rename, delete, Syncthing conflict detection with per-note merge.
+5. **Phase 4: Editor.** Own editor widget on the screen grid (decision 0031), save, new, rename, delete, Syncthing conflict detection with per-note merge.
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock, lock on signals, full-text search, tags.
    - Accept: the canary scan finds no plaintext after lock.

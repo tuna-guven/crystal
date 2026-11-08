@@ -84,17 +84,19 @@ wrapper names.
 | `ioctl` | `term::TerminalGuard::enter` (rustix `tcgetattr`) | Save the terminal settings to restore on exit | `TCGETS2` (rustix falls back to `TCGETS` only if `TCGETS2` returns an error) |
 | `ioctl` | `term::TerminalGuard::enter` (rustix `tcsetattr`, `Now`) | Raw mode: no echo, no line buffering, no signals from keys | `TCSETS2` |
 | `ioctl` | `term::restore_terminal`, from the guard's `Drop` or the panic hook (rustix `tcsetattr`, `Flush`) | Restore the saved settings and discard unread input, so keys typed into Crystal never reach the shell | `TCSETSF2` |
-| `pipe2` | `term::Signals::register` (rustix `pipe_with`) | Two self-pipes: one for exit signals, one for `SIGTSTP` | `O_CLOEXEC`, `O_NONBLOCK` |
+| `pipe2` | `term::Signals::register` (rustix `pipe_with`) | Three self-pipes: one for exit signals, one for `SIGTSTP`, one for `SIGWINCH` | `O_CLOEXEC`, `O_NONBLOCK` |
 | `fcntl` | `term::Signals::register` (`OwnedFd::try_clone`, and inside signal-hook's `pipe::register`) | One write-end copy per signal (about 45 fds, all close-on-exec); signal-hook sets `FD_CLOEXEC` and `O_NONBLOCK` on it | `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL` |
 | `sendto` | signal-hook `pipe::register` | One zero-byte probe to test whether the fd is a socket; on our pipe it fails with `ENOTSOCK`, and signal-hook uses `write` instead | pipe write end, 0 bytes, `MSG_DONTWAIT` |
-| `rt_sigaction` | signal-hook `pipe::register` | Install handlers for every catchable signal whose default kills the process (`term::EXIT_SIGNALS` and real-time signals), so each ends Crystal through the normal exit path; and `SIGTSTP` (suspend) | `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGALRM`, `SIGVTALRM`, `SIGPROF`, `SIGXCPU`, `SIGXFSZ`, `SIGIO`, `SIGPWR`, `SIGSTKFLT`, signals 32 to 64 (musl refuses 32 to 34 with `EINVAL`; those stay uncatchable), `SIGTSTP` |
-| `ppoll` | `term::TerminalGuard::run_until_exit` (rustix `poll`) | Wait for a key, an exit signal or a suspend | `/dev/tty` fd and both signal pipe read ends, no timeout |
+| `rt_sigaction` | signal-hook `pipe::register` | Install handlers for every catchable signal whose default kills the process (`term::EXIT_SIGNALS` and real-time signals), so each ends Crystal through the normal exit path; `SIGTSTP` (suspend); and `SIGWINCH` (resize; its default is to ignore, the handler only wakes the loop) | `SIGTERM`, `SIGHUP`, `SIGINT`, `SIGQUIT`, `SIGUSR1`, `SIGUSR2`, `SIGALRM`, `SIGVTALRM`, `SIGPROF`, `SIGXCPU`, `SIGXFSZ`, `SIGIO`, `SIGPWR`, `SIGSTKFLT`, signals 32 to 64 (musl refuses 32 to 34 with `EINVAL`; those stay uncatchable), `SIGTSTP` |
+| `ppoll` | `term::TerminalGuard::wait` (rustix `poll`), from `run_until_exit` and the viewer loop | Wait for a key, an exit signal, a suspend or a resize | `/dev/tty` fd and the three signal pipe read ends, no timeout |
 | `ioctl` | `term::TerminalGuard::read_passphrase` and `read_public_line` (rustix `tcflush`) | Discard keys typed before the prompt appeared: the terminal echoed them while it was not yet raw, so they must not become part of the passphrase. Unlock, `crystal init`, `add` and `recover` only, before the sandbox; if Phase 5's re-lock prompt runs inside the sandbox, `TCFLSH` must join the ioctl allowlist | `/dev/tty` fd, `TCFLSH`, `TCIFLUSH` |
 | `ppoll` | `term::TerminalGuard::read_passphrase` and `read_public_line` (rustix `poll`) | Wait for a key or an exit signal (which cancels the prompt) | `/dev/tty` fd and the exit signal pipe read end, no timeout |
 | `read` | `term::TerminalGuard::read_passphrase` and `read_public_line` | Read passphrase keys, up to 64 bytes at a time into a stack buffer that is wiped on drop | `/dev/tty` fd |
 | `write` | `term::TerminalGuard::read_passphrase` and `read_public_line` | Clear the alternate screen and draw the prompt; a passphrase is never echoed, a public line (the recovery code, typed back at `crystal init` and `crystal recover`) echoes printable ASCII only | `/dev/tty` fd |
-| `read` | `term::TerminalGuard::run_until_exit` | Read and discard keys (Ctrl+Z suspends, any other key exits) | `/dev/tty` fd |
-| `read` | `term::Signals::drain_suspend` | Empty the suspend pipe so one `SIGTSTP` suspends once | suspend pipe read end, non-blocking |
+| `read` | `term::TerminalGuard::wait` | Read keys into the caller's buffer (Ctrl+Z suspends instead); `run_until_exit` discards them | `/dev/tty` fd |
+| `read` | `term::drain`, from `TerminalGuard::wait` | Empty the suspend or resize pipe, so a burst of one signal is handled once and the loop does not spin | suspend or resize pipe read end, non-blocking |
+| `ioctl` | `term::TerminalGuard::size` (rustix `tcgetwinsize`), from the viewer loop at start and after each resize or resume | Read the window size for layout; a size of zero falls back to 80 by 24 | `/dev/tty` fd, `TIOCGWINSZ` |
+| `write` | `ui::screen::Screen::frame`, through `ui::frame::FrameWriter` | Draw a frame: changed cells, cursor moves and styles only, from a wiped 4 KiB chunk; every symbol is checked for control and BiDi characters first ([decision 0031](../decisions/0031-own-grid.md)) | `/dev/tty` fd |
 | `getpid` | `term::TerminalGuard::suspend` | Own pid, to stop ourselves | none |
 | `kill` | `term::TerminalGuard::suspend` (rustix `kill_process`) | Stop ourselves after restoring the terminal; returns once `fg`/`bg` sends `SIGCONT` | own pid only, `SIGSTOP` |
 | `write` | exit-signal handler (signal-hook) | Wake the main loop: one byte to the signal pipe (async-signal-safe) | signal pipe write end |
@@ -110,7 +112,7 @@ automatically; locking adds no syscalls after the sandbox.
 the sandbox (TUI drawing, resize); they move to the allowlist table when that
 code exists. A signal can arrive at any time, so `write` to the signal pipes and
 `rt_sigreturn` must be in the allowlist; the TUI loop also needs `ppoll`,
-`read` on `/dev/tty` and the suspend pipe, and, for suspend, `getpid` and
+`read` on `/dev/tty` and the suspend and resize pipes, and, for suspend, `getpid` and
 `kill` (own pid, `SIGSTOP`) plus everything the terminal guard uses to
 re-engage on resume (`fcntl`, `ioctl` `TCGETS2` and `TCSETS2`, `write`). Only signal-hook's `low_level::pipe` is used: its
 `iterator` module creates a `socketpair` and its `channel` module spawns a

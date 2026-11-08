@@ -803,6 +803,31 @@ fn suspend_restores_terminal_and_resume_reenters() {
     assert!(settings.iter().all(|s| *s == settings[0]), "{settings:?}");
 }
 
+/// SIGWINCH wakes the loop for a redraw and nothing else: a burst of them
+/// is drained (the process goes back to sleep instead of spinning), it
+/// keeps running, and SIGTERM then exits cleanly. Leaving the alternate
+/// screen shows the cursor again.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn resize_signal_redraws_and_keeps_running() {
+    let home = fresh_home("resize");
+    make_config(&home);
+    let cmd = format!(
+        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; \
+         for i in 1 2 3 4 5; do kill -WINCH $p; done; sleep 0.5; \
+         echo; echo state=$(cut -d' ' -f3 /proc/$p/stat); \
+         kill -TERM $p; wait $p; s=$?; echo; echo exit=$s"
+    );
+    let (ok, output) = pty(&cmd, Some(&home), b"");
+    assert!(ok, "{output}");
+    assert!(output.contains("state=S"), "not waiting: {output:?}");
+    assert!(output.contains("exit=0"), "{output:?}");
+    assert!(
+        output.contains("\x1b[?25h\x1b[2J\x1b[?1049l"),
+        "cursor shown on leave: {output:?}"
+    );
+}
+
 /// One `--prompt-for-test` run in a fresh HOME that reaches the prompt.
 fn prompt_run(test: &str, kind: &str, steps: &[(&str, &[u8])]) -> (bool, String) {
     let home = fresh_home(test);

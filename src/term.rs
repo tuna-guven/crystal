@@ -14,7 +14,7 @@ use rustix::io::Errno;
 use rustix::pipe::{PipeFlags, pipe_with};
 use rustix::process::{Signal, getpid, kill_process};
 use rustix::termios::{
-    OptionalActions, QueueSelector, Termios, isatty, tcflush, tcgetattr, tcsetattr,
+    OptionalActions, QueueSelector, Termios, isatty, tcflush, tcgetattr, tcgetwinsize, tcsetattr,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -22,9 +22,10 @@ use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
-/// Clear the alternate screen while still on it, then leave it, so none of
-/// its content survives in terminals that keep it around.
-const LEAVE_SCREEN: &[u8] = b"\x1b[2J\x1b[?1049l";
+/// Show the cursor again (the viewer hides it), clear the alternate screen
+/// while still on it, then leave it, so none of its content survives in
+/// terminals that keep it around.
+const LEAVE_SCREEN: &[u8] = b"\x1b[?25h\x1b[2J\x1b[?1049l";
 
 /// The controlling terminal, opened directly. Redirected stdin or stdout can
 /// then neither feed input (a passphrase) nor capture output (the UI).
@@ -96,7 +97,10 @@ pub enum TermError {
     Pipe(Errno),
     Signal(io::ErrorKind),
     Poll(Errno),
+    Read(io::ErrorKind),
     Stop(Errno),
+    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
+    WindowSize(Errno),
 }
 
 impl fmt::Display for TermError {
@@ -109,7 +113,9 @@ impl fmt::Display for TermError {
             Self::Pipe(errno) => write!(f, "cannot create the signal pipe ({errno})"),
             Self::Signal(kind) => write!(f, "cannot install signal handlers ({kind})"),
             Self::Poll(errno) => write!(f, "cannot wait for input ({errno})"),
+            Self::Read(kind) => write!(f, "cannot read from the terminal ({kind})"),
             Self::Stop(errno) => write!(f, "cannot suspend ({errno})"),
+            Self::WindowSize(errno) => write!(f, "cannot read the terminal size ({errno})"),
         }
     }
 }
@@ -226,12 +232,14 @@ const LIBC_RESERVED_MAX: i32 = 34;
 /// Ctrl+Z arrives as this byte in raw mode instead of as SIGTSTP.
 const CTRL_Z: u8 = 0x1a;
 
-/// Self-pipes for signals: one for exit, one for suspend (SIGTSTP). Each
-/// handler only writes one byte to its pipe (async-signal-safe); the main
-/// loop sees it. No thread, no socketpair (both denied by the sandbox).
+/// Self-pipes for signals: one for exit, one for suspend (SIGTSTP), one
+/// for resize (SIGWINCH). Each handler only writes one byte to its pipe
+/// (async-signal-safe); the main loop sees it. No thread, no socketpair
+/// (both denied by the sandbox).
 pub struct Signals {
     exit: OwnedFd,
     suspend: OwnedFd,
+    resize: OwnedFd,
 }
 
 impl Signals {
@@ -255,15 +263,23 @@ impl Signals {
         let (suspend, suspend_write) = self_pipe()?;
         on_signal(Signal::TSTP.as_raw(), &suspend_write).map_err(signal_failed)?;
 
-        Ok(Self { exit, suspend })
-    }
+        // SIGWINCH is ignored by default; the handler only wakes the loop.
+        let (resize, resize_write) = self_pipe()?;
+        on_signal(Signal::WINCH.as_raw(), &resize_write).map_err(signal_failed)?;
 
-    /// Empties the suspend pipe, so one SIGTSTP suspends once. The read end
-    /// is non-blocking, so this stops at "would block".
-    fn drain_suspend(&self) {
-        let mut byte = [0u8; 16];
-        while matches!(rustix::io::read(&self.suspend, &mut byte), Ok(n) if n > 0) {}
+        Ok(Self {
+            exit,
+            suspend,
+            resize,
+        })
     }
+}
+
+/// Empties a signal pipe, so a burst of one signal is handled once. The
+/// read end is non-blocking, so this stops at "would block".
+fn drain(pipe: &OwnedFd) {
+    let mut byte = [0u8; 16];
+    while matches!(rustix::io::read(pipe, &mut byte), Ok(n) if n > 0) {}
 }
 
 /// A non-blocking pipe: (read end, write end). The write end is only
@@ -278,40 +294,103 @@ fn on_signal(signal: i32, pipe: &OwnedFd) -> io::Result<()> {
     signal_hook::low_level::pipe::register(signal, pipe.try_clone()?).map(drop)
 }
 
+/// What woke the viewer loop.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Event {
+    /// This many key bytes were read into the caller's buffer.
+    Keys(usize),
+    /// The window changed size, or Crystal was resumed after a suspend:
+    /// read the size again and redraw everything.
+    Redraw,
+    /// An exit signal, or the terminal was closed (hangup).
+    Exit,
+}
+
+/// Used when the terminal reports a size of zero (some serial consoles
+/// and fresh ptys), so layout never divides an empty area.
+#[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
+const FALLBACK_SIZE: (u16, u16) = (80, 24);
+
 impl TerminalGuard {
-    /// Phase 1 placeholder for the TUI loop (replaced in Phase 3): Ctrl+Z
-    /// or SIGTSTP suspends, any other key or an exit signal returns. Keys
-    /// are read and discarded, never stored or shown. Exit wins over
-    /// suspend, suspend over keys.
-    pub fn run_until_exit(&mut self, signals: &Signals) -> Result<(), TermError> {
+    /// Waits for keys, a resize, a suspend or an exit signal. Exit wins
+    /// over suspend, suspend over resize, resize over keys. Suspend
+    /// (SIGTSTP, or Ctrl+Z among the keys, which are then discarded) is
+    /// handled here and reported as `Redraw`, since resuming re-enters a
+    /// cleared alternate screen. Phase 5: lock before suspending.
+    pub fn wait(&mut self, signals: &Signals, keys: &mut [u8]) -> Result<Event, TermError> {
         loop {
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
                 PollFd::new(&signals.exit, PollFlags::IN),
                 PollFd::new(&signals.suspend, PollFlags::IN),
+                PollFd::new(&signals.resize, PollFlags::IN),
             ];
             match poll(&mut fds, None) {
                 Ok(_) => {}
                 Err(Errno::INTR) => continue,
                 Err(errno) => return Err(TermError::Poll(errno)),
             }
-            let [key, exit, suspend] = fds.map(|fd| !fd.revents().is_empty());
+            let [key, exit, suspend, resize] = fds.map(|fd| !fd.revents().is_empty());
             if exit {
-                return Ok(());
+                return Ok(Event::Exit);
             }
             if suspend {
-                signals.drain_suspend();
+                drain(&signals.suspend);
                 self.suspend()?;
+                return Ok(Event::Redraw);
+            }
+            if resize {
+                drain(&signals.resize);
+                return Ok(Event::Redraw);
+            }
+            if !key {
                 continue;
             }
-            if key {
-                let mut keys = [0u8; 64];
-                let n = self.tty.read(&mut keys).unwrap_or(0);
-                if keys[..n].contains(&CTRL_Z) {
-                    self.suspend()?;
-                    continue;
+            let n = match self.tty.read(keys) {
+                // Hangup: the terminal reads as end of file or EIO.
+                Ok(0) => return Ok(Event::Exit),
+                Ok(n) => n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) if e.raw_os_error() == Some(Errno::IO.raw_os_error()) => {
+                    return Ok(Event::Exit);
                 }
-                return Ok(());
+                Err(e) => return Err(TermError::Read(e.kind())),
+            };
+            if keys[..n].contains(&CTRL_Z) {
+                keys[..n].zeroize();
+                self.suspend()?;
+                return Ok(Event::Redraw);
+            }
+            return Ok(Event::Keys(n));
+        }
+    }
+
+    /// The window size as (columns, rows), or 80 by 24 if the terminal
+    /// reports zero for either.
+    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
+    pub fn size(&self) -> Result<(u16, u16), TermError> {
+        let size = tcgetwinsize(&self.tty).map_err(TermError::WindowSize)?;
+        if size.ws_col == 0 || size.ws_row == 0 {
+            return Ok(FALLBACK_SIZE);
+        }
+        Ok((size.ws_col, size.ws_row))
+    }
+
+    /// The terminal, for the frame writer (`ui::screen`) only.
+    #[expect(dead_code, reason = "the viewer loop (Phase 3, V6)")]
+    pub(crate) fn output(&mut self) -> &mut File {
+        &mut self.tty
+    }
+
+    /// Phase 1 placeholder for the TUI loop (replaced in Phase 3, V6): a
+    /// key or an exit signal returns; suspend and resize keep waiting.
+    /// Keys are read and discarded, never stored or shown.
+    pub fn run_until_exit(&mut self, signals: &Signals) -> Result<(), TermError> {
+        let mut keys = Zeroizing::new([0u8; 64]);
+        loop {
+            match self.wait(signals, &mut keys[..])? {
+                Event::Redraw => {}
+                Event::Keys(_) | Event::Exit => return Ok(()),
             }
         }
     }

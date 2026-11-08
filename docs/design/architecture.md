@@ -11,13 +11,13 @@ One process, one crypto boundary: everything above the age layer handles plainte
                                                    v
 +-- Crystal process: mlocked, non-dumpable, Landlock + seccomp ------------+
 | +----------------------------------------------------------------------+ |
-| | Terminal guard + UI (ratatui)                                        | |
+| | Terminal guard + UI (own grid and backend)                           | |
 | | alt screen, raw mode, cleared on exit, panic and signals             | |
 | +----------------------------------------------------------------------+ |
 |             |                                    ^                       |
 |             v                                    v                       |
 | +--------------------------------+    +--------------------------------+ |
-| | Renderer + sanitizer           |    | Editor (tui-textarea)          | |
+| | Renderer + sanitizer           |    | Editor (own widget)            | |
 | | pulldown-cmark events          |    | edits in locked memory         | |
 | | control chars stripped         |    | never spawns $EDITOR           | |
 | +--------------------------------+    +--------------------------------+ |
