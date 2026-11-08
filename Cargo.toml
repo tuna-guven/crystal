@@ -42,3 +42,19 @@ overflow-checks = true
 debug-assertions = false
 # Keep unwinding so Drop impls (zeroizing) still run on panic.
 panic = "unwind"
+
+# Debug and test builds run the real scrypt work factor (log N 18, 256 MiB;
+# docs/decisions/0027-scrypt-fixed.md); unoptimized, one passphrase file
+# takes many seconds. Optimizing only the scrypt crates keeps Crystal's
+# own code at opt-level 0 for debugging. No new dependency.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3

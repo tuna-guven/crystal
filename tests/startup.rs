@@ -852,17 +852,47 @@ fn prompt_discards_keys_typed_before_it() {
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn prompt_confirm_requires_matching_entries() {
-    let same: [(&str, &[u8]); 2] = [(PROMPT, b"abc\r"), (REPEAT, b"abc\r")];
+    let pass = b"twenty-characters-ok\r";
+    let same: [(&str, &[u8]); 2] = [(PROMPT, pass), (REPEAT, pass)];
     let (ok, output) = prompt_run("prompt_confirm", "confirm", &same);
-    assert!(ok && output.contains("len=3"), "{output:?}");
+    assert!(ok && output.contains("len=20"), "{output:?}");
 
-    let differ: [(&str, &[u8]); 2] = [(PROMPT, b"abc\r"), (REPEAT, b"abd\r")];
+    let differ: [(&str, &[u8]); 2] = [(PROMPT, pass), (REPEAT, b"twenty-characters-oK\r")];
     let (ok, output) = prompt_run("prompt_mismatch", "confirm", &differ);
     assert!(!ok, "{output:?}");
     assert!(
         output.contains("crystal: the passphrases do not match"),
         "{output:?}"
     );
+}
+
+/// decision 0028: a new passphrase needs 20 characters, counted as
+/// characters, not bytes. A short one is refused before the repeat prompt.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn prompt_new_passphrase_minimum() {
+    let short: [(&str, &[u8]); 1] = [(PROMPT, b"nineteen-characters\r")];
+    let (ok, output) = prompt_run("prompt_short", "confirm", &short);
+    assert!(!ok, "{output:?}");
+    assert!(
+        output.contains("a new passphrase needs at least 20 characters"),
+        "{output:?}"
+    );
+    assert!(!output.contains(REPEAT), "asked to repeat: {output:?}");
+    assert!(!output.contains("nineteen"), "{output:?}");
+
+    // 19 two-byte characters (38 bytes) are still too few.
+    let wide = format!("{}\r", "ü".repeat(19));
+    let (ok, output) = prompt_run("prompt_short_wide", "confirm", &[(PROMPT, wide.as_bytes())]);
+    assert!(
+        !ok && output.contains("at least 20 characters"),
+        "{output:?}"
+    );
+
+    let wide = format!("{}\r", "ü".repeat(20));
+    let steps: [(&str, &[u8]); 2] = [(PROMPT, wide.as_bytes()), (REPEAT, wide.as_bytes())];
+    let (ok, output) = prompt_run("prompt_wide_ok", "confirm", &steps);
+    assert!(ok && output.contains("len=40"), "{output:?}");
 }
 
 /// Ctrl+C and Esc cancel; the error names no typed byte.

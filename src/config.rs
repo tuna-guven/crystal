@@ -86,6 +86,9 @@ pub enum ConfigError {
     Missing,
     Read(ReadError),
     TooLarge,
+    /// The vault's `identity.age` or `vault.age` is over its size limit
+    /// (`crystal add`).
+    VaultFileTooLarge(&'static str),
     Crypto(CryptoError),
     Padding(PadError),
     Malformed,
@@ -101,6 +104,15 @@ pub enum ConfigError {
     Write(WriteError),
     /// `crystal add` with a name the config already has.
     NameTaken,
+    /// `crystal add` of a vault (same `vault_id`) already registered under
+    /// another name.
+    VaultTaken,
+    /// `crystal add`: the vault's `identity.age` does not open with the
+    /// passphrase given. `new_device`: there was no config, so the
+    /// passphrase was new; otherwise it was the config's.
+    VaultPassphrase {
+        new_device: bool,
+    },
     /// `crystal remove` (or a run) with a name the config does not have.
     UnknownName,
     /// The vault directory has no `identity.age` or `vault.age`.
@@ -115,6 +127,7 @@ impl fmt::Display for ConfigError {
             Self::Missing => write!(f, "this device has no config.age"),
             Self::Read(e) => write!(f, "cannot read a Crystal file ({e})"),
             Self::TooLarge => write!(f, "config.age is too large"),
+            Self::VaultFileTooLarge(file) => write!(f, "the vault's {file} is too large"),
             Self::Crypto(e) => write!(f, "config.age: {e}"),
             Self::Padding(e) => write!(f, "config.age: {e}"),
             Self::Malformed => write!(f, "config.age is malformed"),
@@ -140,6 +153,21 @@ impl fmt::Display for ConfigError {
             Self::GenerationOverflow => write!(f, "the config's generation cannot grow"),
             Self::Write(e) => write!(f, "cannot write config.age: {e}"),
             Self::NameTaken => write!(f, "a vault with that name is already registered"),
+            Self::VaultTaken => write!(
+                f,
+                "this vault is already registered on this device under another name"
+            ),
+            Self::VaultPassphrase { new_device: true } => write!(
+                f,
+                "the vault's identity.age does not open with this passphrase; enter the \
+                 passphrase the vault was made with"
+            ),
+            Self::VaultPassphrase { new_device: false } => write!(
+                f,
+                "the vault's identity.age does not open with this device's passphrase. A device \
+                 has one passphrase for its config and every vault on it, so this vault cannot be \
+                 added here until its passphrase is changed (not implemented yet)"
+            ),
             Self::UnknownName => write!(f, "no vault with that name is registered"),
             Self::NotAVault => write!(
                 f,
@@ -170,10 +198,13 @@ impl Config {
         self.vaults.iter().find(|v| v.name == *name)
     }
 
-    /// Adds `entry`; its name must be new.
+    /// Adds `entry`; its name and its vault must be new.
     pub fn add(&mut self, entry: VaultEntry) -> Result<(), ConfigError> {
         if self.find(&entry.name).is_some() {
             return Err(ConfigError::NameTaken);
+        }
+        if self.vaults.iter().any(|v| v.vault_id == entry.vault_id) {
+            return Err(ConfigError::VaultTaken);
         }
         if self.vaults.len() >= MAX_VAULTS {
             return Err(ConfigError::TooManyVaults);
@@ -359,10 +390,15 @@ pub fn store(
 /// then its `vault.age`, to learn the `vault_id` to pin and the vault's
 /// generation. The notes are dropped (and wiped) at once.
 pub fn identify_vault(vault: &VaultDir, pass: &Passphrase) -> Result<(VaultId, u64), ConfigError> {
-    let read = |name, max| {
-        read_bounded(vault.fd(), name, max)
+    // read_bounded reads one byte past `max` to show the file is longer.
+    let read = |name: &'static str, max: usize| {
+        let bytes = read_bounded(vault.fd(), name, max)
             .map_err(ConfigError::Read)?
-            .ok_or(ConfigError::NotAVault)
+            .ok_or(ConfigError::NotAVault)?;
+        if bytes.len() > max {
+            return Err(ConfigError::VaultFileTooLarge(name));
+        }
+        Ok(bytes)
     };
     let identity_file = read(IDENTITY_FILE, MAX_IDENTITY_FILE)?;
     let identity = VaultIdentity::open_with_passphrase(&identity_file, pass)
@@ -394,7 +430,10 @@ mod tests {
         VaultEntry {
             name: name(n),
             path: path.to_owned(),
-            vault_id: VaultId::from_bytes([n.len() as u8; 32]),
+            vault_id: VaultId::from_bytes(
+                [n.bytes()
+                    .fold(0u8, |h, b| h.wrapping_mul(31).wrapping_add(b)); 32],
+            ),
             lock_after: Some(10),
         }
     }
@@ -687,6 +726,13 @@ mod tests {
             config.remove(&name("nope")).err(),
             Some(ConfigError::UnknownName)
         );
+        // U3: the same vault (vault_id) under a second name is refused.
+        let same_vault = VaultEntry {
+            name: name("alias"),
+            ..entry("diary", "/a")
+        };
+        assert_eq!(config.add(same_vault).err(), Some(ConfigError::VaultTaken));
+        assert_eq!(config.vaults.len(), 1);
         let removed = config.remove(&name("diary")).unwrap();
         assert_eq!(removed.path, "/a");
         assert!(config.vaults.is_empty());
@@ -714,6 +760,13 @@ mod tests {
             identify_vault(&vault, &pass("pw")).err(),
             Some(ConfigError::NotAVault)
         );
+        // An identity.age over its limit is refused as too large, not read
+        // truncated and reported as damaged.
+        fs::write(path.join(IDENTITY_FILE), vec![b'x'; MAX_IDENTITY_FILE + 1]).unwrap();
+        assert_eq!(
+            identify_vault(&vault, &pass("pw")).err(),
+            Some(ConfigError::VaultFileTooLarge(IDENTITY_FILE))
+        );
     }
 
     #[test]
@@ -723,6 +776,10 @@ mod tests {
             ConfigError::UnknownName,
             ConfigError::BadPath,
             ConfigError::DuplicateName,
+            ConfigError::VaultFileTooLarge(IDENTITY_FILE),
+            ConfigError::VaultTaken,
+            ConfigError::VaultPassphrase { new_device: true },
+            ConfigError::VaultPassphrase { new_device: false },
         ] {
             let shown = err.to_string();
             assert!(!shown.contains("diary") && !shown.contains('/'), "{shown}");

@@ -6,7 +6,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 
 | Adversary | Capability | Scope | Primary defense |
 | --- | --- | --- | --- |
-| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding |
+| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding; against offline guessing of a copied `identity.age`, a passphrase of at least 20 characters ([0028](../decisions/0028-passphrase-minimum.md)) under scrypt log N 18 ([0027](../decisions/0027-scrypt-fixed.md)) |
 | A2 Device thief, machine off | Full disk read | In | No plaintext ever written; full-disk encryption assumed as a second layer |
 | A3 Malicious note content (imported, synced, pasted) | Terminal escape injection, parser bugs | In | Sanitizer on every text node, fuzzed parser and renderer, sandbox limits impact |
 | A4 Supply chain (malicious or compromised crate) | Arbitrary code in the process | In | Minimal deps, cargo-vet, cargo-deny, sandbox blocks network and exec |

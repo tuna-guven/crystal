@@ -215,6 +215,13 @@ pub fn read_backup_recipients(
         let line = terminal
             .read_public_line(signals, &prompt)
             .map_err(InitError::Prompt)?;
+        if is_identity(&line) {
+            // Shown while typed; the next prompt clears the screen, and the
+            // line is wiped when dropped. Nothing of it is stored.
+            note = "That is a private key (AGE-...), not a public key; it was not stored. \
+                    Enter the key's public half (age1...).\r\n";
+            continue;
+        }
         if line.is_empty() {
             if recipients.is_empty() {
                 note = "At least one backup recipient is needed.\r\n";
@@ -231,6 +238,14 @@ pub fn read_backup_recipients(
         }
     }
     Ok(recipients)
+}
+
+/// Whether `line` is an age identity rather than a recipient: a secret
+/// key (`AGE-SECRET-KEY-1...`) or a plugin identity (`AGE-PLUGIN-...`).
+/// Compared in place, case-insensitively, without copying the line.
+fn is_identity(line: &str) -> bool {
+    line.get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("AGE-"))
 }
 
 /// What this run created, to remove again if a later step fails.
@@ -407,6 +422,23 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::PathBuf;
     use zeroize::Zeroizing;
+
+    // S7: a secret key pasted at the backup prompt is recognised, in any
+    // case; recipients and other text are not.
+    #[test]
+    fn identities_are_recognised() {
+        for line in [
+            "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+            "age-secret-key-1qqqq",
+            "AGE-PLUGIN-YUBIKEY-1QQQQ",
+            "AGE-",
+        ] {
+            assert!(is_identity(line), "{line}");
+        }
+        for line in ["", "AGE", "age1qqqq", "ssh-ed25519", "AGEX-1"] {
+            assert!(!is_identity(line), "{line}");
+        }
+    }
 
     fn pass(s: &str) -> Passphrase {
         Passphrase::new(Zeroizing::new(s.as_bytes().to_vec())).unwrap()

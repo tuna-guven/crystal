@@ -52,6 +52,8 @@
   - [0024 Subcommands: crystal init, add, remove](decisions/0024-subcommands.md)
   - [0025 scrypt within the locked-memory budget](decisions/0025-scrypt-budget.md)
   - [0026 Locked memory floor of 512 MiB](decisions/0026-memlock-floor-512.md)
+  - [0027 scrypt: one fixed work factor, log N 18](decisions/0027-scrypt-fixed.md)
+  - [0028 New passphrases: at least 20 characters](decisions/0028-passphrase-minimum.md)
 
 # Development
 

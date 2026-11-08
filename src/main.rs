@@ -188,19 +188,33 @@ fn add_vault(
     if cfg.find(name).is_some() {
         return Err(config::ConfigError::NameTaken.into());
     }
-    let (vault_id, vault_generation) = config::identify_vault(&vault_dir, &pass)?;
-    // The vault's rollback baseline on this device starts here.
-    vault::generation::accept_on_open(
-        state_dir.fd(),
-        vault::generation::Counter::Vault(vault_id),
-        vault_generation,
-    )?;
+    let (vault_id, vault_generation) =
+        config::identify_vault(&vault_dir, &pass).map_err(|e| match e {
+            config::ConfigError::Vault(vault::format::VaultError::Crypto(
+                crypto::CryptoError::WrongPassphrase,
+            )) => config::ConfigError::VaultPassphrase {
+                new_device: !has_config,
+            },
+            e => e,
+        })?;
+    // Refuses a taken name or a vault already registered, before anything
+    // is written.
     cfg.add(config::VaultEntry {
         name: vault::VaultName::new(name.as_str().into()).ok_or(config::ConfigError::BadName)?,
         path: resolved,
         vault_id,
         lock_after: None,
     })?;
+    // The vault's rollback baseline on this device starts here, and an
+    // older vault than this device has seen is refused. Recorded before
+    // the config is stored: the counter means "seen here", and this
+    // generation was just decrypted and authenticated, whether or not the
+    // config write that follows succeeds.
+    vault::generation::accept_on_open(
+        state_dir.fd(),
+        vault::generation::Counter::Vault(vault_id),
+        vault_generation,
+    )?;
     config::store(&mut cfg, &config_dir, &state_dir, &pass)?;
     Ok(())
 }

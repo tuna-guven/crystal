@@ -1,7 +1,7 @@
 # 0025 scrypt within the locked-memory budget
 
 - **Date:** 2026-11-06
-- **Status:** Accepted; supersedes [0014](0014-scrypt-work-factor.md)
+- **Status:** Superseded by [0027](0027-scrypt-fixed.md)
 
 ## Context
 

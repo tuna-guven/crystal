@@ -104,13 +104,17 @@ exist, and its parent must be owned by root or you, not writable by group
 or others, and reached without symlinks. Then it asks for:
 
 1. **The passphrase.** On a device without a config, a new one, twice; it
-   protects both the config and the vault's `identity.age`. On a device
-   with a config, the config's passphrase.
+   protects both the config and the vault's `identity.age`. A new
+   passphrase needs at least 20 characters, for example five or more
+   random words ([decision 0028](../decisions/0028-passphrase-minimum.md)):
+   `identity.age` travels with the vault, so anyone with a copy of it can
+   guess offline. On a device with a config, the config's passphrase.
 2. **One or more backup recipients**: `age1…` public keys of keys you keep
    offline, such as a paper key made with `age-keygen` or a second
    hardware key. They go into `identity.backup.age`, which recovers the
    vault if you lose the passphrase. An empty line ends the list. Keep the
-   matching secret key off this machine.
+   matching secret key off this machine. A secret key (`AGE-SECRET-KEY-1…`)
+   pasted here by mistake is refused and not stored.
 
 Only then is anything created: `~/Vaults` (mode 0700) if needed, the vault
 directory (0700) and its four files (0600). If a step fails, what was
@@ -121,8 +125,10 @@ created is removed again.
 `crystal add NAME DIR` registers a vault that already exists, for example one
 made by `crystal init` on another device and synced here. It asks for the
 config's passphrase, or for a new one if this device has no config yet;
-the vault's `identity.age` must open with the same passphrase. `crystal
-remove NAME` forgets a vault and leaves its files alone.
+the vault's `identity.age` must open with the same passphrase: a device
+has one passphrase for its config and all its vaults. A vault can be
+registered only once per device, under one name. `crystal remove NAME`
+forgets a vault and leaves its files alone.
 
 ### Opening a vault
 
@@ -180,15 +186,15 @@ does not let anything read Crystal's memory.
 
 **Undo:** `run0 rm /etc/security/limits.d/90-crystal.conf`, then reboot.
 
-**More memory, stronger passphrase files.** The passphrase is stretched
-with scrypt, which needs a lot of memory, and that memory is locked too.
-Crystal lets scrypt use up to half of your limit
-([decision 0025](../decisions/0025-scrypt-budget.md)), so the 512 MiB
-floor holds 256 MiB of scrypt (log N 18), age's one-second default on a
-fast machine ([decision 0026](../decisions/0026-memlock-floor-512.md)).
-A larger limit, up to what your machine can spare (for example
-16777216 KiB = 16 GiB), is fine and changes nothing else. A passphrase file that needs more than your
-limit allows is refused with a message pointing here, never a crash.
+**Passphrase files.** The passphrase is stretched with scrypt, which needs
+a lot of memory, and that memory is locked too. Crystal writes every
+passphrase file at the same factor on every device, log N 18 (256 MiB),
+which is half the 512 MiB floor, so any device that starts Crystal opens
+any vault ([decision 0027](../decisions/0027-scrypt-fixed.md)). A larger
+limit, up to what your machine can spare (for example 16777216 KiB =
+16 GiB), is fine and changes nothing else. A passphrase file that needs
+more than your limit allows is refused with a message pointing here,
+never a crash.
 
 ## ptrace and SELinux `deny_ptrace`
 

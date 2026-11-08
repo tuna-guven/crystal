@@ -18,7 +18,7 @@ use rustix::termios::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::crypto::Passphrase;
+use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
@@ -343,6 +343,8 @@ pub enum PromptError {
     NotText,
     /// The two entries of `read_new_passphrase` differ.
     Mismatch,
+    /// A new passphrase shorter than `MIN_NEW_PASSPHRASE_CHARS`.
+    TooShort,
     /// The terminal went away (hangup or end of input).
     Closed,
     Flush(Errno),
@@ -358,6 +360,11 @@ impl fmt::Display for PromptError {
             Self::TooLong => write!(f, "passphrase longer than {MAX_PASSPHRASE} bytes"),
             Self::NotText => write!(f, "passphrase is not valid UTF-8 text"),
             Self::Mismatch => write!(f, "the passphrases do not match"),
+            Self::TooShort => write!(
+                f,
+                "a new passphrase needs at least {MIN_NEW_PASSPHRASE_CHARS} characters \
+                 (for example five or more random words)"
+            ),
             Self::Closed => write!(f, "the terminal closed during passphrase entry"),
             Self::Flush(errno) => write!(f, "cannot discard earlier input ({errno})"),
             Self::Poll(errno) => write!(f, "cannot wait for input ({errno})"),
@@ -461,6 +468,10 @@ impl TerminalGuard {
         repeat: &'static str,
     ) -> Result<Passphrase, PromptError> {
         let first = self.read_passphrase(signals, prompt)?;
+        // Checked before the repeat, so a short one is not typed twice.
+        if !first.is_long_enough() {
+            return Err(PromptError::TooShort);
+        }
         let second = self.read_passphrase(signals, repeat)?;
         if first.matches(&second) {
             Ok(first)
@@ -540,17 +551,19 @@ impl TerminalGuard {
     /// `MAX_PUBLIC_LINE` characters, so nothing typed can be a terminal
     /// control sequence. Enter returns the line (possibly empty);
     /// Backspace and Ctrl+U edit; Ctrl+C, Esc or an exit signal cancels.
-    /// Never use it for anything secret.
+    /// Never use it for anything secret. Its buffers are still wiped, and
+    /// the line is returned in a `Zeroizing`, because a user may paste a
+    /// secret key by mistake (`init::read_backup_recipients` refuses one).
     pub fn read_public_line(
         &mut self,
         signals: &Signals,
         prompt: &str,
-    ) -> Result<String, PromptError> {
+    ) -> Result<Zeroizing<String>, PromptError> {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
         self.show(prompt.as_bytes())?;
         let mut line = PublicLine::default();
-        let mut chunk = [0u8; 64];
-        let mut echo = Vec::new();
+        let mut chunk = [0u8; PUBLIC_CHUNK];
+        let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
         let result = loop {
             let n = self.next_keys(signals, &mut chunk)?;
             let mut done = None;
@@ -588,9 +601,25 @@ impl TerminalGuard {
 /// recipient is 62 characters; plugin recipients (Phase 8) are longer.
 pub const MAX_PUBLIC_LINE: usize = 256;
 
+/// Keys read at once by `read_public_line`.
+const PUBLIC_CHUNK: usize = 64;
+
+/// The most `PublicLine::feed` can echo for one chunk: 3 bytes for each
+/// character erased (at most the line plus the chunk) and one byte for
+/// each character typed. Sized once, the echo buffer never reallocates,
+/// so no unwiped copy of a typed line is left behind.
+const ECHO_CAPACITY: usize = 3 * (MAX_PUBLIC_LINE + PUBLIC_CHUNK) + PUBLIC_CHUNK;
+
 /// The line being typed at a public prompt, and what to echo for each key.
-#[derive(Default)]
-struct PublicLine(String);
+/// Its capacity is fixed at `MAX_PUBLIC_LINE`, so it never reallocates,
+/// and it is wiped on drop.
+struct PublicLine(Zeroizing<String>);
+
+impl Default for PublicLine {
+    fn default() -> Self {
+        Self(Zeroizing::new(String::with_capacity(MAX_PUBLIC_LINE)))
+    }
+}
 
 impl PublicLine {
     fn feed(&mut self, byte: u8, echo: &mut Vec<u8>) -> Feed {
@@ -630,7 +659,7 @@ mod tests {
         let mut line = PublicLine::default();
         let mut echo = Vec::new();
         let feeds = keys.iter().map(|b| line.feed(*b, &mut echo)).collect();
-        (line.0, echo, feeds)
+        (line.0.to_string(), echo, feeds)
     }
 
     #[test]
@@ -655,6 +684,30 @@ mod tests {
         assert_eq!(public(b"x\x1b").2[1], Feed::Cancel);
         let long = vec![b'a'; MAX_PUBLIC_LINE + 1];
         assert_eq!(public(&long).2[MAX_PUBLIC_LINE], Feed::TooLong);
+    }
+
+    // A pasted secret must leave no unwiped copy: neither buffer may
+    // reallocate, even for the most echo one chunk can cause (a full
+    // line erased, then type-and-erase for the rest of the chunk).
+    #[test]
+    fn public_line_buffers_never_reallocate() {
+        let mut line = PublicLine::default();
+        let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
+        for _ in 0..MAX_PUBLIC_LINE {
+            line.feed(b'a', &mut echo);
+        }
+        echo.clear();
+        let (line_capacity, echo_capacity) = (line.0.capacity(), echo.capacity());
+        let mut chunk = vec![CTRL_U];
+        while chunk.len() + 2 <= PUBLIC_CHUNK {
+            chunk.extend_from_slice(&[b'a', CTRL_U]);
+        }
+        for byte in chunk {
+            line.feed(byte, &mut echo);
+        }
+        assert_eq!(line.0.capacity(), line_capacity);
+        assert_eq!(echo.capacity(), echo_capacity);
+        assert!(echo.len() <= ECHO_CAPACITY, "{}", echo.len());
     }
 
     fn typed(keys: &[u8]) -> (LineEditor, Vec<Feed>) {

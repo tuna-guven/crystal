@@ -36,6 +36,12 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// The fewest characters a new passphrase may have
+/// (docs/decisions/0028-passphrase-minimum.md). With scrypt at log N 18,
+/// this is what keeps offline guessing of a copied `identity.age` out of
+/// reach.
+pub const MIN_NEW_PASSPHRASE_CHARS: usize = 20;
+
 /// The largest plaintext Crystal encrypts: 32 MiB, far beyond any text
 /// vault, and well inside the 512 MiB locked-memory minimum
 /// (docs/design/startup.md, step 4) with the ciphertext and a decoded
@@ -53,11 +59,12 @@ pub const MAX_CIPHERTEXT: usize = MAX_PLAINTEXT + MAX_PLAINTEXT / 4096 + (64 << 
 #[cfg(test)]
 const TEST_SCRYPT_LOG_N: u8 = 10;
 
-/// A ceiling far above any timing target (2^30 needs 1 TiB), for an
-/// unlimited RLIMIT_MEMLOCK.
+/// What `fitting_log_n` returns for an unlimited RLIMIT_MEMLOCK (2^30
+/// needs 1 TiB); `policy_for` caps decryption far below it.
 const MAX_SCRYPT_LOG_N: u8 = 30;
 
-/// scrypt work factors for this run (docs/decisions/0025-scrypt-budget.md).
+/// scrypt work factors for this run (docs/decisions/0025-scrypt-budget.md,
+/// docs/decisions/0027-scrypt-fixed.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScryptPolicy {
     /// log2 N for new passphrase files.
@@ -86,36 +93,27 @@ fn fitting_log_n(memlock: Option<u64>) -> u8 {
         .min(MAX_SCRYPT_LOG_N)
 }
 
-/// The work factor that takes about one second here, measured the way age
-/// measures it (age 0.11.5, `target_scrypt_work_factor`): time log N = 10,
-/// raise it until the time is measurable, then double until one second.
-/// age does not expose its own choice, so Crystal repeats the measurement.
-#[cfg(not(test))]
-fn timed_log_n() -> u8 {
-    use std::time::{Duration, Instant};
-    let measure = |log_n: u8| {
-        let mut recipient = scrypt::Recipient::new(SecretString::from(String::new()));
-        recipient.set_work_factor(log_n);
-        let start = Instant::now();
-        let _ = encrypt(iter::once(&recipient as &dyn age::Recipient), b"");
-        start.elapsed()
-    };
-    let mut log_n = 10;
-    let mut elapsed = measure(log_n);
-    while elapsed.is_zero() && log_n < MAX_SCRYPT_LOG_N {
-        log_n += 1;
-        elapsed = measure(log_n);
+/// log2 N for every passphrase file Crystal writes, on every device: the
+/// largest whose memory fits in half of `harden::MEMLOCK_FLOOR` (256 MiB),
+/// so any device that starts Crystal can open it. Fixed, not timed:
+/// `identity.age` is synced, and a factor picked by a faster or larger
+/// machine could be refused elsewhere (docs/decisions/0027-scrypt-fixed.md).
+const ENCRYPT_LOG_N: u8 = 18;
+
+/// The scrypt policy for a run with memlock hard limit `memlock`.
+/// Decryption accepts up to 16 times Crystal's own cost (age's allowance,
+/// so files written before 0027 at log N 19 to 22 still open), and never
+/// more than fits in half the limit, where scrypt would abort the process.
+fn policy_for(memlock: Option<u64>) -> ScryptPolicy {
+    ScryptPolicy {
+        encrypt: ENCRYPT_LOG_N,
+        max_decrypt: (ENCRYPT_LOG_N + 4).min(fitting_log_n(memlock)),
     }
-    while elapsed < Duration::from_secs(1) && log_n < MAX_SCRYPT_LOG_N {
-        log_n += 1;
-        elapsed *= 2;
-    }
-    log_n
 }
 
-/// age's own policy (about one second to encrypt; files up to 16 times
-/// that accepted), each capped by what fits in locked memory. Computed once
-/// per run.
+/// This run's policy: `policy_for` the memlock hard limit, read once.
+/// Test builds use log N 10 instead, so the unit tests run in
+/// milliseconds; the binary has no way to lower the factor.
 fn scrypt_policy() -> ScryptPolicy {
     #[cfg(test)]
     {
@@ -128,13 +126,7 @@ fn scrypt_policy() -> ScryptPolicy {
     {
         static POLICY: std::sync::OnceLock<ScryptPolicy> = std::sync::OnceLock::new();
         *POLICY.get_or_init(|| {
-            let memlock = rustix::process::getrlimit(rustix::process::Resource::Memlock).maximum;
-            let fit = fitting_log_n(memlock);
-            let target = timed_log_n();
-            ScryptPolicy {
-                encrypt: target.min(fit),
-                max_decrypt: target.saturating_add(4).min(fit),
-            }
+            policy_for(rustix::process::getrlimit(rustix::process::Resource::Memlock).maximum)
         })
     }
 }
@@ -226,6 +218,15 @@ impl Passphrase {
         let mut copy = String::with_capacity(text.len());
         copy.push_str(text);
         SecretString::from(copy)
+    }
+
+    /// Whether this passphrase is long enough for a new one: at least
+    /// `MIN_NEW_PASSPHRASE_CHARS` characters (Unicode scalar values, not
+    /// bytes, so a passphrase in a non-Latin script needs as many
+    /// characters as one in ASCII). Only new passphrases are checked.
+    pub fn is_long_enough(&self) -> bool {
+        std::str::from_utf8(&self.0)
+            .is_ok_and(|text| text.chars().count() >= MIN_NEW_PASSPHRASE_CHARS)
     }
 
     /// Whether both passphrases are the same, for `crystal init`'s "type it
@@ -464,6 +465,42 @@ mod tests {
             assert_eq!(fitting_log_n(Some(limit)), log_n, "{log_n}");
             assert_eq!(fitting_log_n(Some(limit - 1)), log_n - 1, "{log_n}");
         }
+    }
+
+    // decision 0027: one fixed factor, the largest the floor holds.
+    #[test]
+    fn encryption_factor_fits_the_floor() {
+        use crate::harden::MEMLOCK_FLOOR;
+        assert_eq!(fitting_log_n(Some(MEMLOCK_FLOOR)), ENCRYPT_LOG_N);
+    }
+
+    // Encryption never depends on the device; decryption takes up to
+    // 16 times that cost, capped by what fits in half the limit.
+    #[test]
+    fn policy_is_fixed_for_encryption_and_capped_for_decryption() {
+        const MIB: u64 = 1 << 20;
+        let policy = |encrypt, max_decrypt| ScryptPolicy {
+            encrypt,
+            max_decrypt,
+        };
+        assert_eq!(policy_for(Some(512 * MIB)), policy(18, 18), "the floor");
+        assert_eq!(policy_for(Some(2048 * MIB)), policy(18, 20));
+        assert_eq!(policy_for(Some(8192 * MIB)), policy(18, 22));
+        assert_eq!(policy_for(Some(64 << 30)), policy(18, 22));
+        assert_eq!(policy_for(None), policy(18, 22), "unlimited");
+    }
+
+    // decision 0028: characters, not bytes; 19 is refused, 20 accepted.
+    #[test]
+    fn new_passphrase_minimum_counts_characters() {
+        let at = |s: &str| pass(s).is_long_enough();
+        assert!(!at(&"a".repeat(MIN_NEW_PASSPHRASE_CHARS - 1)));
+        assert!(at(&"a".repeat(MIN_NEW_PASSPHRASE_CHARS)));
+        // 19 two-byte characters are 38 bytes, still too few characters.
+        assert!(!at(&"ü".repeat(MIN_NEW_PASSPHRASE_CHARS - 1)));
+        assert!(at(&"ü".repeat(MIN_NEW_PASSPHRASE_CHARS)));
+        assert!(at(&"日本語の".repeat(5)));
+        assert!(at("correct horse battery staple"));
     }
 
     #[test]
