@@ -1,7 +1,12 @@
 # 0003 X25519 vault recipient until rage has hybrid post-quantum
 
 - **Date:** 2026-11-06 (#4)
-- **Status:** Accepted
+- **Status:** Accepted. The upgrade path is replaced by
+  [0042](0042-own-age-implementation.md): Crystal no longer uses the `age`
+  crate's recipients, so "upgrade `age`" no longer applies; a hybrid
+  recipient would be ported into `src/age_v1/` from the age
+  specification once an ML-KEM implementation is approved. The vault
+  recipient stays X25519 until then.
 
 ## Context
 

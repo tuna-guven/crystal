@@ -9,6 +9,7 @@
 // that checks memory (zeroization) may allow it, with a SAFETY comment.
 #![cfg_attr(test, deny(unsafe_code))]
 
+mod age_v1;
 mod cli;
 mod commands;
 mod crypto;

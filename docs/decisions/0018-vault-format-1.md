@@ -2,7 +2,11 @@
 
 - **Date:** 2026-11-06 (#10)
 - **Status:** Accepted; the note layout and the `VERSION` rule are
-  superseded by [0034](0034-vault-format-2.md) (format 2)
+  superseded by [0034](0034-vault-format-2.md) (format 2). The grease
+  remark under Consequences changes with
+  [0042](0042-own-age-implementation.md): once `crypto.rs` uses Crystal's
+  own age code (step C2), no grease stanza is written, so the ciphertext
+  size is the Padmé bucket plus a fixed-size header.
 
 ## Context
 
@@ -52,4 +56,5 @@ parsing.
   age adds a "grease" stanza of random size to every header that is not
   a passphrase file. It leaks nothing about the notes. age draws it from
   `rand`'s `thread_rng`, seeded from the same `getrandom` syscall
-  ([0015](0015-age-getrandom.md)).
+  ([0042](0042-own-age-implementation.md), which restates the
+  removed 0015).

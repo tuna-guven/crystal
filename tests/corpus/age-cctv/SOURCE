@@ -1,0 +1,5 @@
+C2SP/CCTV age test vectors, unchanged
+source: https://github.com/C2SP/CCTV.git, directory age/testdata
+commit: b88c4b206254ac543df240097e0f1fcc6a664821
+license: 0BSD, CC0 1.0 or Unlicense (see the CCTV README)
+imported by: scripts/import-cctv.sh

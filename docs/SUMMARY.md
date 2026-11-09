@@ -27,7 +27,6 @@
 
 - [Decision log](decisions/README.md)
   - [0001 One encrypted vault blob](decisions/0001-single-vault-blob.md)
-  - [0002 age only, linked as a library](decisions/0002-age-library-only.md)
   - [0003 X25519 vault recipient until rage has hybrid post-quantum](decisions/0003-no-post-quantum-yet.md)
   - [0004 Two identity files](decisions/0004-two-identity-files.md)
   - [0006 Per-user install in ~/.local/bin](decisions/0006-per-user-install.md)
@@ -37,7 +36,6 @@
   - [0011 Atomic writer: same-directory temp, renameat2, crash sweep](decisions/0011-atomic-writer.md)
   - [0012 Two plaintext exceptions: VERSION and .gen](decisions/0012-public-bytes.md)
   - [0013 Vault identity in a Box, not SecretBox](decisions/0013-identity-box.md)
-  - [0015 age's random source must be allowed by seccomp](decisions/0015-age-getrandom.md)
   - [0016 Passphrase prompt without echo or reallocation](decisions/0016-passphrase-prompt.md)
   - [0017 Documentation as an mdBook from docs/](decisions/0017-mdbook-docs.md)
   - [0018 Vault format 1](decisions/0018-vault-format-1.md)
@@ -58,6 +56,7 @@
   - [0038 Plain text notes: titles ending in `.txt`](decisions/0038-plain-text-notes.md)
   - [0040 Invisible characters are not allowed in note names](decisions/0040-invisible-name-characters.md)
   - [0041 Crystal's own clipboard only; copy out with the terminal's selection](decisions/0041-internal-clipboard-only.md)
+  - [0042 Crystal's own implementation of the age v1 format](decisions/0042-own-age-implementation.md)
 
 # Development
 

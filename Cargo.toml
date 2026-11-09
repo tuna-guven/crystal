@@ -20,6 +20,26 @@ signal-hook = "0.4.5"
 # age is the rage library. No default features: X25519 and scrypt are always
 # built in; `plugin` (YubiKey/TPM, needs execve) waits for Phase 8.
 age = { version = "=0.11.5", default-features = false }
+# Own age v1 implementation (src/age_v1/, decision 0042; steps C1-C3).
+# Already in the tree through age, at these exact versions; they become
+# direct dependencies so age can be removed in C3. Exact pins: crypto.
+# Payload and stanza AEAD. No `getrandom` (rand_core/OsRng): randomness comes
+# from rustix. `alloc` for the Vec-backed in-place buffers, as age enables it.
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+# Passphrase stanzas. No `simple`/`std`: no password-hash or rand_core.
+scrypt = { version = "=0.11.0", default-features = false }
+# X25519 stanzas. `static_secrets`: identity and ephemeral keys are built
+# from 32 getrandom bytes (StaticSecret::from), so no rand_core RNG.
+# `zeroize`: secrets wipe themselves on drop. `precomputed-tables`: faster
+# public-key derivation, the default age uses.
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+# HKDF-SHA-256 for the header MAC key, the payload key and the stanza keys.
+hkdf = { version = "=0.12.4", default-features = false }
+# HMAC-SHA-256 header MAC, checked in constant time (verify_slice).
+hmac = { version = "=0.12.1", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+# Constant-time all-zero check on the X25519 shared secret, as age does.
+subtle = { version = "=2.6.1", default-features = false }
 # SecretBox for the vault identity; same version age-core re-exports.
 secrecy = "=0.10.3"
 # Zeroizing buffers and #[derive(ZeroizeOnDrop)] for plaintext.
@@ -42,6 +62,11 @@ pulldown-cmark = { version = "=0.13.6", default-features = false }
 # Round-trip property tests. No `fork`/`timeout`: they pull in rusty-fork
 # and tempfile, which these pure in-memory tests do not need.
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
+# Test-only (decision 0042): inflates the C2SP/CCTV age vectors that CCTV
+# ships zlib-compressed, so tests/corpus/age-cctv/ holds them byte for byte
+# as published. Pure Rust, forbid(unsafe_code); brings adler2. Only
+# `with-alloc`, for decompress_to_vec_zlib_with_limit.
+miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
 
 [profile.release]
 lto = true
