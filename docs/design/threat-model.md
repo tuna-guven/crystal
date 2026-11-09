@@ -6,7 +6,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 
 | Adversary | Capability | Scope | Primary defense |
 | --- | --- | --- | --- |
-| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding; against offline guessing of a copied `identity.age`, a passphrase of at least 20 characters ([0028](../decisions/0028-passphrase-minimum.md)) under scrypt log N 18 ([0027](../decisions/0027-scrypt-fixed.md)); `identity.backup.age` is sealed to a generated 135-bit recovery code that cannot be guessed ([0029](../decisions/0029-recovery-code.md)) |
+| A1 Storage or sync attacker (cloud, Syncthing peer, stolen backup) | Read, modify, delete, reorder, roll back ciphertext files | In | age AEAD over the whole vault, embedded vault\_id, generation counter, Padmé padding; the vault's recipient kept private, since age does not authenticate the writer ([0044](../decisions/0044-vault-recipient-private.md)); against offline guessing of a copied `identity.age`, a passphrase of at least 20 characters ([0028](../decisions/0028-passphrase-minimum.md)) under scrypt log N 18 ([0027](../decisions/0027-scrypt-fixed.md)); `identity.backup.age` is sealed to a generated 135-bit recovery code that cannot be guessed ([0029](../decisions/0029-recovery-code.md)) |
 | A2 Device thief, machine off | Full disk read | In | No plaintext ever written; full-disk encryption assumed as a second layer |
 | A3 Malicious note content (imported, synced, pasted) | Terminal escape injection, parser bugs | In | Sanitizer on every text node, which spells hidden characters out as `<U+XXXX>` ([0037](../decisions/0037-visible-escapes.md)), fuzzed parser and renderer, sandbox limits impact |
 | A4 Supply chain (malicious or compromised crate) | Arbitrary code in the process | In | Minimal deps, cargo-vet, cargo-deny, sandbox blocks network and exec |
@@ -21,7 +21,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 **Security properties Crystal guarantees**
 
 - Confidentiality of note content and titles at rest
-- Integrity of each note and of the vault as a set (no swapped, injected or deleted notes go unnoticed)
+- Integrity of each note and of the vault as a set (no swapped, injected or deleted notes go unnoticed); a forged vault needs the vault's recipient, which never leaves the device ([0044](../decisions/0044-vault-recipient-private.md))
 - Rollback detection relative to the newest state this device has seen ([Storage, Rollback](storage.md#rollback)); an older vault opens only after you type `restore` ([0036](../decisions/0036-backups-external.md)); a same-user process (A5) can lower the plaintext counters, which is accepted
 - No plaintext persisted by Crystal itself, including on crash
 

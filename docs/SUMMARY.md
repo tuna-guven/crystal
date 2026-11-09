@@ -58,6 +58,7 @@
   - [0041 Crystal's own clipboard only; copy out with the terminal's selection](decisions/0041-internal-clipboard-only.md)
   - [0042 Crystal's own implementation of the age v1 format](decisions/0042-own-age-implementation.md)
   - [0043 Crystal's age code is checked against stored age files, not the age crate](decisions/0043-age-checked-against-stored-files.md)
+  - [0044 The vault's recipient stays private: age does not authenticate the writer](decisions/0044-vault-recipient-private.md)
 
 # Development
 
