@@ -4,7 +4,11 @@
 - **Status:** Accepted. Replaces 0002 (age only, linked as a library) and
   0015 (age's random source must be allowed by seccomp), now removed; what
   still holds of both is restated below. Changes the upgrade path in
-  [0003](0003-no-post-quantum-yet.md).
+  [0003](0003-no-post-quantum-yet.md). Partly replaced by
+  [0043](0043-age-checked-against-stored-files.md) (step C3): the
+  cross-checks against the `age` crate under Verification are replaced by
+  stored files the crate wrote, and the crate is gone, so the note under
+  Randomness about its `getrandom` 0.2 probe no longer applies.
 
 ## Context
 

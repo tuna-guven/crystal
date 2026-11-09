@@ -275,26 +275,20 @@ fn passphrase_files_use_log_n_18() {
 
 /// An identity.age asking for log N 19 (512 MiB of scrypt) on a device at
 /// the 512 MiB floor, where only 256 MiB may go to scrypt: refused before
-/// any scrypt work with a message, never an abort.
+/// any scrypt work with a message, never an abort. The work factor is
+/// changed in the header text; it is read before any key is derived or
+/// the header MAC is checked, so this is the path a real log N 19 file
+/// takes.
 #[test]
 fn refuses_work_factor_beyond_locked_memory() {
-    use age::secrecy::SecretString;
-    use std::io::Write;
     let (home, vault) = home_with_vault("scrypt_too_high");
     let identity = vault.join("identity.age");
-    let pass = || SecretString::from(PASS.to_owned());
-
-    let plain = age_decrypt(&age::scrypt::Identity::new(pass()), &identity);
-    let mut recipient = age::scrypt::Recipient::new(pass());
-    recipient.set_work_factor(19);
-    let encryptor =
-        age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
-            .unwrap();
-    let mut raised = Vec::new();
-    let mut writer = encryptor.wrap_output(&mut raised).unwrap();
-    writer.write_all(&plain).unwrap();
-    writer.finish().unwrap();
-    std::fs::write(&identity, raised).unwrap();
+    let mut bytes = std::fs::read(&identity).unwrap();
+    let line = bytes.windows(10).position(|w| w == b"-> scrypt ").unwrap();
+    let end = line + bytes[line..].iter().position(|&b| b == b'\n').unwrap();
+    assert_eq!(&bytes[end - 3..end], b" 18");
+    bytes[end - 1] = b'9';
+    std::fs::write(&identity, bytes).unwrap();
     assert_eq!(scrypt_log_n(&identity), 19);
 
     let (ok, output) = dialog(
@@ -561,9 +555,17 @@ fn init_recovery_code_confirmation() {
     let code = recovery_code_in(&output);
     let canonical = code.replace('-', "");
     let vault = vault_path(&home, "diary");
-    let by_code = age::scrypt::Identity::new(canonical.clone().into());
-    let key = age_decrypt(&by_code, &vault.join("identity.backup.age"));
-    assert!(key.starts_with(b"AGE-SECRET-KEY-1"));
+    // The code without dashes opens identity.backup.age, which holds the
+    // key identity.age holds.
+    let steps = vec![
+        (CODE_PROMPT, format!("{canonical}\r").into_bytes()),
+        (PROMPT, format!("{PASS}\r").into_bytes()),
+    ];
+    let (ok, output) = dialog(&format!("'{BIN}' check-code diary"), &home, &steps);
+    assert!(
+        ok && output.contains("The recovery code is right"),
+        "{output}"
+    );
     for dir in [vault.clone(), state_dir(&home)] {
         for file in std::fs::read_dir(&dir).unwrap() {
             let bytes = std::fs::read(file.unwrap().path()).unwrap();

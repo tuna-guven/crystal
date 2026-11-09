@@ -61,11 +61,6 @@ proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # as published. Pure Rust, forbid(unsafe_code); brings adler2. Only
 # `with-alloc`, for decompress_to_vec_zlib_with_limit.
 miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
-# Test-only since step C2 (decision 0042): rage's library, to cross-check
-# Crystal's own age code both ways and to read the real binary's files in
-# the integration tests. No default features: X25519 and scrypt only.
-# Removed in step C3.
-age = { version = "=0.11.5", default-features = false }
 
 [profile.release]
 lto = true

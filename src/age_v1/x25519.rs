@@ -186,9 +186,7 @@ impl fmt::Display for Recipient {
 mod tests {
     use super::*;
     use crate::age_v1::header;
-    use age::secrecy::ExposeSecret;
     use proptest::prelude::*;
-    use std::io::Write;
 
     // The test key pair from age 0.12.1, src/native/x25519.rs.
     const TEST_SK: &str =
@@ -293,58 +291,46 @@ mod tests {
         );
     }
 
-    // Cross-checks against the age crate (the dependency, 0.11.5; its
-    // X25519 code is unchanged in 0.12.1 apart from the Bech32 plumbing).
+    // Key strings age 0.11.5 printed (tests/corpus/age-rage/keys.txt):
+    // each secret key parses and prints back the same string, and gives
+    // the same recipient string age printed for it.
     #[test]
     fn key_strings_match_age_crate() {
-        for _ in 0..50 {
-            // age's identity, read here.
-            let theirs = age::x25519::Identity::generate();
-            let secret = theirs.to_string();
-            let ours = Identity::parse(secret.expose_secret()).unwrap();
-            assert_eq!(*ours.to_secret_string(), *secret.expose_secret());
-            assert_eq!(ours.to_public().to_string(), theirs.to_public().to_string());
-
-            // Ours, read by age.
-            let ours = Identity::generate().unwrap();
-            let theirs: age::x25519::Identity = ours.to_secret_string().parse().unwrap();
-            assert_eq!(
-                *theirs.to_string().expose_secret(),
-                *ours.to_secret_string()
-            );
-            let recipient: age::x25519::Recipient = ours.to_public().to_string().parse().unwrap();
-            assert_eq!(recipient.to_string(), ours.to_public().to_string());
+        let keys = crate::age_v1::rage::key_strings();
+        assert_eq!(keys.len(), 3);
+        for (secret, recipient) in keys {
+            let ours = Identity::parse(&secret).unwrap();
+            assert_eq!(*ours.to_secret_string(), *secret);
+            assert_eq!(ours.to_public().to_string(), recipient);
+            let theirs = Recipient::parse(&recipient).unwrap();
+            assert_eq!(theirs.to_string(), recipient);
         }
     }
 
-    // A file the age crate encrypts to several recipients, ours among
-    // them: our identity finds its stanza, and the file key verifies the
-    // header MAC (the MAC covers every stanza, so a wrong key fails).
+    // Files the age crate encrypted to three keys (key0, key1, key2, in
+    // that order) and its grease stanza: each key finds its own stanza and
+    // no other, and the file key verifies the header MAC (the MAC covers
+    // every stanza, so a wrong key fails).
     #[test]
     fn opens_age_crate_x25519_files() {
-        for position in 0..3 {
-            let ours = Identity::generate().unwrap();
-            let mut recipients: Vec<age::x25519::Recipient> = (0..2)
-                .map(|_| age::x25519::Identity::generate().to_public())
-                .collect();
-            recipients.insert(position, ours.to_public().to_string().parse().unwrap());
-            let encryptor = age::Encryptor::with_recipients(
-                recipients.iter().map(|r| r as &dyn age::Recipient),
-            )
-            .unwrap();
-            let mut file = Vec::new();
-            let mut writer = encryptor.wrap_output(&mut file).unwrap();
-            writer.write_all(b"note").unwrap();
-            writer.finish().unwrap();
-
+        let keys: Vec<Identity> = crate::age_v1::rage::key_strings()
+            .iter()
+            .map(|(secret, _)| Identity::parse(secret).unwrap())
+            .collect();
+        let stranger = Identity::generate().unwrap();
+        for len in [0, 1, 65535, 65536, 65537, 196608] {
+            let file = crate::age_v1::rage::file(&format!("x25519-3-{len}.age"));
             let (parsed, _) = header::parse(&file).unwrap();
             assert_eq!(parsed.stanzas.len(), 4, "three X25519 and one grease");
-            let mut found = parsed.stanzas.iter().filter_map(|s| ours.unwrap(s));
-            let key = found.next().unwrap().unwrap();
-            assert!(found.next().is_none());
-            assert!(parsed.verify_mac(key.expose()));
+            for (position, ours) in keys.iter().enumerate() {
+                let found: Vec<usize> = (0..4)
+                    .filter(|&i| ours.unwrap(&parsed.stanzas[i]).is_some())
+                    .collect();
+                assert_eq!(found, [position], "{len}");
+                let key = ours.unwrap(&parsed.stanzas[position]).unwrap().unwrap();
+                assert!(parsed.verify_mac(key.expose()));
+            }
             // An identity the file is not for finds nothing.
-            let stranger = Identity::generate().unwrap();
             assert!(parsed.stanzas.iter().all(|s| stranger.unwrap(s).is_none()));
         }
     }

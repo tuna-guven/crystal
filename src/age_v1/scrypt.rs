@@ -125,7 +125,6 @@ fn unwrap_scrypt(stanza: &Stanza, passphrase: &[u8], max_log_n: u8) -> Result<Fi
 mod tests {
     use super::*;
     use crate::age_v1::header;
-    use age::secrecy::SecretString;
     use proptest::prelude::*;
 
     /// Unit tests run scrypt at log N 10 (1 MiB), as crypto.rs's tests do.
@@ -239,14 +238,13 @@ mod tests {
         }
     }
 
-    // Cross-check: a passphrase file from the age crate (the dependency,
-    // 0.11.5, whose scrypt code 0.12.1 keeps unchanged) opens here, and the
-    // file key it yields verifies the header MAC.
+    // A passphrase file from the age crate (0.11.5, whose scrypt code
+    // 0.12.1 keeps unchanged; tests/corpus/age-rage/scrypt-utf8.age, at
+    // log N 10) opens here, and the file key it yields verifies the header
+    // MAC.
     #[test]
     fn opens_age_crate_scrypt_files() {
-        let mut recipient = age::scrypt::Recipient::new(SecretString::from("pässwörd".to_owned()));
-        recipient.set_work_factor(LOG_N);
-        let file = age::encrypt(&recipient, b"secret").unwrap();
+        let file = crate::age_v1::rage::file("scrypt-utf8.age");
         let (parsed, _) = header::parse(&file).unwrap();
         assert_eq!(parsed.stanzas.len(), 1);
         let key = unwrap(&parsed.stanzas[0], "pässwörd".as_bytes(), LOG_N)

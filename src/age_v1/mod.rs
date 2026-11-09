@@ -9,9 +9,10 @@
 //! (LICENSES/age-MIT.txt). Nothing here is a custom construction: every
 //! step follows the spec and age's code.
 //!
-//! Since step C2, `crypto` encrypts and decrypts through this module; the
-//! `age` crate is a dev-dependency, kept to cross-check it, with the
-//! C2SP/CCTV vectors.
+//! Since step C2, `crypto` encrypts and decrypts through this module.
+//! Since step C3 the `age` crate is gone; the C2SP/CCTV vectors (`cctv`)
+//! and files the age crate wrote before then (`rage`,
+//! tests/corpus/age-rage/; decision 0043) check it.
 //!
 //! `encrypt` and `decrypt` follow age 0.12.1, src/protocol.rs
 //! (`Encryptor::with_recipients`, `Decryptor`) and src/keys.rs, over
@@ -33,6 +34,8 @@ mod bech32;
 mod cctv;
 mod header;
 mod primitives;
+#[cfg(test)]
+pub(crate) mod rage;
 mod scrypt;
 mod stream;
 pub(crate) mod x25519;
@@ -175,9 +178,7 @@ pub(crate) fn decrypt(identity: &Identity<'_>, file: &[u8]) -> Result<Zeroizing<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use age::secrecy::SecretString;
     use proptest::prelude::*;
-    use std::io::{Read, Write};
     use std::sync::OnceLock;
 
     // The test key pair from age 0.12.1, src/native/x25519.rs.
@@ -365,29 +366,10 @@ mod tests {
         }
     }
 
-    /// The age crate (the dependency, 0.11.5) decrypting our file.
-    fn age_decrypts(file: &[u8], identity: &dyn age::Identity) -> Vec<u8> {
-        let decryptor = age::Decryptor::new_buffered(file).unwrap();
-        let mut reader = decryptor.decrypt(std::iter::once(identity)).unwrap();
-        let mut out = Vec::new();
-        reader.read_to_end(&mut out).unwrap();
-        out
-    }
-
-    /// The age crate encrypting to `recipients`.
-    fn age_encrypts(recipients: &[&dyn age::Recipient], plaintext: &[u8]) -> Vec<u8> {
-        let encryptor = age::Encryptor::with_recipients(recipients.iter().copied()).unwrap();
-        let mut file = Vec::new();
-        let mut writer = encryptor.wrap_output(&mut file).unwrap();
-        writer.write_all(plaintext).unwrap();
-        writer.finish().unwrap();
-        file
-    }
-
-    /// The sizes the C1 cross-check covers: empty, one byte, around one
-    /// chunk and whole multiples of a chunk. Crystal's 32 MiB maximum has
-    /// its own test below.
-    const CROSS_CHECK_SIZES: [usize; 8] = [
+    /// Empty, one byte, around one chunk and whole multiples of a chunk.
+    /// Files age wrote at these sizes are checked in rage.rs; Crystal's
+    /// 32 MiB maximum has its own test below.
+    const BOUNDARY_SIZES: [usize; 8] = [
         0,
         1,
         stream::CHUNK_SIZE - 1,
@@ -402,61 +384,31 @@ mod tests {
         (0..len).map(|i| (i % 253) as u8).collect()
     }
 
-    /// X25519 both directions against the age crate (the dependency,
-    /// 0.11.5) at `len` bytes, to one recipient and to three.
-    fn cross_check_x25519(len: usize) {
+    /// X25519 to one recipient and to three, then scrypt, at `len` bytes:
+    /// every key, and the passphrase, opens what `encrypt` wrote.
+    fn round_trip_at(len: usize) {
         let plaintext = plaintext_of(len);
-        let ours: Vec<x25519::Identity> = (0..3)
+        let keys: Vec<x25519::Identity> = (0..3)
             .map(|_| x25519::Identity::generate().unwrap())
             .collect();
-        let theirs: Vec<age::x25519::Identity> = ours
-            .iter()
-            .map(|k| k.to_secret_string().parse().unwrap())
-            .collect();
-        let our_recipients: Vec<_> = ours.iter().map(x25519::Identity::to_public).collect();
-        let their_recipients: Vec<_> = theirs.iter().map(|k| k.to_public()).collect();
-
+        let recipients: Vec<_> = keys.iter().map(x25519::Identity::to_public).collect();
         for n in [1, 3] {
-            // Ours to age: every recipient's age identity decrypts.
-            let file = encrypt(&Recipients::X25519(&our_recipients[..n]), &plaintext).unwrap();
-            for key in &theirs[..n] {
-                assert!(age_decrypts(&file, key) == plaintext, "{len} to {n}");
-            }
-            // Age to ours: age adds its grease stanza; every one of our
-            // identities finds its stanza.
-            let to: Vec<&dyn age::Recipient> = their_recipients[..n]
-                .iter()
-                .map(|r| r as &dyn age::Recipient)
-                .collect();
-            let file = age_encrypts(&to, &plaintext);
-            for key in &ours[..n] {
+            let file = encrypt(&Recipients::X25519(&recipients[..n]), &plaintext).unwrap();
+            for key in &keys[..n] {
                 let back = decrypt(&Identity::X25519(key), &file).unwrap();
-                assert!(*back == plaintext, "{len} from age to {n}");
+                assert!(*back == plaintext, "{len} to {n}");
             }
         }
-    }
-
-    /// scrypt both directions against the age crate at `len` bytes.
-    fn cross_check_scrypt(len: usize) {
-        let pass = "pässwörd";
-        let plaintext = plaintext_of(len);
-        let file = encrypt(&passphrase(pass.as_bytes(), 10), &plaintext).unwrap();
-        let mut identity = age::scrypt::Identity::new(SecretString::from(pass.to_owned()));
-        identity.set_max_work_factor(10);
-        assert!(age_decrypts(&file, &identity) == plaintext, "{len}");
-
-        let mut recipient = age::scrypt::Recipient::new(SecretString::from(pass.to_owned()));
-        recipient.set_work_factor(10);
-        let file = age_encrypts(&[&recipient], &plaintext);
-        let back = decrypt(&with_passphrase(pass.as_bytes(), 10), &file).unwrap();
-        assert!(*back == plaintext, "{len}");
+        let pass = "pässwörd".as_bytes();
+        let file = encrypt(&passphrase(pass, 10), &plaintext).unwrap();
+        let back = decrypt(&with_passphrase(pass, 10), &file).unwrap();
+        assert!(*back == plaintext, "{len} by passphrase");
     }
 
     #[test]
-    fn cross_check_with_age_crate() {
-        for len in CROSS_CHECK_SIZES {
-            cross_check_x25519(len);
-            cross_check_scrypt(len);
+    fn round_trips_at_chunk_boundaries() {
+        for len in BOUNDARY_SIZES {
+            round_trip_at(len);
         }
     }
 
@@ -465,9 +417,8 @@ mod tests {
     // scripts/long-tests.sh) run it in under a second.
     #[test]
     #[cfg_attr(debug_assertions, ignore = "slow in debug builds; runs in release")]
-    fn cross_check_32_mib_with_age_crate() {
-        cross_check_x25519(crate::crypto::MAX_PLAINTEXT);
-        cross_check_scrypt(crate::crypto::MAX_PLAINTEXT);
+    fn round_trips_32_mib() {
+        round_trip_at(crate::crypto::MAX_PLAINTEXT);
     }
 
     /// Two full chunks and a few bytes, encrypted once to the test key.

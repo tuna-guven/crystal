@@ -8,7 +8,7 @@
 | 1 Hardening bootstrap and terminal guard | Done |
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
-| C Own age code | C1 and C2 done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format; the `age` crate is test-only (decision 0042); C3 next |
+| C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
 | 4 to 8 | Not started; Phase 7 dropped (decision 0036) |
 
 What runs today: `crystal init NAME` creates a vault in
@@ -18,7 +18,7 @@ with the recovery code, `crystal check-code NAME` checks the code,
 into the Crystal shell, which so far knows `ls`, `tags`, `find`, `search`,
 `view`, `links`, `help`, `clear` and `quit`.
 
-## Next steps (C1 to C3, before Phase 4)
+## Steps C1 to C3 (done, before Phase 4)
 
 Replace the `age` crate with Crystal's own implementation of the age v1
 format ([0042](../decisions/0042-own-age-implementation.md)), approved
@@ -29,7 +29,7 @@ before it starts.
 | --- | --- | --- |
 | C1 (done) | `src/age_v1/`: base64, Bech32, header and MAC, STREAM, scrypt and X25519 stanzas, `encrypt` and `decrypt`, ported from age 0.12.1; the C2SP/CCTV vectors (`scripts/import-cctv.sh`, `tests/corpus/age-cctv/`); cross-checks with the `age` crate both ways up to 32 MiB; property tests at a million cases | Build and prove the replacement while the old code still runs |
 | C2 (done) | `crypto.rs` and `vault/format.rs` switch to `src/age_v1/`; `age` becomes a dev-dependency for the cross-checks; existing vaults and identity files open unchanged; syscalls, architecture and threat-model chapters updated | Crystal encrypts with its own age code |
-| C3 | Remove the `age` crate (`secrecy` already went in C2); drop the advisory exceptions only it needed from `deny.toml`; decide how the cross-checks continue without it (the CCTV vectors stay) | About a hundred fewer crates |
+| C3 (done) | `age` crate removed (`secrecy` already went in C2); before that it wrote `tests/corpus/age-rage/`, which the moved tests now use; integration tests use `check-code`, `recover` and unlock; `deny.toml` has no advisory exception and one duplicate (`syn`); `Cargo.lock` 160 → 78 crates (decision 0043) | No age crate anywhere, with no loss of coverage |
 
 ## Earlier steps (Phase 3)
 

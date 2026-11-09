@@ -204,15 +204,6 @@ pub fn dialog(cmd: &str, home: &Path, steps: &[(&str, Vec<u8>)]) -> (bool, Strin
     pty_dialog(cmd, home, &steps)
 }
 
-pub fn age_decrypt(identity: &dyn age::Identity, file: &Path) -> Vec<u8> {
-    let bytes = std::fs::read(file).unwrap();
-    let decryptor = age::Decryptor::new_buffered(&bytes[..]).unwrap();
-    let mut reader = decryptor.decrypt(std::iter::once(identity)).unwrap();
-    let mut out = Vec::new();
-    reader.read_to_end(&mut out).unwrap();
-    out
-}
-
 /// Crystal's output as visible text: each cursor move (`ESC [ row ; col H`)
 /// becomes a space and every other CSI sequence is removed, so words that
 /// the frame writer drew one by one read as a sentence again.

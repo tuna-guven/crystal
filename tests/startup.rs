@@ -337,14 +337,13 @@ fn refuses_missing_or_relative_home() {
 /// name is typed again. The passphrase never appears in the output.
 #[test]
 fn init_then_rm_end_to_end() {
-    use std::str::FromStr;
     let home = private_home("init_e2e");
 
     let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &init_steps());
     assert!(ok, "{output}");
     assert!(!output.contains(PASS), "passphrase shown: {output:?}");
-    // The code typed back was the code shown; age's scrypt passphrase is
-    // its 28 symbols without dashes.
+    // The code typed back was the code shown, here as its 28 symbols
+    // without dashes (age's scrypt passphrase).
     let code = recovery_code_in(&output).replace('-', "");
 
     // Acceptance: the layout matches docs/design/storage.md.
@@ -394,17 +393,39 @@ fn init_then_rm_end_to_end() {
         "the pin names the counter's vault"
     );
 
-    // Acceptance: identity.backup.age recovers the vault without the
-    // passphrase, and holds the same identity as identity.age.
-    let by_code = age::scrypt::Identity::new(code.into());
-    let from_backup = age_decrypt(&by_code, &vault.join("identity.backup.age"));
-    let recovered =
-        age::x25519::Identity::from_str(std::str::from_utf8(&from_backup).unwrap()).unwrap();
-    age_decrypt(&recovered, &vault.join("vault.age"));
-    let scrypt = age::scrypt::Identity::new(PASS.to_owned().into());
+    // Acceptance: identity.backup.age holds the same identity as
+    // identity.age (check-code opens both, with the code and with the
+    // passphrase, and compares their keys), and it recovers the vault
+    // without the passphrase: after `recover`, a new passphrase unlocks
+    // vault.age, which was encrypted to the identity made at init.
+    let steps = vec![
+        (CODE_PROMPT, format!("{code}\r").into_bytes()),
+        (PROMPT, format!("{PASS}\r").into_bytes()),
+    ];
+    let (ok, output) = dialog(&format!("'{BIN}' check-code diary"), &home, &steps);
+    assert!(
+        ok && output.contains("The recovery code is right"),
+        "{output}"
+    );
+    let vault_age = std::fs::read(vault.join("vault.age")).unwrap();
+    let new_pass = "a-new-passphrase-after-recovery";
+    let steps = vec![
+        (CODE_PROMPT, format!("{code}\r").into_bytes()),
+        (NEW_PROMPT, format!("{new_pass}\r").into_bytes()),
+        (REPEAT, format!("{new_pass}\r").into_bytes()),
+    ];
+    let (ok, output) = dialog(&format!("'{BIN}' recover diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let steps = vec![
+        (PROMPT, format!("{new_pass}\r").into_bytes()),
+        ("crystal:diary> ", b"quit\r".to_vec()),
+    ];
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
     assert_eq!(
-        age_decrypt(&scrypt, &vault.join("identity.age")),
-        from_backup
+        std::fs::read(vault.join("vault.age")).unwrap(),
+        vault_age,
+        "unlocked the vault.age written at init"
     );
 
     // The same name again is refused before any prompt.

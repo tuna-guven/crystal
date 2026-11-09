@@ -506,21 +506,28 @@ J9FSm+GFHiVWpr1MfYCo/w
     }
 
     // Headers written by the age crate (0.11.5, what existing vaults were
-    // written with) parse, and write back byte for byte: an X25519 file
-    // with age's random grease stanza, which is skipped as unknown.
+    // written with; tests/corpus/age-rage/) parse, and write back byte for
+    // byte: X25519 stanzas, then age's random grease stanza, which is
+    // skipped as unknown.
     #[test]
     fn parses_age_crate_headers() {
-        for _ in 0..50 {
-            let identity = age::x25519::Identity::generate();
-            let file = age::encrypt(&identity.to_public(), b"hello").unwrap();
+        let files = crate::age_v1::rage::x25519_files();
+        assert_eq!(files.len(), 12);
+        for (name, file) in files {
+            let recipients = if name.starts_with("x25519-3-") { 3 } else { 1 };
             let (header, payload) = parse(&file).unwrap();
-            assert_eq!(header.stanzas[0].tag, "X25519");
-            assert_eq!(header.stanzas.len(), 2, "X25519 plus one grease stanza");
-            assert!(header.stanzas[1].tag.ends_with("-grease"));
-            // 16-byte nonce, then one 5-byte chunk with its 16-byte tag.
-            assert_eq!(payload.len(), 16 + 5 + 16);
+            assert_eq!(header.stanzas.len(), recipients + 1, "{name}");
+            for stanza in &header.stanzas[..recipients] {
+                assert_eq!(stanza.tag, "X25519", "{name}");
+            }
+            assert!(
+                header.stanzas[recipients].tag.ends_with("-grease"),
+                "{name}"
+            );
+            // The 16-byte nonce and at least one chunk's 16-byte tag.
+            assert!(payload.len() >= 16 + 16, "{name}");
             let again = write_minus_mac(&header.stanzas).unwrap();
-            assert_eq!(again, header.mac_input);
+            assert_eq!(again, header.mac_input, "{name}");
         }
     }
 

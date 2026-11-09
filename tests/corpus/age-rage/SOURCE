@@ -1,0 +1,106 @@
+age files written by the age crate (rage's library), for step C3
+written: 2026-11-09, before the age crate was removed (decision 0042)
+writer: age =0.11.5, no default features (what Crystal linked before step C2)
+read by: src/age_v1/rage.rs
+
+Crystal no longer depends on the age crate. These files keep checking that
+Crystal's own age code (src/age_v1/) opens what age writes, byte for byte.
+They are never regenerated: the generator below cannot be built inside
+Crystal any more. It is kept here so anyone can see how the files were made;
+to rerun it, put it in its own crate with the Cargo.toml below and run
+  cargo run --release -- <output directory>
+
+keys.txt   three X25519 test identities: name, secret key, recipient (tabs).
+           Test keys only; they protect nothing.
+MANIFEST   one line per file (tabs): file, kind, key names or passphrase,
+           scrypt log N ("-" for X25519), plaintext length, plaintext SHA-256.
+           The plaintext of the X25519 files is byte i = i % 253; the scrypt
+           identity files hold key0's secret key string.
+
+Every X25519 file carries the random grease stanza age 0.11.5 adds.
+scrypt-log-n-14/15: Crystal's test work-factor cap is log N 10 + 4, so 14
+opens and 15 is refused.
+
+---- Cargo.toml ----
+[package]
+name = "gen-age-rage"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+age = { version = "=0.11.5", default-features = false }
+sha2 = "=0.10.9"
+
+---- src/main.rs ----
+//! Writes tests/corpus/age-rage/ with the age crate 0.11.5 (rage's
+//! library, what Crystal linked before step C2). Run once, before C3.
+use age::secrecy::{ExposeSecret, SecretString};
+use sha2::{Digest, Sha256};
+use std::{fmt::Write as _, io::Write, path::Path};
+
+const CHUNK: usize = 64 * 1024;
+const SIZES: [usize; 6] = [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK];
+const TEST_LOG_N: u8 = 10; // crypto.rs TEST_SCRYPT_LOG_N
+
+fn plaintext(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 253) as u8).collect()
+}
+
+fn encrypt(recipients: &[&dyn age::Recipient], plain: &[u8]) -> Vec<u8> {
+    let enc = age::Encryptor::with_recipients(recipients.iter().copied()).unwrap();
+    let mut out = Vec::new();
+    let mut w = enc.wrap_output(&mut out).unwrap();
+    w.write_all(plain).unwrap();
+    w.finish().unwrap();
+    out
+}
+
+fn scrypt(pass: &str, log_n: u8) -> age::scrypt::Recipient {
+    let mut r = age::scrypt::Recipient::new(SecretString::from(pass.to_owned()));
+    r.set_work_factor(log_n);
+    r
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn main() {
+    let dir = Path::new(&std::env::args().nth(1).expect("output dir")).to_owned();
+    std::fs::create_dir_all(&dir).unwrap();
+    let keys: Vec<age::x25519::Identity> = (0..3).map(|_| age::x25519::Identity::generate()).collect();
+    let mut manifest = String::new();
+    let mut keys_txt = String::new();
+    for (i, k) in keys.iter().enumerate() {
+        writeln!(keys_txt, "key{i}\t{}\t{}", k.to_string().expose_secret(), k.to_public()).unwrap();
+    }
+    std::fs::write(dir.join("keys.txt"), keys_txt).unwrap();
+    let mut put = |name: &str, file: Vec<u8>, how: &str, plain: &[u8]| {
+        std::fs::write(dir.join(name), file).unwrap();
+        writeln!(manifest, "{name}\t{how}\t{}\t{}", plain.len(), hex(&Sha256::digest(plain))).unwrap();
+    };
+    // Identity files as old Crystal wrote them: key0's secret string under
+    // a passphrase (identity.age) and under a recovery code (backup).
+    let secret = keys[0].to_string();
+    let secret = secret.expose_secret().as_bytes();
+    put("scrypt-identity.age", encrypt(&[&scrypt("correct horse", TEST_LOG_N)], secret),
+        &format!("scrypt\tcorrect horse\t{TEST_LOG_N}"), secret);
+    put("scrypt-backup.age", encrypt(&[&scrypt("K7QM3XRD", TEST_LOG_N)], secret),
+        &format!("scrypt\tK7QM3XRD\t{TEST_LOG_N}"), secret);
+    // A non-ASCII passphrase, and the work-factor cap (test cap is log N + 4).
+    put("scrypt-utf8.age", encrypt(&[&scrypt("pässwörd", TEST_LOG_N)], b"secret"),
+        &format!("scrypt\tpässwörd\t{TEST_LOG_N}"), b"secret");
+    for log_n in [TEST_LOG_N + 4, TEST_LOG_N + 5] {
+        put(&format!("scrypt-log-n-{log_n}.age"), encrypt(&[&scrypt("pw", log_n)], b"x"),
+            &format!("scrypt\tpw\t{log_n}"), b"x");
+    }
+    let pubs: Vec<_> = keys.iter().map(|k| k.to_public()).collect();
+    for len in SIZES {
+        let p = plaintext(len);
+        put(&format!("x25519-1-{len}.age"), encrypt(&[&pubs[0]], &p), "x25519\tkey0\t-", &p);
+        let three: Vec<&dyn age::Recipient> = pubs.iter().map(|r| r as &dyn age::Recipient).collect();
+        put(&format!("x25519-3-{len}.age"), encrypt(&three, &p), "x25519\tkey0,key1,key2\t-", &p);
+    }
+    std::fs::write(dir.join("MANIFEST"), manifest).unwrap();
+}

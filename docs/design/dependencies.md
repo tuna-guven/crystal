@@ -10,7 +10,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 | Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions/0031-own-grid.md)) |
 | Editor widget | Crystal's own | Phase 4, on the grid; `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
 | Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
-| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and the `age` crate ([decision 0042](../decisions/0042-own-age-implementation.md)). Since step C2 the program encrypts only through it; the `age` crate is a test-only dependency until C3 removes it |
+| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and files the `age` crate wrote ([decisions 0042](../decisions/0042-own-age-implementation.md) and [0043](../decisions/0043-age-checked-against-stored-files.md)). Since step C2 the program encrypts only through it; since step C3 the `age` crate is not in the tree at all |
 | AEAD | `chacha20poly1305` =0.10.1 (no default features, `alloc`) | Stanza key wrapping and STREAM chunks; no `getrandom` feature, randomness comes from rustix (decision 0042) |
 | Passphrase KDF | `scrypt` =0.11.0 (no default features) | The scrypt stanza; no `password-hash` (decision 0042) |
 | X25519 | `x25519-dalek` =2.0.1 (`static_secrets`, `zeroize`, `precomputed-tables`) | The X25519 stanza; keys built from getrandom bytes, wiped on drop (decision 0042) |
@@ -24,7 +24,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 
 **About age and rage:** Crystal's files are age files, readable by age, rage or any age implementation. Crystal implements the published format itself, ported from rage's library (the `age` crate), because that crate brought about a hundred crates for two recipient types ([decision 0042](../decisions/0042-own-age-implementation.md)). Never shell out to the `rage` or `age` binary, which would need `execve` and push plaintext through pipes.
 
-**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed; `age` =0.11.5 (no default features), rage's library, to cross-check Crystal's age code in both directions and to read the real binary's files in the integration tests, until step C3 ([decision 0042](../decisions/0042-own-age-implementation.md)). None of them is in the binary.
+**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed. None of them is in the binary. The `age` crate was one until step C3; files it wrote are kept in `tests/corpus/age-rage/` instead ([decision 0043](../decisions/0043-age-checked-against-stored-files.md)). `Cargo.lock` holds 78 crates (160 before C3).
 
 **Avoid:** `tokio` or any async runtime, HTTP clients, `clap` (large for this job), syntax highlighters (`syntect`), `tui-markdown` or other ready-made renderers, image crates, file watchers, logging crates that write files, `rpassword` (read the passphrase yourself in raw mode).
 
@@ -37,7 +37,7 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Component | Decision | Size estimate | Why |
 | --- | --- | --- | --- |
 | Encryption primitives | Reuse RustCrypto and dalek (`chacha20poly1305`, `scrypt`, `x25519-dalek`, `hkdf`, `hmac`, `sha2`) | n/a | Never roll your own crypto |
-| age v1 format | Port (age 0.12.1, MIT) | 1,200 lines | The published format, not a construction of our own; two recipient types instead of the `age` crate's hundred crates; CCTV vectors and cross-checks ([decision 0042](../decisions/0042-own-age-implementation.md)) |
+| age v1 format | Port (age 0.12.1, MIT) | 1,200 lines | The published format, not a construction of our own; two recipient types instead of the `age` crate's hundred crates; CCTV vectors and files age wrote ([decisions 0042](../decisions/0042-own-age-implementation.md) and [0043](../decisions/0043-age-checked-against-stored-files.md)) |
 | Markdown parsing | Reuse `pulldown-cmark` | n/a | Parsers are where bugs live |
 | Unicode width and graphemes | Reuse `unicode-width` + `unicode-segmentation` | n/a | Unicode tables change with each release |
 | Grid, wrapping and widgets | Build | 600 lines | Crystal uses a grid, a diff and four widgets; ratatui would bring 28 crates (decision 0031) |

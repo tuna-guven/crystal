@@ -393,6 +393,7 @@ fn map_error(e: age_v1::Error, expect: Expect) -> CryptoError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::age_v1::rage;
     use proptest::prelude::*;
 
     #[test]
@@ -706,56 +707,28 @@ mod tests {
         );
     }
 
-    /// What Crystal wrote before step C2: the age crate (the
-    /// dev-dependency, 0.11.5, which old Crystal linked) encrypting to an
-    /// age scrypt or X25519 recipient, with age's grease stanza.
-    fn age_crate_encrypts(recipient: &dyn age::Recipient, plaintext: &[u8]) -> Vec<u8> {
-        use std::io::Write;
-        let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
-        let mut file = Vec::new();
-        let mut writer = encryptor.wrap_output(&mut file).unwrap();
-        writer.write_all(plaintext).unwrap();
-        writer.finish().unwrap();
-        file
-    }
-
-    fn age_scrypt(p: &str, log_n: u8) -> age::scrypt::Recipient {
-        let mut recipient = age::scrypt::Recipient::new(p.to_owned().into());
-        recipient.set_work_factor(log_n);
-        recipient
-    }
+    // What Crystal wrote before step C2, through the age crate 0.11.5
+    // (with its grease stanza): rage:: reads tests/corpus/age-rage/,
+    // written by that crate before step C3 removed it.
 
     // Decision 0042: existing vaults open unchanged. identity.age,
     // identity.backup.age and vault.age as old Crystal wrote them through
     // the age crate open here, and give the same key.
     #[test]
     fn opens_files_written_by_the_age_crate() {
-        use age::secrecy::ExposeSecret;
-        let old = age::x25519::Identity::generate();
-        let secret = old.to_string();
-        let identity_age = age_crate_encrypts(
-            &age_scrypt("correct horse", TEST_SCRYPT_LOG_N),
-            secret.expose_secret().as_bytes(),
-        );
-        let backup_age = age_crate_encrypts(
-            &age_scrypt("K7QM3XRD", TEST_SCRYPT_LOG_N),
-            secret.expose_secret().as_bytes(),
-        );
-        let vault_age = age_crate_encrypts(&old.to_public(), b"padded vault blob");
+        let identity_age = rage::file("scrypt-identity.age");
+        let backup_age = rage::file("scrypt-backup.age");
+        // To key0, holding one byte: 0 (the generator's pattern).
+        let vault_age = rage::file("x25519-1-1.age");
+        let key0 = rage::key_strings()[0].1.clone();
 
         let id =
             VaultIdentity::open_with_passphrase(&identity_age, &pass("correct horse")).unwrap();
-        assert_eq!(id.recipient().to_string(), old.to_public().to_string());
+        assert_eq!(id.recipient().to_string(), key0);
         let from_backup =
             VaultIdentity::open_with_passphrase(&backup_age, &pass("K7QM3XRD")).unwrap();
-        assert_eq!(
-            from_backup.recipient().to_string(),
-            old.to_public().to_string()
-        );
-        assert_eq!(
-            &decrypt_with_identity(&vault_age, &id).unwrap()[..],
-            b"padded vault blob"
-        );
+        assert_eq!(from_backup.recipient().to_string(), key0);
+        assert_eq!(&decrypt_with_identity(&vault_age, &id).unwrap()[..], [0]);
 
         // Wrong passphrase and wrong key give the same errors as before.
         let err = VaultIdentity::open_with_passphrase(&identity_age, &pass("wrong")).err();
@@ -767,46 +740,79 @@ mod tests {
 
     // decision 0027: files written at up to 16 times Crystal's own cost
     // (log N + 4, as old age-timed files could be) still open; one more is
-    // refused before any scrypt work.
+    // refused before any scrypt work. The age crate wrote both at "pw".
     #[test]
     fn age_crate_work_factors_up_to_the_cap_open() {
-        let at = |log_n| age_crate_encrypts(&age_scrypt("pw", log_n), b"x");
-        let plain = decrypt_with_passphrase(&at(TEST_SCRYPT_LOG_N + 4), &pass("pw")).unwrap();
+        assert_eq!(TEST_SCRYPT_LOG_N + 4, 14, "the fixtures' work factors");
+        let at_cap = rage::file("scrypt-log-n-14.age");
+        let plain = decrypt_with_passphrase(&at_cap, &pass("pw")).unwrap();
         assert_eq!(&plain[..], b"x");
-        let err = decrypt_with_passphrase(&at(TEST_SCRYPT_LOG_N + 5), &pass("pw")).unwrap_err();
+        let above = rage::file("scrypt-log-n-15.age");
+        let err = decrypt_with_passphrase(&above, &pass("pw")).unwrap_err();
         assert_eq!(err, CryptoError::WorkFactorTooHigh);
     }
 
-    // And the other way: what Crystal writes now opens with the age crate,
-    // so age and rage remain a way into a vault.
+    /// The header lines of an age file, read as text without Crystal's
+    /// parser: everything up to and including the `---` MAC line.
+    fn header_lines(file: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for line in file.split(|&b| b == b'\n') {
+            let line = String::from_utf8(line.to_vec()).unwrap();
+            let last = line.starts_with("--- ");
+            lines.push(line);
+            if last {
+                return lines;
+            }
+        }
+        panic!("no MAC line");
+    }
+
+    // What Crystal writes has the layout age writes, so age and rage
+    // remain a way into a vault. That age reads it rests on
+    // age_v1::rage: under the same file key, Crystal's code re-encodes
+    // age's own files byte for byte; and decision 0042's CCTV vectors.
     #[test]
-    fn age_crate_opens_what_crystal_writes() {
-        use age::secrecy::ExposeSecret;
-        use std::io::Read;
-        let read = |file: &[u8], identity: &dyn age::Identity| {
-            let decryptor = age::Decryptor::new_buffered(file).unwrap();
-            let mut out = Vec::new();
-            decryptor
-                .decrypt(std::iter::once(identity))
-                .unwrap()
-                .read_to_end(&mut out)
-                .unwrap();
-            out
-        };
+    fn crystal_writes_what_age_reads() {
+        let (age_secret, age_recipient) = rage::key_strings().swap_remove(0);
         let id = VaultIdentity::generate().unwrap();
+
+        // identity.age: the version line, one scrypt stanza (a 16-byte
+        // salt, the work factor) with its 32-byte body, the MAC; no
+        // grease, as Go age writes it.
         let identity_age = id.seal_with_passphrase(&pass("correct horse")).unwrap();
-        let mut by_pass = age::scrypt::Identity::new("correct horse".to_owned().into());
-        by_pass.set_max_work_factor(TEST_SCRYPT_LOG_N);
-        let text = read(identity_age.as_bytes(), &by_pass);
-        let theirs: age::x25519::Identity = std::str::from_utf8(&text).unwrap().parse().unwrap();
-        assert_eq!(theirs.to_public().to_string(), id.recipient().to_string());
-        assert_eq!(
-            theirs.to_string().expose_secret().as_bytes(),
-            &text[..],
-            "the same AGE-SECRET-KEY-1 string"
-        );
+        let lines = header_lines(identity_age.as_bytes());
+        assert_eq!(lines.len(), 4, "{} header lines", lines.len());
+        assert_eq!(lines[0], "age-encryption.org/v1");
+        let args: Vec<&str> = lines[1].split(' ').collect();
+        assert_eq!(args[..2], ["->", "scrypt"]);
+        assert_eq!((args.len(), args[2].len()), (4, 22), "salt");
+        assert_eq!(args[3], TEST_SCRYPT_LOG_N.to_string());
+        assert_eq!(lines[2].len(), 43, "file key and tag, base64");
+        assert_eq!(lines[3].len(), 4 + 43, "--- and the MAC");
+
+        // It holds the identity as an age secret key string, of the same
+        // form as the one age printed.
+        let text =
+            decrypt_with_passphrase(identity_age.as_bytes(), &pass("correct horse")).unwrap();
+        let text = std::str::from_utf8(&text).unwrap();
+        assert!(text.starts_with("AGE-SECRET-KEY-1"));
+        assert_eq!(text.len(), age_secret.len());
+        assert!(!text.bytes().any(|b| b.is_ascii_lowercase()));
+
+        // vault.age: one X25519 stanza (a 32-byte share) and the MAC.
         let vault = encrypt_to_recipients(b"notes", &[id.recipient()]).unwrap();
-        assert_eq!(read(vault.as_bytes(), &theirs), b"notes");
+        let lines = header_lines(vault.as_bytes());
+        assert_eq!(lines.len(), 4, "{} header lines", lines.len());
+        let args: Vec<&str> = lines[1].split(' ').collect();
+        assert_eq!((args[..2].to_vec(), args.len()), (vec!["->", "X25519"], 3));
+        assert_eq!(args[2].len(), 43, "share, base64");
+        assert_eq!(
+            &decrypt_with_identity(vault.as_bytes(), &id).unwrap()[..],
+            b"notes"
+        );
+        let recipient = id.recipient().to_string();
+        assert!(recipient.starts_with("age1"));
+        assert_eq!(recipient.len(), age_recipient.len());
     }
 
     #[test]
