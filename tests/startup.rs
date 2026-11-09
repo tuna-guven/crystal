@@ -342,8 +342,8 @@ fn init_then_rm_end_to_end() {
     let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &init_steps());
     assert!(ok, "{output}");
     assert!(!output.contains(PASS), "passphrase shown: {output:?}");
-    // The code typed back was the code shown, here as its 28 symbols
-    // without dashes (age's scrypt passphrase).
+    // The code typed back was the code shown; below it is typed as its 28
+    // symbols without dashes.
     let code = recovery_code_in(&output).replace('-', "");
 
     // Acceptance: the layout matches docs/design/storage.md.

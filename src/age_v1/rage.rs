@@ -1,14 +1,18 @@
 //! Files written by the age crate 0.11.5 (rage's library, what Crystal
 //! linked before step C2), stored in tests/corpus/age-rage/ before step C3
-//! removed the crate (see its SOURCE note; decision 0042).
+//! removed the crate (see its SOURCE note; decisions 0042 and 0043).
 //!
 //! They replace the cross-checks that called the age crate:
 //! - reading: every file opens with each of its keys or its passphrase and
 //!   gives the plaintext in MANIFEST; a stranger's key or a wrong
 //!   passphrase does not open it;
-//! - writing: under the file key Crystal unwraps, each file's header and
-//!   payload re-encode to age's bytes exactly, so what Crystal writes is
-//!   what age writes.
+//! - writing: under the file key Crystal unwraps, each file's stanzas
+//!   (age's, re-serialized, grease included), header MAC and STREAM
+//!   payload re-encode to age's bytes exactly. The stanzas themselves are
+//!   age's: a new stanza's share or salt is random, so `wrap` is checked
+//!   another way. It shares `wrapping_key` with `unwrap`, which these
+//!   files and the CCTV vectors check, and the round trips open every
+//!   stanza `wrap` makes with that `unwrap`.
 
 use std::path::{Path, PathBuf};
 
@@ -36,17 +40,32 @@ fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/age-rage")
 }
 
-/// keys.txt: name, then the secret key string as age printed it.
-fn keys() -> Vec<(String, x25519::Identity, Zeroizing<String>)> {
-    let text = std::fs::read_to_string(dir().join("keys.txt")).unwrap();
+/// keys.txt, the one reader of it: per line the key's name, its secret
+/// key string and its recipient, as age printed them (tabs between).
+fn key_lines() -> Vec<(String, Zeroizing<String>, String)> {
+    let text = Zeroizing::new(std::fs::read_to_string(dir().join("keys.txt")).unwrap());
     text.lines()
         .map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            let [name, secret, _recipient] = fields[..] else {
+            let [name, secret, recipient] = fields[..] else {
                 panic!("keys.txt: bad line");
             };
-            let key = x25519::Identity::parse(secret).expect("keys.txt: secret key");
-            (name.to_owned(), key, Zeroizing::new(secret.to_owned()))
+            (
+                name.to_owned(),
+                Zeroizing::new(secret.to_owned()),
+                recipient.to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Each key's name, the key as Crystal parses it, and its secret string.
+fn keys() -> Vec<(String, x25519::Identity, Zeroizing<String>)> {
+    key_lines()
+        .into_iter()
+        .map(|(name, secret, _recipient)| {
+            let key = x25519::Identity::parse(&secret).expect("keys.txt: secret key");
+            (name, key, secret)
         })
         .collect()
 }
@@ -78,15 +97,9 @@ fn fixtures() -> Vec<Fixture> {
 
 /// keys.txt as age printed it: each secret key string and its recipient.
 pub(crate) fn key_strings() -> Vec<(Zeroizing<String>, String)> {
-    let text = Zeroizing::new(std::fs::read_to_string(dir().join("keys.txt")).unwrap());
-    text.lines()
-        .map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
-            let [_name, secret, recipient] = fields[..] else {
-                panic!("keys.txt: bad line");
-            };
-            (Zeroizing::new(secret.to_owned()), recipient.to_owned())
-        })
+    key_lines()
+        .into_iter()
+        .map(|(_name, secret, recipient)| (secret, recipient))
         .collect()
 }
 
@@ -204,7 +217,9 @@ fn file_key(
 #[test]
 fn age_rage_files_re_encode_byte_for_byte() {
     let keys = keys();
-    for f in fixtures() {
+    let all = fixtures();
+    assert_eq!(all.len(), 17, "fixture count changed");
+    for f in all {
         let (parsed, rest) = header::parse(&f.file).unwrap();
         let key = file_key(&f, &keys, &parsed.stanzas);
         let header_len = f.file.len() - rest.len();

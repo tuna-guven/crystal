@@ -8,7 +8,7 @@ targets = ["x86_64-unknown-linux-musl"]
 yanked = "deny"
 # Every entry names who pulls the crate in and why it cannot reach the
 # binary or our data. Remove an entry as soon as an upgrade drops the crate.
-# Empty since step C3 (decision 0042) removed the age crate, the only crate
+# Empty since step C3 (decision 0043) removed the age crate, the only crate
 # that brought RUSTSEC-2026-0374 (basic-toml) and RUSTSEC-2026-0173
 # (proc-macro-error2), both build time only.
 ignore = []
@@ -55,7 +55,7 @@ deny = [
 # Two semver lines of the same crate. Each skip names one exact version, so
 # a third version or a new duplicate still fails the check.
 skip = [
-    { crate = "syn@3.0.9", reason = "serde_derive 1.0.229 (build time); curve25519-dalek-derive and zeroize_derive use syn 2" },
+    { crate = "syn@3.0.9", reason = "serde_derive 1.0.229 and thiserror-impl 2.0.21 (postcard, cobs), build time; curve25519-dalek-derive and zeroize_derive use syn 2" },
 ]
 
 [sources]

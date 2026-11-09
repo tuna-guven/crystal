@@ -322,4 +322,16 @@ mod tests {
         assert!(code.passphrase().matches(&lower.passphrase()));
         assert_eq!(code.passphrase().len_for_test(), SYMBOLS);
     }
+
+    // Decision 0029: the passphrase is the code as shown, without its
+    // dashes, so any age tool opens identity.backup.age with it.
+    #[test]
+    fn passphrase_is_the_shown_code_without_dashes() {
+        for _ in 0..50 {
+            let code = RecoveryCode::generate().unwrap();
+            let typed = Zeroizing::new(code.grouped().replace('-', "").into_bytes());
+            let typed = Passphrase::new(typed).unwrap();
+            assert!(code.passphrase().matches(&typed));
+        }
+    }
 }

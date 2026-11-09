@@ -394,6 +394,23 @@ mod tests {
         .unwrap();
         let vault_age = fs::read(vault.join("vault.age")).unwrap();
         assert!(decrypt_with_identity(&vault_age, &recovered).is_ok());
+        // As any age tool opens it (decision 0029): the shown code without
+        // dashes is the scrypt passphrase, given as plain bytes to the age
+        // code, past Crystal's code parser; inside is an age secret key
+        // string for the vault's recipient.
+        let typed = Zeroizing::new(code.grouped().replace('-', "").into_bytes());
+        let by_age = crate::age_v1::Identity::Passphrase {
+            passphrase: &typed,
+            max_log_n: 22,
+        };
+        let backup = fs::read(vault.join("identity.backup.age")).unwrap();
+        let secret = crate::age_v1::decrypt(&by_age, &backup).unwrap();
+        let secret = std::str::from_utf8(&secret).unwrap();
+        let key = crate::age_v1::x25519::Identity::parse(secret).unwrap();
+        assert_eq!(
+            key.to_public().to_string(),
+            recovered.recipient().to_string()
+        );
         // The passphrase does not open it.
         assert!(
             VaultIdentity::open_with_passphrase(

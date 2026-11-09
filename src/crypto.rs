@@ -799,13 +799,17 @@ mod tests {
         assert_eq!(text.len(), age_secret.len());
         assert!(!text.bytes().any(|b| b.is_ascii_lowercase()));
 
-        // vault.age: one X25519 stanza (a 32-byte share) and the MAC.
+        // vault.age: the version line, one X25519 stanza (a 32-byte share)
+        // with its 32-byte body, the MAC; no grease.
         let vault = encrypt_to_recipients(b"notes", &[id.recipient()]).unwrap();
         let lines = header_lines(vault.as_bytes());
         assert_eq!(lines.len(), 4, "{} header lines", lines.len());
+        assert_eq!(lines[0], "age-encryption.org/v1");
         let args: Vec<&str> = lines[1].split(' ').collect();
         assert_eq!((args[..2].to_vec(), args.len()), (vec!["->", "X25519"], 3));
         assert_eq!(args[2].len(), 43, "share, base64");
+        assert_eq!(lines[2].len(), 43, "file key and tag, base64");
+        assert_eq!(lines[3].len(), 4 + 43, "--- and the MAC");
         assert_eq!(
             &decrypt_with_identity(vault.as_bytes(), &id).unwrap()[..],
             b"notes"

@@ -37,10 +37,14 @@ age v1, unchanged; Crystal does not roll its own crypto.
   (`age_v1::rage`, and the tests in `x25519.rs`, `scrypt.rs`, `header.rs`
   and `crypto.rs` that named the age crate).
 - **Writing:** under the file key Crystal unwraps, each stored file's
-  header (stanzas, grease and MAC) and payload re-encode to age's bytes
-  exactly. Together with the C2SP/CCTV re-encoding (0042), this shows
-  that what Crystal writes is what age writes. `crypto.rs` also checks
-  the layout of what Crystal writes as text.
+  stanzas (age's own, re-serialized, grease included), header MAC and
+  payload re-encode to age's bytes exactly. Together with the C2SP/CCTV
+  re-encoding (0042), this shows that Crystal serializes headers,
+  computes the MAC and encrypts the payload as age does. A new stanza
+  cannot be compared byte for byte (its share or salt is random): `wrap`
+  shares `wrapping_key` with `unwrap`, which the stored files and the
+  vectors check, and the round trips open every stanza `wrap` makes.
+  `crypto.rs` also checks the layout of what Crystal writes as text.
 - **Integration tests use Crystal's own commands** on the real binary's
   files: `check-code` (the backup and `identity.age` hold the same key),
   `recover` and unlock (the backup's key opens `vault.age`), and a work

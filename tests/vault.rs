@@ -555,8 +555,10 @@ fn init_recovery_code_confirmation() {
     let code = recovery_code_in(&output);
     let canonical = code.replace('-', "");
     let vault = vault_path(&home, "diary");
-    // The code without dashes opens identity.backup.age, which holds the
-    // key identity.age holds.
+    // check-code accepts the code typed without dashes: it opens
+    // identity.backup.age, which holds the key identity.age holds. That
+    // this spelling is age's scrypt passphrase is checked in recovery.rs
+    // and init.rs.
     let steps = vec![
         (CODE_PROMPT, format!("{canonical}\r").into_bytes()),
         (PROMPT, format!("{PASS}\r").into_bytes()),
