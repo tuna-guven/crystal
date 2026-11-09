@@ -152,10 +152,9 @@ Crystal did not make are left alone, and so is the directory then.
 
 `crystal NAME` asks for the passphrase once and unlocks the vault into the
 Crystal shell ([decision 0033](../decisions/0033-shell.md)): a prompt at
-the bottom of the screen, output above it. Commands include `ls`,
-`view NAME`, `search TEXT`, `find TEXT`, `tags`, `copy NAME`, `help`,
-`lock` and `quit`. Nothing you see there stays in the terminal's
-scrollback. So far the shell knows:
+the bottom of the screen, output above it. Nothing you see there stays in
+the terminal's scrollback. The shell knows (`lock` comes with auto-lock in
+Phase 5):
 
 | Command | Does |
 | --- | --- |
@@ -163,10 +162,12 @@ scrollback. So far the shell knows:
 | `ls #TAG`, `tags` | The notes with a tag; every tag with its count |
 | `find TEXT` | Names holding TEXT's letters in order, best match first |
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
+| `view NAME` | The note, full screen. j/k and the arrows scroll, Space and PgDn/PgUp by a screen, g/G to the ends; Tab and Shift+Tab select `[[links]]`, Enter follows one (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; q returns to the shell. A bare title works when only one note has it |
+| `links` | Every `[[link]]` that leads nowhere, and why |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
-Put a name with spaces in quotes: `search "two words"`. `view`, links and
-copying come with the rest of Phase 3. On the prompt line, the arrow keys, Home and End move,
+Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the
+choices). On the prompt line, the arrow keys, Home and End move,
 Ctrl+U, Ctrl+K and Ctrl+W delete, Up and Down recall earlier commands,
 PgUp and PgDn scroll the output, Ctrl+C clears the line and Ctrl+L the
 screen. Pasted text is always inserted as text, never run. The first
@@ -192,25 +193,18 @@ it. If it is older than what this device last saw, Crystal says so and
 asks you to type `restore`. Type it only if you restored the vault
 yourself; otherwise someone may have put back an old copy.
 
-### Copying to the clipboard
+### Copying
 
-Crystal has two clipboards ([decision 0035](../decisions/0035-clipboard.md)):
-an internal one (`y` in the pager, `Ctrl+C`/`Ctrl+V` in the editor) that
-never leaves Crystal, and the system clipboard (`Y`, `Alt+C`, `copy NAME`),
-which it clears after 45 seconds and on lock or exit. While note text is on
-the system clipboard, every program you run can read it, and a clipboard
-manager may keep a copy in its history.
+`y` in the pager copies the note into Crystal's own clipboard, which
+never leaves Crystal; the editor will paste from it (Phase 4). Crystal
+never writes to the system clipboard
+([decision 0041](../decisions/0041-internal-clipboard-only.md)).
 
-The system clipboard works through the terminal (OSC 52). Check yours:
-
-```sh
-printf '\e]52;c;%s\a' "$(printf 'crystal-test' | base64)"
-```
-
-Then paste somewhere. If `crystal-test` does not arrive, the terminal
-ignores OSC 52 (VTE-based terminals such as GNOME Terminal and Ptyxis
-have historically done so); foot, kitty, Alacritty, WezTerm and Ghostty
-support it. Under tmux, add `set -g set-clipboard on`.
+To copy into another program, select the text with the mouse and use the
+terminal's copy key (Ctrl+Shift+C in Ptyxis). That copies what is shown,
+with hidden characters spelled out as `<U+XXXX>`. What you copy this way
+is on the system clipboard, where every program you run can read it and a
+clipboard manager may keep it; Crystal cannot clear it.
 
 ## Memory locking (required)
 

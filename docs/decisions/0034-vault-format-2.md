@@ -3,7 +3,8 @@
 - **Date:** 2026-11-08 (Phase 3 redesign)
 - **Status:** Accepted. Supersedes the note layout and `VERSION` rule of
   [0018](0018-vault-format-1.md); the single encrypted blob of
-  [0001](0001-single-vault-blob.md) stays.
+  [0001](0001-single-vault-blob.md) stays. The name rules also refuse
+  invisible characters ([0040](0040-invisible-name-characters.md)).
 
 ## Context
 

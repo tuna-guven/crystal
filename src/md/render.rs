@@ -20,9 +20,9 @@
 //! note costs little beyond its text. Nesting never recurses: containers
 //! are a stack, and only the first `MAX_INDENT_LEVELS` levels indent.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "used by the pager (L6)"))]
-
 use std::ops::Range;
+
+use zeroize::Zeroizing;
 
 use pulldown_cmark::{CowStr, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 
@@ -77,6 +77,33 @@ enum Text {
 struct Run {
     text: Text,
     style: Style,
+    /// The `[[link]]` this run belongs to (an index into `Page::links`).
+    link: Option<u32>,
+}
+
+/// An Obsidian `[[link]]` on the page: its target as written (`name`,
+/// `name#Heading`, `name#^id`, `#Heading`) and the first line it is on.
+struct PageLink {
+    target: Text,
+    line: Option<usize>,
+}
+
+/// An Obsidian block id: ` ^id` at the end of a paragraph or list item
+/// (letters, digits and `-`). Returns where the marker starts (its space
+/// included) and the id.
+pub fn block_id(text: &str) -> Option<(usize, &str)> {
+    let trimmed = text.trim_end();
+    let caret = trimmed.rfind(" ^")?;
+    let id = &trimmed[caret + 2..];
+    let valid = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    valid.then(|| (trimmed[..caret].trim_end().len(), id))
+}
+
+/// `a` and `b` equal ignoring case, without lowercase copies.
+fn eq_ci(a: &str, b: &str) -> bool {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
 }
 
 /// A rendered note: lines of styled runs over sanitized text. Holds note
@@ -87,6 +114,11 @@ pub struct Page {
     runs: Vec<Run>,
     /// Where each line starts in `runs`.
     line_starts: Vec<usize>,
+    links: Vec<PageLink>,
+    /// Heading text (sanitized) and its line.
+    headings: Vec<(Zeroizing<String>, usize)>,
+    /// Block ids and their first line.
+    blocks: Vec<(Zeroizing<String>, usize)>,
 }
 
 crate::model::assert_not_impl!(Page: std::fmt::Debug, std::fmt::Display, Clone);
@@ -115,28 +147,81 @@ impl Page {
         }
     }
 
-    /// Draws the lines from `scroll` down into `area`.
-    pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) {
+    /// How many `[[links]]` the page has.
+    pub fn link_count(&self) -> usize {
+        self.links.len()
+    }
+
+    /// Link `index`'s target as written (sanitized).
+    pub fn link_target(&self, index: usize) -> &str {
+        self.text_of(&self.links[index].target)
+    }
+
+    /// The first line link `index` is drawn on.
+    pub fn link_line(&self, index: usize) -> Option<usize> {
+        self.links[index].line
+    }
+
+    /// The line of the first heading with this text, ignoring case.
+    pub fn heading_line(&self, heading: &str) -> Option<usize> {
+        self.headings
+            .iter()
+            .find(|(text, _)| eq_ci(text, heading))
+            .map(|(_, line)| *line)
+    }
+
+    /// The line of the block with this id.
+    pub fn block_line(&self, id: &str) -> Option<usize> {
+        self.blocks
+            .iter()
+            .find(|(block, _)| block.as_str() == id)
+            .map(|(_, line)| *line)
+    }
+
+    /// Draws the lines from `scroll` down into `area`, with link
+    /// `selected` (if any) reversed.
+    pub fn draw_selected(
+        &self,
+        grid: &mut Grid,
+        area: Rect,
+        scroll: usize,
+        selected: Option<usize>,
+    ) {
+        let selected = selected.and_then(|s| u32::try_from(s).ok());
         for (y, index) in (area.y..area.bottom()).zip(scroll..self.line_count()) {
             let mut used = 0;
             for run in self.line(index) {
                 let x = area.x.saturating_add(used);
                 let room = area.width - used;
+                let style = if run.link.is_some() && run.link == selected {
+                    run.style.mods(run.style.mods | Mods::REVERSED)
+                } else {
+                    run.style
+                };
                 used += match run.text {
                     Text::Rule => {
                         for i in 0..room {
-                            grid.put_str(x + i, y, "─", run.style, 1);
+                            grid.put_str(x + i, y, "─", style, 1);
                         }
                         room
                     }
-                    ref text => grid.put_str(x, y, self.text_of(text), run.style, room),
+                    ref text => grid.put_str(x, y, self.text_of(text), style, room),
                 };
             }
         }
     }
+
+    /// Draws the lines from `scroll` down into `area`.
+    #[cfg(test)]
+    pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) {
+        self.draw_selected(grid, area, scroll, None);
+    }
 }
 
-/// Renders `text` as `kind` for `width` columns.
+/// Renders `text` as `kind` for `width` columns. The whole note is laid
+/// out at once: an 8 MiB note of empty paragraphs is about 4 million lines
+/// (about 120 MB of line data), within the 512 MiB memory budget. Accepted;
+/// laying out only the visible part is the fix if it ever matters.
 pub fn render(text: &str, kind: Kind, width: u16) -> Page {
     let source = sanitize(text);
     let mut builder = Builder::new(&source, width);
@@ -146,6 +231,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
             builder.content.push(Run {
                 text: Text::Source(all),
                 style: PLAIN,
+                link: None,
             });
             builder.flush();
         }
@@ -155,6 +241,9 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         extra,
         runs,
         line_starts,
+        page_links: links,
+        headings,
+        blocks,
         ..
     } = builder;
     Page {
@@ -162,6 +251,9 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         extra,
         runs,
         line_starts,
+        links,
+        headings,
+        blocks,
     }
 }
 
@@ -196,6 +288,11 @@ struct Builder<'s> {
     blank: bool,
     /// Inside a code block: its text keeps its line breaks.
     in_code: bool,
+    /// The `[[link]]` being read, if any.
+    current_link: Option<u32>,
+    page_links: Vec<PageLink>,
+    headings: Vec<(Zeroizing<String>, usize)>,
+    blocks: Vec<(Zeroizing<String>, usize)>,
 }
 
 impl<'s> Builder<'s> {
@@ -212,6 +309,56 @@ impl<'s> Builder<'s> {
             links: Vec::new(),
             blank: false,
             in_code: false,
+            current_link: None,
+            page_links: Vec::new(),
+            headings: Vec::new(),
+            blocks: Vec::new(),
+        }
+    }
+
+    fn text_of(&self, text: &Text) -> &str {
+        match text {
+            Text::Source(r) => &self.source.as_str()[r.clone()],
+            Text::Extra(i, r) => &self.extra[*i].as_str()[r.clone()],
+            Text::Fixed(s) => s,
+            Text::Rule => "",
+        }
+    }
+
+    /// The block's text from content run `from` on, for a heading.
+    fn content_text(&self, from: usize) -> Zeroizing<String> {
+        let parts: Vec<&str> = self.content[from..]
+            .iter()
+            .map(|r| self.text_of(&r.text))
+            .collect();
+        let mut text = Zeroizing::new(String::with_capacity(parts.iter().map(|p| p.len()).sum()));
+        for part in parts {
+            text.push_str(part);
+        }
+        text
+    }
+
+    /// A trailing ` ^id` on the block: hidden, and its line recorded.
+    fn take_block_id(&mut self) {
+        let Some(Run {
+            text: Text::Source(range),
+            ..
+        }) = self.content.last()
+        else {
+            return;
+        };
+        let range = range.clone();
+        let text = &self.source.as_str()[range.clone()];
+        if let Some((cut, id)) = block_id(text) {
+            self.blocks
+                .push((Zeroizing::new(id.to_owned()), self.line_starts.len()));
+            if let Some(Run {
+                text: Text::Source(r),
+                ..
+            }) = self.content.last_mut()
+            {
+                r.end = range.start + cut;
+            }
         }
     }
 
@@ -250,7 +397,8 @@ impl<'s> Builder<'s> {
     }
 
     fn add(&mut self, text: Text, style: Style) {
-        self.content.push(Run { text, style });
+        let link = self.current_link;
+        self.content.push(Run { text, style, link });
     }
 
     fn markdown(&mut self) {
@@ -353,6 +501,7 @@ impl<'s> Builder<'s> {
                     marker: Run {
                         text: marker,
                         style: DIM,
+                        link: None,
                     },
                     width: u16::try_from(width).unwrap_or(2).min(16),
                     shown: false,
@@ -373,6 +522,11 @@ impl<'s> Builder<'s> {
                 dest_url,
                 ..
             } => {
+                if let LinkType::WikiLink { .. } = link_type {
+                    let target = self.text(&dest_url);
+                    self.current_link = u32::try_from(self.page_links.len()).ok();
+                    self.page_links.push(PageLink { target, line: None });
+                }
                 let shown = match link_type {
                     LinkType::Autolink | LinkType::Email | LinkType::WikiLink { .. } => None,
                     _ if dest_url.is_empty() => None,
@@ -396,12 +550,20 @@ impl<'s> Builder<'s> {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph | TagEnd::HtmlBlock | TagEnd::Table => {
+            TagEnd::Paragraph => {
+                self.take_block_id();
+                self.flush();
+                self.blank = true;
+            }
+            TagEnd::HtmlBlock | TagEnd::Table => {
                 self.flush();
                 self.blank = true;
             }
             TagEnd::Heading(_) => {
                 self.pop_style();
+                // Content run 0 is the `#` marker.
+                let text = self.content_text(1);
+                self.headings.push((text, self.line_starts.len()));
                 self.flush();
                 self.blank = true;
             }
@@ -431,6 +593,7 @@ impl<'s> Builder<'s> {
                 self.blank = true;
             }
             TagEnd::Item => {
+                self.take_block_id();
                 self.flush();
                 self.containers.pop();
             }
@@ -442,6 +605,7 @@ impl<'s> Builder<'s> {
             | TagEnd::Superscript
             | TagEnd::Subscript => self.pop_style(),
             TagEnd::Link => {
+                self.current_link = None;
                 self.pop_style();
                 if let Some(Some(url)) = self.links.pop() {
                     self.add(Text::Fixed(" ("), DIM);
@@ -486,6 +650,7 @@ impl<'s> Builder<'s> {
                     runs.push(Run {
                         text: Text::Fixed("│ "),
                         style: QUOTE_BAR,
+                        link: None,
                     });
                     width += 2;
                 }
@@ -499,6 +664,7 @@ impl<'s> Builder<'s> {
                         runs.push(Run {
                             text: Text::Fixed(&SPACES[..usize::from(*w)]),
                             style: PLAIN,
+                            link: None,
                         });
                     } else {
                         runs.push(marker.clone());
@@ -579,6 +745,7 @@ impl<'s> Builder<'s> {
                         Run {
                             text,
                             style: only[piece.span].style,
+                            link: run.link,
                         }
                     })
                     .collect();
@@ -588,6 +755,12 @@ impl<'s> Builder<'s> {
         let indent = self.prefix_width() < self.width;
         for line in lines {
             let (prefix, _) = self.prefix();
+            let number = self.line_starts.len();
+            for run in &line {
+                if let Some(link) = run.link.and_then(|l| self.page_links.get_mut(l as usize)) {
+                    link.line.get_or_insert(number);
+                }
+            }
             self.line_starts.push(self.runs.len());
             if indent {
                 self.runs.extend(prefix);
@@ -710,6 +883,67 @@ mod tests {
     }
 
     #[test]
+    fn links_headings_and_blocks_are_located() {
+        let source = "# Top\n\nfirst [[a]] then\n[[b#Part|shown]]\n\n## Part\n\nA block. ^blk-1\n\n- item ^x";
+        let page = render(source, Kind::Markdown, 12);
+        assert_eq!(page.link_count(), 2);
+        assert_eq!(page.link_target(0), "a");
+        assert_eq!(page.link_target(1), "b#Part");
+        let lines = md(source, 12);
+        let line_of = |text: &str| lines.iter().position(|l| l.contains(text));
+        assert!(
+            lines[page.link_line(0).unwrap()].contains("first a"),
+            "{lines:?}"
+        );
+        assert!(
+            lines[page.link_line(1).unwrap()].contains("shown"),
+            "{lines:?}"
+        );
+        assert_eq!(page.heading_line("part"), line_of("## Part"));
+        assert_eq!(page.heading_line("TOP"), Some(0));
+        assert_eq!(page.heading_line("nope"), None);
+        assert_eq!(page.block_line("blk-1"), line_of("A block."));
+        assert_eq!(page.block_line("x"), line_of("• item"));
+        assert!(
+            !lines.iter().any(|l| l.contains('^')),
+            "block ids are hidden: {lines:?}"
+        );
+        // The selected link is drawn reversed; the other is not.
+        let mut grid = Grid::new(12, u16::try_from(page.line_count()).unwrap());
+        let area = grid.area();
+        page.draw_selected(&mut grid, area, 0, Some(1));
+        let row = u16::try_from(page.link_line(1).unwrap()).unwrap();
+        let reversed: Vec<bool> = (0..12)
+            .map(|x| {
+                grid.cell(x, row)
+                    .unwrap()
+                    .style()
+                    .mods
+                    .contains(Mods::REVERSED)
+            })
+            .collect();
+        assert!(reversed.iter().any(|&r| r), "{reversed:?}");
+        let first = u16::try_from(page.link_line(0).unwrap()).unwrap();
+        assert!((0..12).all(|x| {
+            !grid
+                .cell(x, first)
+                .unwrap()
+                .style()
+                .mods
+                .contains(Mods::REVERSED)
+        }));
+    }
+
+    #[test]
+    fn block_ids() {
+        assert_eq!(block_id("text ^abc"), Some((4, "abc")));
+        assert_eq!(block_id("text  ^a-1  "), Some((4, "a-1")));
+        assert_eq!(block_id("text^abc"), None);
+        assert_eq!(block_id("text ^"), None);
+        assert_eq!(block_id("text ^a b"), None);
+    }
+
+    #[test]
     fn plain_text_is_shown_as_written() {
         assert_eq!(
             rows("# not a heading\n- not a list\n\n**x**", Kind::Plain, 40),
@@ -749,6 +983,44 @@ mod tests {
         assert!(md("&#27;x", 80)[0].contains("<U+001B>x"));
     }
 
+    /// Phase 3 acceptance: every file in tests/corpus/escape renders as
+    /// inert text, in every context, and as its golden output.
+    #[test]
+    fn escape_corpus() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/escape");
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test switch to rewrite golden files"
+        )]
+        let update = std::env::var_os("UPDATE_GOLDEN").is_some();
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+            if !name.ends_with(".md") || name == "README.md" {
+                continue;
+            }
+            let source = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+            for kind in [Kind::Markdown, Kind::Plain] {
+                let shown = rows(&source, kind, 60).join("\n");
+                assert!(
+                    !shown.contains(|c| c != '\n' && is_forbidden(c)),
+                    "{name} {kind:?}: {shown:?}"
+                );
+            }
+            let shown = rows(&source, Kind::Markdown, 60).join("\n") + "\n";
+            let golden = path.with_extension("golden");
+            if update {
+                std::fs::write(&golden, &shown).unwrap();
+            }
+            let want = std::fs::read_to_string(&golden)
+                .unwrap_or_else(|_| panic!("{name}: no golden file; run with UPDATE_GOLDEN=1"));
+            assert_eq!(shown, want, "{name} differs from its golden file");
+            checked += 1;
+        }
+        assert!(checked >= 11, "only {checked} corpus files");
+    }
+
     // Deep nesting neither overflows the stack nor indents without end.
     #[test]
     fn deep_nesting_is_bounded() {
@@ -783,19 +1055,40 @@ mod tests {
     /// grid clips them), is at most the page's.
     fn assert_fits(page: &Page, width: u16) -> Result<(), String> {
         for line in 0..page.line_count() {
-            let mut text = String::new();
-            for run in page.line(line) {
-                if !matches!(run.text, Text::Rule) {
-                    text.push_str(page.text_of(&run.text));
+            // Measured as drawn: each run on its own, as `draw_selected`
+            // hands it to the grid. Joining runs first would measure
+            // graphemes that span two runs (`*` and U+FE0F, which the
+            // parser splits) as one, which is not what is drawn.
+            let runs: Vec<&str> = page
+                .line(line)
+                .iter()
+                .filter(|r| !matches!(r.text, Text::Rule))
+                .map(|r| page.text_of(&r.text))
+                .collect();
+            // Trailing spaces hang (the grid clips them), and may span
+            // several runs: leave them all out.
+            let mut runs = runs;
+            while let Some(last) = runs.last_mut() {
+                *last = last.trim_end_matches(' ');
+                if last.is_empty() {
+                    runs.pop();
+                } else {
+                    break;
                 }
             }
-            let trimmed = text.trim_end_matches(' ');
-            let shown = display_width(trimmed);
+            let shown: usize = runs.iter().map(|r| display_width(r)).sum();
             // A wide character with only one column left (a one-column
             // page, or beside an indent) gets a line of its own and the
             // grid draws a space: only that last grapheme may overflow.
-            let last = unicode_segmentation::UnicodeSegmentation::graphemes(trimmed, true)
-                .next_back()
+            let last = runs
+                .last()
+                .and_then(|r| {
+                    unicode_segmentation::UnicodeSegmentation::graphemes(
+                        r.trim_end_matches(' '),
+                        true,
+                    )
+                    .next_back()
+                })
                 .map_or(0, display_width);
             let wide_last = last == 2 && shown - last < usize::from(width);
             if shown > usize::from(width) && !wide_last {

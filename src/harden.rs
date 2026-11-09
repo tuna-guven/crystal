@@ -143,7 +143,7 @@ fn stray_fds<'a>(names: impl Iterator<Item = &'a [u8]>, own: i32) -> Vec<i32> {
 /// (clippy.toml, disallowed-methods).
 #[derive(Clone, Copy)]
 pub enum EnvVar {
-    /// Locates the state directory, ~/.local/state/crystal.
+    /// Locates the vault and state directories.
     Home,
 }
 

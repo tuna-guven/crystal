@@ -17,6 +17,7 @@ mod init;
 mod md;
 mod model;
 mod notes;
+mod pager;
 mod recover;
 mod recovery;
 mod rm;
@@ -140,7 +141,18 @@ fn startup() -> Result<(), Box<dyn Error>> {
         ""
     };
     let mut shell = shell::Shell::new(&args.name);
-    let notes = notes::Notes::new(unlocked.contents);
+    #[cfg_attr(not(debug_assertions), expect(unused_mut, reason = "debug test hook"))]
+    let mut contents = unlocked.contents;
+    #[cfg(debug_assertions)]
+    if args.demo_notes_for_test {
+        demo_notes_for_test(&mut contents);
+    }
+    let notes = notes::Notes::new(contents);
+    shell.set_names(
+        (0..notes.len())
+            .map(|i| zeroize::Zeroizing::new(notes.name(i).to_owned()))
+            .collect(),
+    );
     let count = notes.len();
     shell.print(
         &format!("{count} notes unlocked.{first}{restored}"),
@@ -156,29 +168,64 @@ fn startup() -> Result<(), Box<dyn Error>> {
 }
 
 /// The shell's loop: draw, wait, handle keys; a resize or resume redraws
-/// everything. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal.
+/// everything. `view` hands the screen to the pager until `q`. Ends on
+/// `quit`, Ctrl+D, an exit signal or a closed terminal; Crystal's own
+/// clipboard is wiped on the way out.
 fn run_shell(
     terminal: &mut term::TerminalGuard,
     signals: &term::Signals,
     shell: &mut shell::Shell,
     notes: &notes::Notes,
 ) -> Result<(), Box<dyn Error>> {
+    let mut clipboard = ui::clipboard::Clipboard::default();
+    let result = shell_loop(terminal, signals, shell, notes, &mut clipboard);
+    clipboard.wipe();
+    result
+}
+
+fn shell_loop(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    shell: &mut shell::Shell,
+    notes: &notes::Notes,
+    clipboard: &mut ui::clipboard::Clipboard,
+) -> Result<(), Box<dyn Error>> {
     let mut screen = ui::screen::Screen::new(terminal.size()?);
     let mut decoder = shell::keys::Decoder::new();
     let mut input = zeroize::Zeroizing::new([0u8; 256]);
     let mut keys = Vec::new();
+    let mut pager: Option<pager::Pager> = None;
     loop {
-        screen.frame(terminal.output(), |grid| shell.draw(grid))?;
-        match terminal.wait(signals, &mut input[..])? {
+        screen.frame(terminal.output(), |grid| match &mut pager {
+            Some(pager) => pager.draw(grid, notes),
+            None => shell.draw(grid),
+        })?;
+        match terminal.wait(signals, &mut input[..], None)? {
             term::Event::Exit => return Ok(()),
-            term::Event::Redraw => screen.redraw_all(terminal.size()?),
+            term::Event::Redraw | term::Event::Resumed => screen.redraw_all(terminal.size()?),
+            term::Event::Timeout => {}
             term::Event::Keys(n) => {
                 decoder.feed(&input[..n], &mut keys);
                 for key in keys.drain(..) {
+                    if let Some(open) = &mut pager {
+                        match open.key(key, notes) {
+                            pager::PagerAction::Stay => {}
+                            pager::PagerAction::Close => pager = None,
+                            pager::PagerAction::Copy(note) => {
+                                clipboard.set(notes.note(note).body.as_str());
+                                open.tell("Copied inside Crystal; it never leaves it.");
+                            }
+                        }
+                        continue;
+                    }
                     match shell.key(key) {
                         shell::Action::Nothing => {}
                         shell::Action::Quit => return Ok(()),
-                        shell::Action::Command(words) => commands::run(notes, &words, shell),
+                        shell::Action::Command(words) => {
+                            if let Some(note) = commands::run(notes, &words, shell) {
+                                pager = Some(pager::Pager::open(note));
+                            }
+                        }
                     }
                 }
             }
@@ -310,6 +357,36 @@ fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn E
     let removed = rm::remove(&data_dir, &state_dir, name)?;
     print_done(&removed);
     Ok(())
+}
+
+/// Debug builds only: notes for the tests through the binary, in memory
+/// only (`--demo-notes-for-test`). One of them is hostile.
+#[cfg(debug_assertions)]
+fn demo_notes_for_test(contents: &mut vault::codec::VaultContents) {
+    let text = |s: &str| model::NoteText::from_zeroizing(zeroize::Zeroizing::new(s.to_owned()));
+    let notes = [
+        (
+            "",
+            "welcome",
+            "# Welcome\n\nSee [[guide#Keys]] and #demo.\n\nsecret-demo-text",
+        ),
+        ("docs", "guide", "# Guide\n\n## Keys\n\nPress q. ^keys"),
+        (
+            "",
+            "hostile",
+            "a\u{1b}]52;c;ZXZpbA==\u{7}b \u{1b}[2J \u{202E}z",
+        ),
+    ];
+    for (i, (folder, title, body)) in notes.into_iter().enumerate() {
+        contents.notes.push(model::Note {
+            id: model::NoteId::from_bytes([u8::try_from(i).unwrap_or(0) + 1; 16]),
+            folder: text(folder),
+            title: text(title),
+            created: 0,
+            modified: 0,
+            body: text(body),
+        });
+    }
 }
 
 /// Debug builds only: the prompt tests check the length of what was

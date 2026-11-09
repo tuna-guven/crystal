@@ -24,6 +24,8 @@ pub enum Key {
     Char(char),
     Enter,
     Tab,
+    /// Shift+Tab.
+    BackTab,
     Backspace,
     Delete,
     Left,
@@ -51,6 +53,7 @@ impl std::fmt::Debug for Key {
             other => f.write_str(match other {
                 Self::Enter => "Enter",
                 Self::Tab => "Tab",
+                Self::BackTab => "BackTab",
                 Self::Backspace => "Backspace",
                 Self::Delete => "Delete",
                 Self::Left => "Left",
@@ -217,6 +220,7 @@ fn csi(rest: &[u8]) -> Decoded {
     }
     match (params, last) {
         (b"200", b'~') => Decoded::PasteStart,
+        (b"", b'Z') => Decoded::Key(Key::BackTab),
         (b"3", b'~') => Decoded::Key(Key::Delete),
         (b"1" | b"7", b'~') => Decoded::Key(Key::Home),
         (b"4" | b"8", b'~') => Decoded::Key(Key::End),
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn special_keys() {
-        let cases: [(&[u8], Key); 14] = [
+        let cases: [(&[u8], Key); 15] = [
             (b"\x1b[A", Key::Up),
             (b"\x1b[B", Key::Down),
             (b"\x1b[C", Key::Right),
@@ -283,6 +287,7 @@ mod tests {
             (b"\x1b[1;5C", Key::Right),
             (b"\x1b", Key::Esc),
             (b"\x1b[7~", Key::Home),
+            (b"\x1b[Z", Key::BackTab),
         ];
         for (bytes, key) in cases {
             assert_eq!(keys(&[bytes]), [key], "{bytes:?}");
@@ -325,6 +330,36 @@ mod tests {
         assert_eq!(got.len(), 2);
         assert!(text(&got[0]).unwrap().len() <= MAX_PASTE);
         assert_eq!(got[1], Key::Char('z'));
+    }
+
+    proptest::proptest! {
+        // Any bytes, split into reads anywhere: no panic, and a paste never
+        // carries a control or BiDi character into the line.
+        #[test]
+        fn any_input_decodes_safely(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..400),
+            cuts in proptest::collection::vec(0usize..400, 0..8),
+        ) {
+            let mut cuts = cuts;
+            cuts.push(bytes.len());
+            cuts.sort_unstable();
+            let mut decoder = Decoder::new();
+            let mut out = Vec::new();
+            let mut at = 0;
+            for cut in cuts {
+                let cut = cut.min(bytes.len());
+                if cut > at {
+                    decoder.feed(&bytes[at..cut], &mut out);
+                    at = cut;
+                }
+            }
+            for key in &out {
+                if let Key::Paste(text) = key {
+                    proptest::prop_assert!(!text.contains(crate::ui::grid::is_forbidden));
+                    proptest::prop_assert!(text.len() <= MAX_PASTE * 3);
+                }
+            }
+        }
     }
 
     #[test]

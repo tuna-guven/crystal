@@ -1,0 +1,22 @@
+plain a<U+0000>b text
+
+# heading a<U+0000>b
+
+inline a<U+0000>b code
+
+a<U+0000>b
+
+link a<U+0000>b (https://example.org)
+
+text (https://example.org/a<U+0000>b)
+
+a<U+0000>b
+
+• item a<U+0000>b
+
+│ quote a<U+0000>b
+
+cell a<U+0000>b
+a<U+0000>b
+
+#tag a<U+0000>b

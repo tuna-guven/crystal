@@ -1,0 +1,24 @@
+plain <U+009B>31m <U+009D>0;title<U+009C> text
+
+# heading <U+009B>31m <U+009D>0;title<U+009C>
+
+inline <U+009B>31m <U+009D>0;title<U+009C> code
+
+<U+009B>31m <U+009D>0;title<U+009C>
+
+link <U+009B>31m <U+009D>0;title<U+009C>
+(https://example.org)
+
+[text](https://example.org/<U+009B>31m
+<U+009D>0;title<U+009C>)
+
+<U+009B>31m <U+009D>0;title<U+009C>
+
+• item <U+009B>31m <U+009D>0;title<U+009C>
+
+│ quote <U+009B>31m <U+009D>0;title<U+009C>
+
+cell <U+009B>31m <U+009D>0;title<U+009C>
+<U+009B>31m <U+009D>0;title<U+009C>
+
+#tag <U+009B>31m <U+009D>0;title<U+009C>

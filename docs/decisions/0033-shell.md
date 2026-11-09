@@ -2,7 +2,9 @@
 
 - **Date:** 2026-11-08 (Phase 3 redesign)
 - **Status:** Accepted. Replaces the planned multi-pane viewer (fuzzy
-  finder and backlinks panes) of the roadmap's Phase 3.
+  finder and backlinks panes) of the roadmap's Phase 3. The `copy` command
+  and system-clipboard copying are replaced by
+  [0041](0041-internal-clipboard-only.md).
 
 ## Context
 
@@ -21,9 +23,9 @@ piped or logged.
   a prompt `crystal:NAME>` on the bottom row, command output scrolling
   above it. There are no one-shot commands that print note content
   (`crystal NAME show x` does not exist).
-- **Memory only:** the output scrollback (at most 10 000 lines) and the
+- **Memory only:** the output scrollback (at most 10 000 entries) and the
   command history (at most 200 entries) are held in zeroizing memory and
-  wiped on `lock`, exit and suspend. Nothing reaches the terminal's
+  wiped on exit, and on `lock` and suspend once those lock (Phase 5). Nothing reaches the terminal's
   scrollback, a file or stdout.
 - **Commands** (Phase 3, read-only):
 
@@ -31,11 +33,11 @@ piped or logged.
   | --- | --- |
   | `ls [FOLDER]` | Notes and subfolders as a tree ([0034](0034-vault-format-2.md)) |
   | `ls #TAG`, `tags` | Notes with a tag; all tags with counts |
-  | `view NAME` | Full-screen rendered pager: scroll, follow links, backlinks, copy ([0035](0035-clipboard.md)) |
+  | `view NAME` | Full-screen rendered pager: scroll, follow links, backlinks, copy ([0041](0041-internal-clipboard-only.md)) |
   | `search TEXT` | Full text over names and bodies; one matching line per hit |
   | `find TEXT` | Fuzzy match on names |
   | `links` | Broken links: missing notes, headings or block ids |
-  | `copy NAME` | The note's text to the system clipboard ([0035](0035-clipboard.md)) |
+  | `copy NAME` | Replaced: no system clipboard ([0041](0041-internal-clipboard-only.md)) |
   | `help`, `clear`, `lock`, `quit` | |
 
   Phase 4 adds `edit NAME` (full-screen editor), `new NAME`, `mv OLD NEW`

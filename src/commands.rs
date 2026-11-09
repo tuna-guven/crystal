@@ -1,11 +1,12 @@
 //! The shell's vault commands (docs/decisions/0033-shell.md), read-only:
-//! `ls`, `tags`, `find` and `search`. Each writes its answer into the
+//! `ls`, `tags`, `find`, `search`, `links`, and `view` (which hands the
+//! note to the pager). Each writes its answer into the
 //! shell's scrollback, which sanitizes it; every line holding note text is
 //! built in a zeroizing buffer of its final size.
 
 use zeroize::Zeroizing;
 
-use crate::notes::{Notes, cmp_ci};
+use crate::notes::{Found, Notes, cmp_ci};
 use crate::shell::{ERROR_STYLE, Shell};
 use crate::ui::grid::{Color, Mods, Style};
 
@@ -24,19 +25,61 @@ const CONTEXT: usize = 30;
 const SNIPPET: usize = 100;
 
 /// Runs `words` (the first is the command); unknown commands are reported.
-pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) {
+/// Returns the note to show when the command was `view`.
+pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Option<usize> {
     let args: Vec<&str> = words.iter().skip(1).map(|w| w.as_str()).collect();
+    let rest = joined(&args);
     match words.first().map(|w| w.as_str()) {
         Some("ls") => ls(notes, &args, shell),
         Some("tags") => tags(notes, shell),
-        Some("find") => find(notes, &args.join(" "), shell),
-        Some("search") => search(notes, &args.join(" "), shell),
+        Some("find") => find(notes, &rest, shell),
+        Some("search") => search(notes, &rest, shell),
+        Some("links") => links(notes, shell),
+        Some("view") => return view(notes, &rest, shell),
         Some(other) => say(
             shell,
             &["unknown command: ", other, " (type help)"],
             ERROR_STYLE,
         ),
         None => {}
+    }
+    None
+}
+
+/// The note `view NAME` names, or why there is none.
+fn view(notes: &Notes, name: &str, shell: &mut Shell) -> Option<usize> {
+    if name.is_empty() {
+        shell.print("view which note? (view NAME)", ERROR_STYLE);
+        return None;
+    }
+    match notes.find(name) {
+        Found::One(index) => Some(index),
+        Found::None => {
+            shell.print("No note with that name (try find).", ERROR_STYLE);
+            None
+        }
+        Found::Ambiguous(list) => {
+            shell.print("More than one note has that title; which one?", ERROR_STYLE);
+            for index in list {
+                say(shell, &["  ", notes.name(index)], Style::PLAIN);
+            }
+            None
+        }
+    }
+}
+
+/// `links`: every `[[link]]` that leads nowhere, and why.
+fn links(notes: &Notes, shell: &mut Shell) {
+    let broken = notes.broken_links();
+    if broken.is_empty() {
+        shell.print("No broken links.", QUIET);
+    }
+    for (from, target, why) in broken {
+        say(
+            shell,
+            &[notes.name(from), ": [[", target, "]] ", why.describe()],
+            Style::PLAIN,
+        );
     }
 }
 
@@ -208,6 +251,21 @@ fn fuzzy(name: &str, query: &[char]) -> Option<i64> {
     wanted.peek().is_none().then_some(score)
 }
 
+/// The arguments joined by spaces, in a wiped buffer sized once (they
+/// can be note text: a search for a line of a note).
+fn joined(args: &[&str]) -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::with_capacity(
+        args.iter().map(|a| a.len() + 1).sum(),
+    ));
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(arg);
+    }
+    out
+}
+
 fn lowercase_chars(text: &str) -> Zeroizing<Vec<char>> {
     Zeroizing::new(text.chars().flat_map(char::to_lowercase).collect())
 }
@@ -239,7 +297,10 @@ fn find(notes: &Notes, query: &str, shell: &mut Shell) {
 }
 
 /// Where `needle` (lowercase chars) starts in `hay`, ignoring case,
-/// without making a lowercase copy of `hay`.
+/// without making a lowercase copy of `hay`. Worst case is
+/// `hay.len() * needle.len()` (a long query almost matching everywhere);
+/// accepted, since only the user's own query against their own notes can
+/// cause it, and `search` stops at `MAX_HITS`.
 pub fn find_ci(hay: &str, needle: &[char]) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
@@ -317,7 +378,8 @@ mod tests {
     fn output(notes: &Notes, line: &str) -> Vec<String> {
         let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
         let words = crate::shell::parse::words(line).unwrap();
-        run(notes, &words, &mut shell);
+        let viewed = run(notes, &words, &mut shell);
+        assert!(viewed.is_none() || line.starts_with("view"));
         let mut grid = Grid::new(80, 40);
         shell.draw(&mut grid);
         (0..39)
@@ -438,6 +500,40 @@ mod tests {
         assert_eq!(find_ci("nothing", &needle), None);
         assert!(fuzzy("work/projects/Roadmap", &lowercase_chars("wpr")).is_some());
         assert_eq!(fuzzy("abc", &lowercase_chars("cba")), None);
+    }
+
+    #[test]
+    fn view_resolves_names_and_links_lists_broken_ones() {
+        let n = sample();
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let mut view = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        assert_eq!(view("view roadmap"), Some(0));
+        assert_eq!(view("view \"work/meeting 2026-11-07\""), Some(1));
+        assert_eq!(view("view ideas"), Some(2), "a full name wins");
+        assert_eq!(view("view nope"), None);
+        assert_eq!(view("copy roadmap"), None, "no copy command");
+        assert_eq!(
+            output(&sample(), "view nope"),
+            ["No note with that name (try find)."]
+        );
+        let twice = notes(vec![note(1, "a", "x", ""), note(2, "b", "x", "")]);
+        assert_eq!(
+            output(&twice, "view x"),
+            [
+                "More than one note has that title; which one?",
+                "  a/x",
+                "  b/x"
+            ]
+        );
+        assert_eq!(output(&sample(), "links"), ["No broken links."]);
+        let broken = notes(vec![note(1, "", "a", "[[missing]] [[a#Nowhere]]")]);
+        assert_eq!(
+            output(&broken, "links"),
+            [
+                "a: [[missing]] no note with that name",
+                "a: [[a#Nowhere]] that note has no such heading"
+            ]
+        );
     }
 
     #[test]

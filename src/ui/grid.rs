@@ -96,6 +96,11 @@ impl Mods {
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
+
+    /// Both sets; `|` in a `const`.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 }
 
 impl BitOr for Mods {

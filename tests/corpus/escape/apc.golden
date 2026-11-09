@@ -1,0 +1,22 @@
+plain <U+001B>_Gf=24;AAAA<U+001B>\ text
+
+# heading <U+001B>_Gf=24;AAAA<U+001B>\
+
+inline <U+001B>_Gf=24;AAAA<U+001B>\ code
+
+<U+001B>_Gf=24;AAAA<U+001B>\
+
+[link <U+001B>_Gf=24;AAAA<U+001B>](https://example.org)
+
+[text](https://example.org/<U+001B>_Gf=24;AAAA<U+001B>)
+
+[[<U+001B>_Gf=24;AAAA<U+001B>]]
+
+• item <U+001B>_Gf=24;AAAA<U+001B>\
+
+│ quote <U+001B>_Gf=24;AAAA<U+001B>\
+
+cell <U+001B>_Gf=24;AAAA<U+001B>\
+<U+001B>_Gf=24;AAAA<U+001B>\
+
+#tag <U+001B>_Gf=24;AAAA<U+001B>\

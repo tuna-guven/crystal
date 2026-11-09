@@ -903,7 +903,80 @@ fn shell_commands_on_an_empty_vault() {
     steps.push(("notes yet.", b"tags\r".to_vec()));
     steps.push(("tags yet.", b"search anything\r".to_vec()));
     steps.push(("found.", b"find x\r".to_vec()));
-    steps.push(("matching", b"quit\r".to_vec()));
+    steps.push(("matching", b"links\r".to_vec()));
+    steps.push(("broken", b"view nothing\r".to_vec()));
+    steps.push(("find).", b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
     assert!(ok, "{output}");
+}
+
+// ---- view and the clipboard, on notes added in memory by the debug-only
+// ---- --demo-notes-for-test (notes cannot be made before the editor) ----
+
+/// Runs `crystal --demo-notes-for-test diary` through `steps` after the
+/// passphrase.
+fn demo(test: &str, steps: &[(&str, &[u8])]) -> String {
+    let (home, _) = home_with_vault(test);
+    let mut all = pass_step(PASS);
+    all.extend(steps.iter().map(|(wait, keys)| (*wait, keys.to_vec())));
+    let (ok, output) = dialog(&format!("'{BIN}' --demo-notes-for-test diary"), &home, &all);
+    assert!(ok, "{output}");
+    output
+}
+
+/// The OSC 52 sequences in `output`, in order.
+fn osc52(output: &str) -> Vec<&str> {
+    output
+        .match_indices("\x1b]52;c;")
+        .map(|(at, _)| {
+            let rest = &output[at + 7..];
+            &rest[..rest.find('\x07').unwrap_or(rest.len())]
+        })
+        .collect()
+}
+
+/// In the pager: y copies into Crystal's own clipboard, and nothing is
+/// ever sent to the system clipboard (no OSC 52, decision 0041); links are
+/// followed with Tab and Enter.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "uses the debug-only --demo-notes-for-test"
+)]
+fn pager_copies_inside_and_follows_links() {
+    let output = demo(
+        "pager_copy",
+        &[
+            (SHELL_READY, b"view welcome\r"),
+            ("Welcome", b"y"),
+            ("inside", b"Y\t\r"),
+            ("Keys", b"q"),
+            (SHELL_READY, b"quit\r"),
+        ],
+    );
+    assert!(osc52(&output).is_empty(), "OSC 52 sent: {output:?}");
+    assert!(!after_leaving(&output).contains("secret-demo-text"));
+}
+
+/// A note holding an OSC 52 sequence of its own cannot set the clipboard:
+/// viewing it sends no OSC 52 at all, and its escapes are spelled out.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "uses the debug-only --demo-notes-for-test"
+)]
+fn hostile_note_cannot_set_the_clipboard() {
+    let output = demo(
+        "hostile_view",
+        &[
+            (SHELL_READY, b"view hostile\r"),
+            ("<U+001B>", b"q"),
+            (SHELL_READY, b"quit\r"),
+        ],
+    );
+    assert!(osc52(&output).is_empty(), "{output:?}");
+    // The payload is on screen only as text, its ESC and BEL spelled out.
+    let shown = visible(&output);
+    assert!(shown.contains("<U+001B>]52;c;ZXZpbA==<U+0007>b"), "{shown}");
+    assert!(shown.contains("<U+202E>"), "{shown}");
 }

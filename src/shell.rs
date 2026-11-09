@@ -7,6 +7,7 @@
 //! (`draw`), so it is tested without a pty. Commands that need the vault
 //! are returned to the caller as `Action::Command`.
 
+pub mod complete;
 pub mod keys;
 pub mod line;
 pub mod parse;
@@ -38,11 +39,14 @@ Commands:
   tags          every tag, with how many notes have it
   find TEXT     names that hold TEXT's letters in order, best first
   search TEXT   notes whose name or text holds TEXT (ignoring case)
+  view NAME     the note, full screen: Tab and Enter follow [[links]],
+                Backspace goes back, b lists backlinks, q returns here
+  links         every [[link]] that leads nowhere
   help          this list
   clear         clear the screen (Ctrl+L)
   quit          lock the vault and leave (also exit, or Ctrl+D on an empty line)
 Names with spaces go in quotes: search \"two words\".
-Keys: arrows, Home and End move; Ctrl+U, Ctrl+K and Ctrl+W delete; Up and Down
+Keys: Tab completes commands and names; arrows, Home and End move; Ctrl+U, Ctrl+K and Ctrl+W delete; Up and Down
 recall commands; PgUp and PgDn scroll; Ctrl+C clears the line.";
 
 /// What the caller should do after a key.
@@ -66,6 +70,11 @@ pub struct Shell {
     scroll: usize,
     /// Rows of output last drawn, for PgUp and PgDn.
     page: usize,
+    /// Note names, for completion.
+    names: Vec<Zeroizing<String>>,
+    /// The last key was a Tab that could not complete further: the next
+    /// one lists the options.
+    tabbed: bool,
 }
 
 impl Shell {
@@ -78,7 +87,55 @@ impl Shell {
             recalled: None,
             scroll: 0,
             page: 1,
+            names: Vec::new(),
+            tabbed: false,
         }
+    }
+
+    /// The note names Tab completes after a command.
+    pub fn set_names(&mut self, names: Vec<Zeroizing<String>>) {
+        self.names = names;
+    }
+
+    /// Tab: complete the word before the cursor (`complete`).
+    fn complete(&mut self) {
+        let word = complete::word_at(self.line.as_str(), self.line.cursor());
+        let options: Vec<&str> = if word.first {
+            complete::options(&word.text, complete::COMMANDS.iter().copied())
+        } else {
+            complete::options(&word.text, self.names.iter().map(|n| n.as_str()))
+        };
+        let replacement = match options.as_slice() {
+            [] => return,
+            [one] => {
+                let mut done = complete::quoted(one, true);
+                if !one.ends_with('/') {
+                    done.push(' ');
+                }
+                done
+            }
+            several => {
+                let shared = complete::shared_prefix(several);
+                if shared.chars().count() > word.text.chars().count() {
+                    complete::quoted(shared, false)
+                } else {
+                    if self.tabbed {
+                        let shown = several.iter().take(50);
+                        let mut list = Zeroizing::new(String::with_capacity(
+                            shown.clone().map(|o| o.len() + 3).sum(),
+                        ));
+                        for option in shown {
+                            list.push_str(option);
+                            list.push_str("   ");
+                        }
+                        self.print(&list, ECHO_STYLE);
+                    }
+                    self.tabbed = true;
+                    return;
+                }
+            }
+        };
+        self.line.replace_before_cursor(word.start, &replacement);
     }
 
     /// How many output entries there are (tests).
@@ -94,6 +151,9 @@ impl Shell {
     }
 
     pub fn key(&mut self, key: Key) -> Action {
+        if key != Key::Tab {
+            self.tabbed = false;
+        }
         if !matches!(key, Key::PageUp | Key::PageDown) {
             self.scroll = 0;
         }
@@ -125,7 +185,8 @@ impl Shell {
             Key::PageUp => self.scroll = self.scroll.saturating_add(self.page.max(1)),
             Key::PageDown => self.scroll = self.scroll.saturating_sub(self.page.max(1)),
             // Completion comes with the commands (L7); other keys do nothing.
-            Key::Tab | Key::Esc | Key::Ctrl(_) => {}
+            Key::Tab => self.complete(),
+            Key::BackTab | Key::Esc | Key::Ctrl(_) => {}
         }
         Action::Nothing
     }
@@ -368,6 +429,51 @@ mod tests {
             "{row}"
         );
         assert!(row.chars().count() <= 30);
+    }
+
+    #[test]
+    fn tab_completes_commands_names_and_folders() {
+        let mut s = shell();
+        s.set_names(
+            [
+                "work/projects/Roadmap",
+                "work/meeting 2026-11-07",
+                "welcome",
+            ]
+            .iter()
+            .map(|n| Zeroizing::new((*n).to_owned()))
+            .collect(),
+        );
+        type_text(&mut s, "vi");
+        s.key(Key::Tab);
+        assert_eq!(s.line.as_str(), "view ");
+        type_text(&mut s, "wo");
+        s.key(Key::Tab);
+        assert_eq!(s.line.as_str(), "view work/", "a folder, no space");
+        type_text(&mut s, "m");
+        s.key(Key::Tab);
+        assert_eq!(
+            s.line.as_str(),
+            "view \"work/meeting 2026-11-07\" ",
+            "quoted"
+        );
+        assert!(matches!(s.key(Key::Enter), Action::Command(_)));
+        // Several options: the shared part, then a list on the second Tab.
+        type_text(&mut s, "view w");
+        s.key(Key::Tab);
+        assert_eq!(s.line.as_str(), "view w");
+        s.key(Key::Tab);
+        let rows = screen(&mut s, 80, 4);
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("welcome") && r.contains("work/")),
+            "{rows:?}"
+        );
+        // Nothing matches: nothing changes.
+        s.key(Key::Ctrl('u'));
+        type_text(&mut s, "zz");
+        s.key(Key::Tab);
+        assert_eq!(s.line.as_str(), "zz");
     }
 
     #[test]

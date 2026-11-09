@@ -1,0 +1,37 @@
+plain
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+text
+
+# heading
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+
+inline
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+code
+
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+
+[link
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>10A
+(https://example.org)
+
+text
+(https://example.org/<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+
+001B>[0m<U+001B>[10A)
+
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+
+• item
+  <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10
+  A
+
+│ quote
+│ <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10
+│ A
+
+cell
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A
+
+#tag
+<U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10A

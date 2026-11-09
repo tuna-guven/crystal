@@ -60,6 +60,11 @@ pub struct RunArgs {
     /// which need no vault. Not in release builds.
     #[cfg(debug_assertions)]
     pub skip_unlock_for_test: bool,
+    /// Debug builds only: after unlock, add a few notes in memory (never
+    /// saved), so the shell, pager and clipboards can be tested through
+    /// the binary before the editor exists. Not in release builds.
+    #[cfg(debug_assertions)]
+    pub demo_notes_for_test: bool,
 }
 
 /// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
@@ -135,6 +140,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut prompt_for_test = None;
     #[cfg(debug_assertions)]
     let mut skip_unlock_for_test = false;
+    #[cfg(debug_assertions)]
+    let mut demo_notes_for_test = false;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
@@ -160,6 +167,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             }
             #[cfg(debug_assertions)]
             Arg::Long("skip-unlock-for-test") => skip_unlock_for_test = true,
+            #[cfg(debug_assertions)]
+            Arg::Long("demo-notes-for-test") => demo_notes_for_test = true,
             // The first word may be a command; vault names cannot be one
             // (VaultName reserves them), so this is never ambiguous.
             Arg::Value(value) if name.is_none() && mode == Mode::Run => match value.as_bytes() {
@@ -177,7 +186,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     }
 
     #[cfg(debug_assertions)]
-    if (crash_for_test.is_some() || prompt_for_test.is_some() || skip_unlock_for_test)
+    if (crash_for_test.is_some()
+        || prompt_for_test.is_some()
+        || skip_unlock_for_test
+        || demo_notes_for_test)
         && mode != Mode::Run
     {
         return Err(CliError::UnknownArgument);
@@ -194,6 +206,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             prompt_for_test,
             #[cfg(debug_assertions)]
             skip_unlock_for_test,
+            #[cfg(debug_assertions)]
+            demo_notes_for_test,
         }),
         Mode::Init => Command::Init { name },
         Mode::Recover => Command::Recover { name },
@@ -223,6 +237,8 @@ mod tests {
             prompt_for_test: None,
             #[cfg(debug_assertions)]
             skip_unlock_for_test: false,
+            #[cfg(debug_assertions)]
+            demo_notes_for_test: false,
         })
     }
 

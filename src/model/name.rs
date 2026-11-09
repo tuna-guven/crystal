@@ -5,7 +5,9 @@
 //!
 //! - a title or folder segment is 1 to 255 bytes, has no leading or
 //!   trailing whitespace, is not `.` or `..`, and holds none of
-//!   `[ ] # ^ | \ / : * ? " < >` and no control or BiDi character;
+//!   `[ ] # ^ | \ / : * ? " < >`, no control or BiDi character, and no
+//!   invisible character that could make two names look the same
+//!   (docs/decisions/0040-invisible-name-characters.md);
 //! - a folder is `""` or segments joined by `/`, at most 32 levels and
 //!   1 KiB;
 //! - names are unique in a vault, compared case-insensitively (as Obsidian
@@ -29,6 +31,11 @@ const RESERVED: [char; 13] = [
     '[', ']', '#', '^', '|', '\\', '/', ':', '*', '?', '"', '<', '>',
 ];
 
+/// Invisible characters with no use in a name: zero-width space, word
+/// joiner, byte-order mark, soft hyphen, Mongolian vowel separator. Zero-
+/// width joiner and non-joiner stay allowed (emoji sequences, Persian).
+const INVISIBLE: [char; 5] = ['\u{200B}', '\u{2060}', '\u{FEFF}', '\u{AD}', '\u{180E}'];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameError {
     Empty,
@@ -50,8 +57,8 @@ impl fmt::Display for NameError {
                 "a note title or folder name starts or ends with a space, or is . or .."
             }
             Self::BadCharacter => {
-                "a note title or folder name holds one of [ ] # ^ | \\ / : * ? \" < > or a \
-                 control character"
+                "a note title or folder name holds one of [ ] # ^ | \\ / : * ? \" < >, a \
+                 control character or an invisible one"
             }
             Self::FolderTooDeep => "a folder is deeper than 32 levels or longer than 1 KiB",
         })
@@ -75,7 +82,7 @@ pub fn check_segment(segment: &str) -> Result<(), NameError> {
     {
         return Err(NameError::BadForm);
     }
-    if segment.contains(|c| RESERVED.contains(&c) || is_forbidden(c)) {
+    if segment.contains(|c| RESERVED.contains(&c) || INVISIBLE.contains(&c) || is_forbidden(c)) {
         return Err(NameError::BadCharacter);
     }
     Ok(())
@@ -161,6 +168,16 @@ mod tests {
         for (title, err) in cases {
             assert_eq!(check_segment(title), Err(err), "{title:?}");
         }
+        for c in INVISIBLE {
+            assert_eq!(
+                check_segment(&format!("road{c}map")),
+                Err(NameError::BadCharacter),
+                "{c:?}"
+            );
+        }
+        // Joiners stay: emoji sequences and some scripts need them.
+        assert_eq!(check_segment("👨\u{200D}👩\u{200D}👧"), Ok(()));
+        assert_eq!(check_segment("می\u{200C}خواهم"), Ok(()));
         for c in RESERVED {
             assert_eq!(
                 check_segment(&format!("a{c}b")),
@@ -215,7 +232,7 @@ mod tests {
         #[test]
         fn valid_segments_are_safe(s in any::<String>()) {
             if check_segment(&s).is_ok() {
-                prop_assert!(!s.contains(|c| RESERVED.contains(&c) || is_forbidden(c)));
+                prop_assert!(!s.contains(|c| RESERVED.contains(&c) || INVISIBLE.contains(&c) || is_forbidden(c)));
                 prop_assert!(!s.is_empty() && s.len() <= MAX_SEGMENT_BYTES);
                 prop_assert!(s != "." && s != "..");
             }

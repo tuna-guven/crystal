@@ -299,11 +299,15 @@ fn on_signal(signal: i32, pipe: &OwnedFd) -> io::Result<()> {
 pub enum Event {
     /// This many key bytes were read into the caller's buffer.
     Keys(usize),
-    /// The window changed size, or Crystal was resumed after a suspend:
-    /// read the size again and redraw everything.
+    /// The window changed size: read the size again and redraw everything.
     Redraw,
+    /// Crystal was suspended and is running again: as `Redraw` (Phase 5
+    /// asks for the passphrase again here).
+    Resumed,
     /// An exit signal, or the terminal was closed (hangup).
     Exit,
+    /// The timeout passed with nothing else happening.
+    Timeout,
 }
 
 /// Used when the terminal reports a size of zero (some serial consoles
@@ -316,7 +320,19 @@ impl TerminalGuard {
     /// (SIGTSTP, or Ctrl+Z among the keys, which are then discarded) is
     /// handled here and reported as `Redraw`, since resuming re-enters a
     /// cleared alternate screen. Phase 5: lock before suspending.
-    pub fn wait(&mut self, signals: &Signals, keys: &mut [u8]) -> Result<Event, TermError> {
+    ///
+    /// `timeout` bounds the wait (`None`: wait for an event); auto-lock
+    /// (Phase 5) uses it.
+    pub fn wait(
+        &mut self,
+        signals: &Signals,
+        keys: &mut [u8],
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Event, TermError> {
+        let timeout = timeout.map(|t| rustix::event::Timespec {
+            tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),
+            tv_nsec: i64::from(t.subsec_nanos()),
+        });
         loop {
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
@@ -324,7 +340,8 @@ impl TerminalGuard {
                 PollFd::new(&signals.suspend, PollFlags::IN),
                 PollFd::new(&signals.resize, PollFlags::IN),
             ];
-            match poll(&mut fds, None) {
+            match poll(&mut fds, timeout.as_ref()) {
+                Ok(0) => return Ok(Event::Timeout),
                 Ok(_) => {}
                 Err(Errno::INTR) => continue,
                 Err(errno) => return Err(TermError::Poll(errno)),
@@ -336,7 +353,7 @@ impl TerminalGuard {
             if suspend {
                 drain(&signals.suspend);
                 self.suspend()?;
-                return Ok(Event::Redraw);
+                return Ok(Event::Resumed);
             }
             if resize {
                 drain(&signals.resize);
@@ -355,10 +372,13 @@ impl TerminalGuard {
                 }
                 Err(e) => return Err(TermError::Read(e.kind())),
             };
+            // The whole read is dropped: keys typed in the same burst as
+            // Ctrl+Z are lost, and a paste holding the byte 0x1a suspends
+            // too. Accepted: rare, and simpler than splitting a read.
             if keys[..n].contains(&CTRL_Z) {
                 keys[..n].zeroize();
                 self.suspend()?;
-                return Ok(Event::Redraw);
+                return Ok(Event::Resumed);
             }
             return Ok(Event::Keys(n));
         }
@@ -379,14 +399,15 @@ impl TerminalGuard {
         &mut self.tty
     }
 
-    /// Phase 1 placeholder for the TUI loop (replaced in Phase 3, V6): a
-    /// key or an exit signal returns; suspend and resize keep waiting.
-    /// Keys are read and discarded, never stored or shown.
+    /// Debug builds only (`--skip-unlock-for-test`): a key or an exit
+    /// signal returns; suspend and resize keep waiting. Keys are read and
+    /// discarded, never stored or shown.
+    #[cfg(debug_assertions)]
     pub fn run_until_exit(&mut self, signals: &Signals) -> Result<(), TermError> {
         let mut keys = Zeroizing::new([0u8; 64]);
         loop {
-            match self.wait(signals, &mut keys[..])? {
-                Event::Redraw => {}
+            match self.wait(signals, &mut keys[..], None)? {
+                Event::Redraw | Event::Resumed | Event::Timeout => {}
                 Event::Keys(_) | Event::Exit => return Ok(()),
             }
         }

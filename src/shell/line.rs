@@ -130,6 +130,14 @@ impl Line {
         self.remove(start, self.cursor);
     }
 
+    /// Replaces the text from `start` to the cursor with `s` (completion).
+    pub fn replace_before_cursor(&mut self, start: usize, s: &str) {
+        let start = start.min(self.cursor);
+        self.remove(start, self.cursor);
+        self.cursor = start;
+        self.insert(s);
+    }
+
     /// Replaces the whole line (from history), cursor at the end.
     pub fn set(&mut self, s: &str) {
         self.clear();

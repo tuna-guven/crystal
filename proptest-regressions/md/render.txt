@@ -8,3 +8,5 @@ cc 63211df73c7173fd5dda8baa8f2be97fb960841733695cc36f7bc577b8f3ee2b # shrinks to
 cc b83d423c226997fadc6ccaf56bcc836618c3e4641c086342c4e4a7aac124a020 # shrinks to source = "ㄅ", width = 1
 cc 203b4ce3796d501637664123874a2da098d5f16721f6517e54efeda6713a737b # shrinks to parts = ["*", "```\n", "- ", "`", "日本"], width = 3
 cc b3f229a43cd51180c39a00f0f7ca938dc8a5c59a0b99db29b95137e57aae7c08 # shrinks to source = ">𚿽", width = 3
+cc eb3805635f57b636d33f51c24c108ecac754e1cfd3dcbd9ce9254e2ef4a8df5c # shrinks to source = "*\u{fe0f}A!A0A ", width = 2
+cc fe7caffc3fcef1aca4745a514cdd039d455599482a6df644122a5ad23fa1347e # shrinks to parts = ["`", "# ", "```\n", "*", "```\n"], width = 1

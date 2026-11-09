@@ -27,7 +27,7 @@ Vaults live in one fixed place, `~/.local/share/crystal/NAME`, and are opened by
 - *`crystal check-code NAME`:* asks for the recovery code and the passphrase, and checks that `identity.backup.age` and `identity.age` hold the same identity. It writes nothing.
 - *`crystal rm NAME`:* asks for the name again, says that only a backup can bring the vault back, then removes `VERSION`, `identity.age`, `identity.backup.age`, `vault.age`, `vault.sync-conflict-*.age`, leftover atomic-writer temp files, the directory, and the vault's `.pin` and `.gen`. Any other file stays, and so does the directory, and the message says so. There is no trash ([decision 0032](../decisions/0032-fixed-locations.md)).
 - *SELinux:* the policy labels `~/.local/share/crystal` statically; every vault is covered ([Sandboxing](sandboxing.md)).
-- *Settings:* `~/.config/crystal` will hold a small plain-text settings file (auto-lock time, system clipboard on or off). Crystal reads it and never writes it, and it holds nothing that loosens security. It is added when the first setting needs it (Phase 5).
+- *Settings:* `~/.config/crystal` will hold a small plain-text settings file (auto-lock time). Crystal reads it and never writes it, and it holds nothing that loosens security. It is added when the first setting needs it (Phase 5).
 
 ## Key design
 
@@ -53,8 +53,8 @@ format: u16 = 2 | vault_id: [u8; 32] | generation: u64 | notes: [Note]
 Note = id: [u8; 16] | folder: str | title: str | created: u64 | modified: u64 | body: str
 ```
 
-- *Names:* a note's name is `folder/title`, or `title` when `folder` is empty. `folder` is segments joined by `/`, at most 32 levels and 1 KiB. A title or folder segment is 1 to 255 bytes, has no leading or trailing space, is not `.` or `..`, and contains none of `[ ] # ^ | \ / : * ? " < >` and no control or BiDi character. Names are unique per vault, compared case-insensitively. These are Obsidian's rules, and valid file names for an export.
-- *Links:* Obsidian syntax in the body: `[[name]]`, `[[name|shown text]]`, `[[name#Heading]]`, `[[name#^block-id]]`, `[[#Heading]]`. A target without `/` matches a unique title. A block id `^id` ends a paragraph or list item. `mv` rewrites links to the renamed note in the same save; a broken link is reported, never silently changed.
+- *Names:* a note's name is `folder/title`, or `title` when `folder` is empty. `folder` is segments joined by `/`, at most 32 levels and 1 KiB. A title or folder segment is 1 to 255 bytes, has no leading or trailing space, is not `.` or `..`, and contains none of `[ ] # ^ | \ / : * ? " < >`, no control or BiDi character and no invisible one such as a zero-width space ([decision 0040](../decisions/0040-invisible-name-characters.md)). Names are unique per vault, compared case-insensitively. These are Obsidian's rules, and valid file names for an export.
+- *Links:* Obsidian syntax in the body (followed in the pager, `view`; broken ones listed by `links`): `[[name]]`, `[[name|shown text]]`, `[[name#Heading]]`, `[[name#^block-id]]`, `[[#Heading]]`. A target without `/` matches a unique title. A block id `^id` ends a paragraph or list item. `mv` rewrites links to the renamed note in the same save; a broken link is reported, never silently changed.
 - *Tags:* `#tag` in the body outside code (letters, digits, `_`, `-`, `/`, not only digits).
 - *Plain text:* a note whose title ends in `.txt` is shown as written, with no Markdown, links or tags read from it ([decision 0038](../decisions/0038-plain-text-notes.md)); every other note is Markdown.
 - *Indexes:* name, title, tag, links, backlinks, headings and block ids are built in zeroizing memory at unlock and after every save, never stored.

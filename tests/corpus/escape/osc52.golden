@@ -1,0 +1,22 @@
+plain <U+001B>]52;c;ZXZpbA==<U+0007> text
+
+# heading <U+001B>]52;c;ZXZpbA==<U+0007>
+
+inline <U+001B>]52;c;ZXZpbA==<U+0007> code
+
+<U+001B>]52;c;ZXZpbA==<U+0007>
+
+[link <U+001B>]52;c;ZXZpbA==<U+0007>](https://example.org)
+
+text (https://example.org/<U+001B>]52;c;ZXZpbA==<U+0007>)
+
+<U+001B>]52;c;ZXZpbA==<U+0007>
+
+• item <U+001B>]52;c;ZXZpbA==<U+0007>
+
+│ quote <U+001B>]52;c;ZXZpbA==<U+0007>
+
+cell <U+001B>]52;c;ZXZpbA==<U+0007>
+<U+001B>]52;c;ZXZpbA==<U+0007>
+
+#tag <U+001B>]52;c;ZXZpbA==<U+0007>

@@ -56,7 +56,7 @@ jobs:
           # The release binary too, at the same memlock floor: an optimized
           # build stretches passphrases far harder (scrypt), and only this
           # run shows whether that fits in locked memory
-          # (docs/decisions/0025-scrypt-budget.md). Tests that need a
+          # (docs/decisions/0027-scrypt-fixed.md). Tests that need a
           # debug-only hook are reported as ignored here.
           cargo test --release --locked
 
