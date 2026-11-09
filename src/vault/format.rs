@@ -11,13 +11,13 @@
 use std::fmt;
 use std::os::fd::OwnedFd;
 
-use age::x25519;
 use rustix::io::Errno;
 
 use super::atomic::{FileName, Payload, PublicBytes, WriteError, atomic_write};
 use super::codec::{self, CodecError, FORMAT, OLDEST_FORMAT, VaultContents};
 use super::padme::{self, PadError};
 use super::public_file::{ReadError, parse_decimal_line, read_bounded};
+use crate::age_v1::x25519;
 use crate::crypto::{self, Ciphertext, CryptoError, VaultIdentity};
 
 /// Why sealing or opening `vault.age` failed. Each part holds only a fixed
@@ -199,7 +199,7 @@ mod tests {
             generation in any::<u64>(),
             notes in prop::collection::vec(("[a-z][a-z0-9]{0,19}", any::<String>()), 0..6),
         ) {
-            let identity = VaultIdentity::generate();
+            let identity = VaultIdentity::generate().unwrap();
             let contents = VaultContents {
                 vault_id: VaultId::from_bytes([3; 32]),
                 generation,
@@ -231,9 +231,9 @@ mod tests {
 
     #[test]
     fn open_refuses_other_keys_and_tampering() {
-        let identity = VaultIdentity::generate();
+        let identity = VaultIdentity::generate().unwrap();
         let sealed = seal(&vault(&[(1, "T", "secret body")]), &identity.recipient()).unwrap();
-        let other = VaultIdentity::generate();
+        let other = VaultIdentity::generate().unwrap();
         let err = open(sealed.as_bytes(), &other, FORMAT).err();
         assert_eq!(err, Some(VaultError::Crypto(CryptoError::NotForThisKey)));
 
@@ -250,7 +250,7 @@ mod tests {
     // ever written.
     #[test]
     fn seal_refuses_invalid_contents() {
-        let identity = VaultIdentity::generate();
+        let identity = VaultIdentity::generate().unwrap();
         let err = seal(&vault(&[(1, "a", ""), (1, "b", "")]), &identity.recipient()).err();
         assert_eq!(err, Some(VaultError::Codec(CodecError::DuplicateId)));
     }
@@ -264,18 +264,19 @@ mod tests {
     }
 
     // The payload size depends only on the Padmé bucket: two vaults whose
-    // encodings differ by a few bytes give the same size. (The header adds
-    // age's random "grease" stanza, so the whole file also varies by up to
-    // about 200 random bytes, unrelated to the notes.)
+    // encodings differ by a few bytes give the same size. The header has a
+    // fixed size too (one X25519 stanza, no random "grease" stanza since
+    // decision 0042), so the whole file is the same size.
     #[test]
     fn sealed_size_hides_small_differences() {
-        let identity = VaultIdentity::generate();
+        let identity = VaultIdentity::generate().unwrap();
         let body = "x".repeat(5000);
         let a = seal(&vault(&[(1, "T", &body)]), &identity.recipient()).unwrap();
         let b = seal(&vault(&[(1, "Title", &body)]), &identity.recipient()).unwrap();
         assert_eq!(payload(a.as_bytes()).len(), payload(b.as_bytes()).len());
         // 5120-byte Padmé frame: 16-byte nonce, one chunk plus its 16-byte tag.
         assert_eq!(payload(a.as_bytes()).len(), 16 + 5120 + 16);
+        assert_eq!(a.as_bytes().len(), b.as_bytes().len());
     }
 
     #[test]
@@ -365,7 +366,7 @@ mod tests {
 
     #[test]
     fn errors_are_fixed_text() {
-        let identity = VaultIdentity::generate();
+        let identity = VaultIdentity::generate().unwrap();
         let sealed = seal(
             &vault(&[(1, "Title", "secret body")]),
             &identity.recipient(),

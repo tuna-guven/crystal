@@ -140,7 +140,10 @@ impl Identity {
 pub(crate) struct Recipient(PublicKey);
 
 impl Recipient {
-    /// Parses `age1…` (either case, not mixed).
+    /// Parses `age1…` (either case, not mixed). Test builds only: the
+    /// program derives its one recipient from the vault identity and never
+    /// reads a recipient string.
+    #[cfg(test)]
     pub(crate) fn parse(s: &str) -> Option<Self> {
         let (hrp, bytes) = bech32::decode(s)?;
         if hrp != PUBLIC_KEY_PREFIX {
@@ -183,8 +186,8 @@ impl fmt::Display for Recipient {
 mod tests {
     use super::*;
     use crate::age_v1::header;
+    use age::secrecy::ExposeSecret;
     use proptest::prelude::*;
-    use secrecy::ExposeSecret;
     use std::io::Write;
 
     // The test key pair from age 0.12.1, src/native/x25519.rs.

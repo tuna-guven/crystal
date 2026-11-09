@@ -125,8 +125,8 @@ fn unwrap_scrypt(stanza: &Stanza, passphrase: &[u8], max_log_n: u8) -> Result<Fi
 mod tests {
     use super::*;
     use crate::age_v1::header;
+    use age::secrecy::SecretString;
     use proptest::prelude::*;
-    use secrecy::SecretString;
 
     /// Unit tests run scrypt at log N 10 (1 MiB), as crypto.rs's tests do.
     const LOG_N: u8 = 10;

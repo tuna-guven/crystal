@@ -16,7 +16,7 @@ Crystal defends notes at rest and during use against storage, sync, theft and ma
 | A8 Shoulder surfing, screen recording | Sees the screen | Out | Idle auto-lock reduces exposure |
 | A9 Someone who finds the recovery code (paper) | Opens any copy of the vault it belongs to with `crystal recover` | Partial | The code alone is useless without a copy of the vault; the setup guide says to keep it off the computer and apart from the vault's sync and backup locations; a new code (Phase 8) makes the old paper useless for later copies ([0029](../decisions/0029-recovery-code.md)) |
 
-**Trust boundaries:** the kernel; the terminal emulator (it receives every rendered character); the age crate; the compiled binary and its build chain; the installed copy in `~/.local/bin`, which is user-writable unless marked immutable ([Installation](../guide/installation.md)).
+**Trust boundaries:** the kernel; the terminal emulator (it receives every rendered character); Crystal's age code (`age_v1`, ported from rage's library and checked against the C2SP/CCTV vectors) and the RustCrypto and dalek primitives under it ([decision 0042](../decisions/0042-own-age-implementation.md)); the compiled binary and its build chain; the installed copy in `~/.local/bin`, which is user-writable unless marked immutable ([Installation](../guide/installation.md)).
 
 **Security properties Crystal guarantees**
 

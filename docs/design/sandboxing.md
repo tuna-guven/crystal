@@ -50,7 +50,7 @@ Module: `harden` ([startup](startup.md) steps 1 to 4; already implemented in Pha
 - `umask(0o077)`.
 - Environment read only through `harden::env_var` (allowlist; enforced by clippy).
 - `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` is mandatory, with a 512 MiB `RLIMIT_MEMLOCK` floor ([decision 0026](../decisions/0026-memlock-floor-512.md)); Crystal refuses to start without it.
-- Secrets: note text only in `NoteText` (`Zeroizing<String>`); the identity in `secrecy::SecretBox`; the `zalloc` global allocator zeroes every freed block.
+- Secrets: note text only in `NoteText` (`Zeroizing<String>`); the vault identity in a `Box` whose key wipes itself on drop ([decision 0013](../decisions/0013-identity-box.md)); the `zalloc` global allocator zeroes every freed block.
 
 ## 5. Landlock
 

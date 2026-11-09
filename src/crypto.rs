@@ -1,21 +1,20 @@
 //! Crypto boundary: the age identity and encrypt/decrypt of the vault blob.
 //! Plaintext above this module, ciphertext below.
 //!
-//! Everything goes through the `age` crate (rage's library). This module
-//! adds four things on top: size limits checked before any allocation,
-//! zeroizing buffers for every plaintext it returns, error values that
-//! carry no text from age or from the input, and types that keep secrets
-//! from reaching Debug, Display, Clone or serde.
+//! Everything goes through Crystal's own implementation of the age v1
+//! format (`crate::age_v1`, decision 0042); the files are plain age files.
+//! This module adds four things on top: Crystal's scrypt policy (decision
+//! 0027), size limits checked before any allocation, error values that
+//! carry no text from the input, and types that keep secrets from reaching
+//! Debug, Display, Clone or serde.
 
 use std::fmt;
-use std::io::{Read, Write};
-use std::iter;
 
-use age::{DecryptError, Decryptor, Encryptor, scrypt, x25519};
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
-use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
+
+use crate::age_v1::{self, x25519};
 
 use crate::model::assert_not_impl;
 
@@ -130,12 +129,13 @@ fn scrypt_policy() -> ScryptPolicy {
     }
 }
 
-/// Why encryption or decryption failed. Fixed variants only: age's error
-/// text, file contents and passphrases never reach a message.
+/// Why encryption or decryption failed. Fixed variants only: file
+/// contents and passphrases never reach a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CryptoError {
     /// The scrypt stanza did not open with this passphrase. A bit flip in
-    /// that stanza looks exactly the same: age cannot tell them apart.
+    /// that stanza looks exactly the same: age's format cannot tell them
+    /// apart.
     WrongPassphrase,
     /// The file is not encrypted to this key: no stanza matches, or a
     /// passphrase was given for a key-encrypted file, or the other way round.
@@ -152,9 +152,12 @@ pub enum CryptoError {
     WorkFactorTooHigh,
     /// `encrypt_to_recipients` was given no recipients.
     NoRecipients,
-    /// age refused to encrypt (cannot happen with the recipient types used
-    /// here; kept so no age error is ever passed through).
+    /// Encryption failed: more recipients than an age header Crystal reads
+    /// may hold (cannot happen with Crystal's one vault recipient).
     EncryptFailed,
+    /// The kernel's random generator failed while making a key, nonce or
+    /// salt (age's `OsRng` panicked there).
+    RandomFailed,
 }
 
 impl fmt::Display for CryptoError {
@@ -170,13 +173,14 @@ impl fmt::Display for CryptoError {
             }
             Self::NoRecipients => "no recipients to encrypt to",
             Self::EncryptFailed => "encryption failed",
+            Self::RandomFailed => "cannot get random bytes from the kernel",
         })
     }
 }
 
 impl std::error::Error for CryptoError {}
 
-/// Bytes produced by age encryption. The field is private and the only
+/// Bytes produced by age encryption (`crate::age_v1`). The field is private and the only
 /// constructors live in this module, so code outside `crypto` cannot label
 /// arbitrary bytes as ciphertext and hand them to `vault::atomic_write`.
 pub struct Ciphertext(Vec<u8>);
@@ -194,9 +198,9 @@ impl Ciphertext {
     }
 }
 
-/// A passphrase: non-empty UTF-8 (age's scrypt takes a `&str`), in a
-/// buffer wiped on drop. Deliberately no Debug, Display, Clone or
-/// Serialize.
+/// A passphrase: non-empty UTF-8 (what age tools accept, so a passphrase
+/// file can be opened with age or rage too), in a buffer wiped on drop.
+/// Deliberately no Debug, Display, Clone or Serialize.
 pub struct Passphrase(Zeroizing<Vec<u8>>);
 
 assert_not_impl!(Passphrase: fmt::Debug, fmt::Display, serde::Serialize, Clone);
@@ -208,15 +212,9 @@ impl Passphrase {
         valid.then_some(Self(bytes))
     }
 
-    /// A copy for age, which wipes it on drop. Built with the exact
-    /// capacity, so turning it into a boxed `str` never reallocates and
-    /// leaves no unwiped buffer behind.
-    fn to_secret_string(&self) -> SecretString {
-        // `new` checked UTF-8; the fallback can't happen and holds no data.
-        let text = std::str::from_utf8(&self.0).unwrap_or_default();
-        let mut copy = String::with_capacity(text.len());
-        copy.push_str(text);
-        SecretString::from(copy)
+    /// The bytes scrypt takes: the UTF-8 encoding, as age uses it. No copy.
+    fn as_bytes(&self) -> &[u8] {
+        &self.0
     }
 
     /// Whether this passphrase is long enough for a new one: at least
@@ -252,22 +250,23 @@ impl Passphrase {
     }
 }
 
-/// The vault's X25519 identity. Only ever on the heap; age's key type
+/// The vault's X25519 identity. Only ever on the heap; the key type
 /// (x25519-dalek's `StaticSecret`, `zeroize` feature on) wipes itself when
 /// dropped. It is never serialized except into an age encryption call
 /// here, and has no Debug, Display, Clone or Serialize.
 ///
-/// Not a `secrecy::SecretBox` as #8 first proposed: `SecretBox` needs the
-/// inner type to implement `Zeroize`, and age's identity does not; it
-/// wipes on drop instead, which is what `SecretBox` would add.
+/// Not a `secrecy::SecretBox` as #8 first proposed (decision 0013): the
+/// identity wipes itself on drop, which is what `SecretBox` would add.
 pub struct VaultIdentity(Box<x25519::Identity>);
 
 assert_not_impl!(VaultIdentity: fmt::Debug, fmt::Display, serde::Serialize, Clone);
 
 impl VaultIdentity {
-    /// A new random identity, from the kernel's generator (through age).
-    pub fn generate() -> Self {
-        Self(Box::new(x25519::Identity::generate()))
+    /// A new random identity, from the kernel's generator (getrandom).
+    pub fn generate() -> Result<Self, CryptoError> {
+        x25519::Identity::generate()
+            .map(|identity| Self(Box::new(identity)))
+            .map_err(|_| CryptoError::RandomFailed)
     }
 
     /// The public key `vault.age` is encrypted to.
@@ -279,8 +278,8 @@ impl VaultIdentity {
     /// (sealed with the recovery code): the identity's age string
     /// (`AGE-SECRET-KEY-1…`), encrypted to the passphrase alone.
     pub fn seal_with_passphrase(&self, pass: &Passphrase) -> Result<Ciphertext, CryptoError> {
-        let secret = self.0.to_string();
-        encrypt_to_passphrase(secret.expose_secret().as_bytes(), pass)
+        let secret = self.0.to_secret_string();
+        encrypt_to_passphrase(secret.as_bytes(), pass)
     }
 
     /// Unlock: decrypts `identity.age` and parses the identity. Content
@@ -288,17 +287,19 @@ impl VaultIdentity {
     pub fn open_with_passphrase(ciphertext: &[u8], pass: &Passphrase) -> Result<Self, CryptoError> {
         let secret = decrypt_with_passphrase(ciphertext, pass)?;
         let text = std::str::from_utf8(&secret).map_err(|_| CryptoError::Corrupt)?;
-        let identity = text.parse().map_err(|_| CryptoError::Corrupt)?;
+        let identity = x25519::Identity::parse(text).ok_or(CryptoError::Corrupt)?;
         Ok(Self(Box::new(identity)))
     }
 }
 
 /// Encrypts `secret` to a passphrase: one scrypt stanza as the only
-/// recipient, as age requires.
+/// recipient, as age requires, at this run's work factor.
 pub fn encrypt_to_passphrase(secret: &[u8], pass: &Passphrase) -> Result<Ciphertext, CryptoError> {
-    let mut recipient = scrypt::Recipient::new(pass.to_secret_string());
-    recipient.set_work_factor(scrypt_policy().encrypt);
-    encrypt(iter::once(&recipient as &dyn age::Recipient), secret)
+    let recipients = age_v1::Recipients::Passphrase {
+        passphrase: pass.as_bytes(),
+        log_n: scrypt_policy().encrypt,
+    };
+    encrypt(&recipients, secret)
 }
 
 /// Encrypts `secret` to X25519 recipients: the vault recipient for
@@ -310,28 +311,16 @@ pub fn encrypt_to_recipients(
     if recipients.is_empty() {
         return Err(CryptoError::NoRecipients);
     }
-    encrypt(recipients.iter().map(|r| r as &dyn age::Recipient), secret)
+    encrypt(&age_v1::Recipients::X25519(recipients), secret)
 }
 
-fn encrypt<'a>(
-    recipients: impl Iterator<Item = &'a dyn age::Recipient>,
-    secret: &[u8],
-) -> Result<Ciphertext, CryptoError> {
+fn encrypt(recipients: &age_v1::Recipients<'_>, secret: &[u8]) -> Result<Ciphertext, CryptoError> {
     if secret.len() > MAX_PLAINTEXT {
         return Err(CryptoError::TooLarge);
     }
-    let encryptor =
-        Encryptor::with_recipients(recipients).map_err(|_| CryptoError::EncryptFailed)?;
-    // Ciphertext is not secret; the capacity is only a hint.
-    let mut out = Vec::with_capacity(secret.len() + secret.len() / 4096 + 1024);
-    let mut writer = encryptor
-        .wrap_output(&mut out)
-        .map_err(|_| CryptoError::EncryptFailed)?;
-    writer
-        .write_all(secret)
-        .map_err(|_| CryptoError::EncryptFailed)?;
-    writer.finish().map_err(|_| CryptoError::EncryptFailed)?;
-    Ok(Ciphertext(out))
+    age_v1::encrypt(recipients, secret)
+        .map(Ciphertext)
+        .map_err(|e| map_error(e, Expect::Key))
 }
 
 /// Decrypts a passphrase-encrypted file. A file with any other stanza is
@@ -341,10 +330,12 @@ pub fn decrypt_with_passphrase(
     ciphertext: &[u8],
     pass: &Passphrase,
 ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-    let mut identity = scrypt::Identity::new(pass.to_secret_string());
-    // Refuse, before any scrypt work, a file asking for more than this run
-    // allows: age's own limit could exceed locked memory and abort.
-    identity.set_max_work_factor(scrypt_policy().max_decrypt);
+    // A file asking for more than this run allows is refused before any
+    // scrypt work: more could exceed locked memory and abort.
+    let identity = age_v1::Identity::Passphrase {
+        passphrase: pass.as_bytes(),
+        max_log_n: scrypt_policy().max_decrypt,
+    };
     decrypt(ciphertext, &identity, Expect::Passphrase)
 }
 
@@ -353,7 +344,11 @@ pub fn decrypt_with_identity(
     ciphertext: &[u8],
     identity: &VaultIdentity,
 ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-    decrypt(ciphertext, &*identity.0, Expect::Key)
+    decrypt(
+        ciphertext,
+        &age_v1::Identity::X25519(&identity.0),
+        Expect::Key,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -364,38 +359,34 @@ enum Expect {
 
 fn decrypt(
     ciphertext: &[u8],
-    identity: &dyn age::Identity,
+    identity: &age_v1::Identity<'_>,
     expect: Expect,
 ) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     if ciphertext.len() > MAX_CIPHERTEXT {
         return Err(CryptoError::TooLarge);
     }
-    let decryptor = Decryptor::new_buffered(ciphertext).map_err(|e| map_decrypt(e, expect))?;
-    if decryptor.is_scrypt() != (expect == Expect::Passphrase) {
-        return Err(CryptoError::NotForThisKey);
-    }
-    let mut reader = decryptor
-        .decrypt(iter::once(identity))
-        .map_err(|e| map_decrypt(e, expect))?;
-    // The plaintext is shorter than the ciphertext (header and tags), so
-    // this buffer never grows and no unwiped copy is left behind.
-    let mut plaintext = Zeroizing::new(Vec::with_capacity(ciphertext.len()));
-    reader
-        .read_to_end(&mut plaintext)
-        .map_err(|_| CryptoError::Corrupt)?;
-    Ok(plaintext)
+    // The plaintext comes back in a zeroizing buffer of exact size; nothing
+    // is returned unless the whole file authenticated.
+    age_v1::decrypt(identity, ciphertext).map_err(|e| map_error(e, expect))
 }
 
-/// age's error to a fixed variant; nothing of age's message is kept.
-fn map_decrypt(e: DecryptError, expect: Expect) -> CryptoError {
+/// age's error to Crystal's. Exhaustive, so a new age error needs a
+/// decision here. A passphrase identity finds no stanza in a key file, and
+/// a key finds none in a passphrase file: both are `NotForThisKey`.
+fn map_error(e: age_v1::Error, expect: Expect) -> CryptoError {
+    use age_v1::Error as E;
     match e {
-        DecryptError::DecryptionFailed | DecryptError::KeyDecryptionFailed => match expect {
+        E::DecryptionFailed => match expect {
             Expect::Passphrase => CryptoError::WrongPassphrase,
             Expect::Key => CryptoError::NotForThisKey,
         },
-        DecryptError::NoMatchingKeys => CryptoError::NotForThisKey,
-        DecryptError::ExcessiveWork { .. } => CryptoError::WorkFactorTooHigh,
-        _ => CryptoError::Corrupt,
+        E::NoMatch => CryptoError::NotForThisKey,
+        E::ExcessiveWork => CryptoError::WorkFactorTooHigh,
+        E::InvalidHeader | E::InvalidMac | E::InvalidPayload => CryptoError::Corrupt,
+        E::TooLarge => CryptoError::TooLarge,
+        E::NoRecipients => CryptoError::NoRecipients,
+        E::TooManyRecipients => CryptoError::EncryptFailed,
+        E::Random => CryptoError::RandomFailed,
     }
 }
 
@@ -513,9 +504,9 @@ mod tests {
     #[test]
     fn recipients_round_trip_and_other_keys_refused() {
         let (a, b, other) = (
-            VaultIdentity::generate(),
-            VaultIdentity::generate(),
-            VaultIdentity::generate(),
+            VaultIdentity::generate().unwrap(),
+            VaultIdentity::generate().unwrap(),
+            VaultIdentity::generate().unwrap(),
         );
         let file = encrypt_to_recipients(b"vault", &[a.recipient(), b.recipient()]).unwrap();
         for id in [&a, &b] {
@@ -530,7 +521,7 @@ mod tests {
     // A passphrase file is never opened with a key, nor the other way round.
     #[test]
     fn passphrase_and_key_files_are_not_interchangeable() {
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let by_pass = sealed_with("pw", b"x");
         let by_key = sealed_to(&id, b"x");
         let err = decrypt_with_identity(&by_pass, &id).unwrap_err();
@@ -541,7 +532,7 @@ mod tests {
 
     #[test]
     fn vault_identity_seal_and_open() {
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let file = id.seal_with_passphrase(&pass("pw")).unwrap();
         let opened = VaultIdentity::open_with_passphrase(&file.0, &pass("pw")).unwrap();
         assert_eq!(opened.recipient().to_string(), id.recipient().to_string());
@@ -569,7 +560,7 @@ mod tests {
     // and every truncation, is refused.
     #[test]
     fn key_file_bit_flips_and_truncation_are_refused() {
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let file = sealed_to(&id, b"a short vault");
         for i in 0..file.len() {
             let mut bad = file.clone();
@@ -591,7 +582,7 @@ mod tests {
     fn multi_chunk_flips_and_truncation_are_refused() {
         const CHUNK: usize = 64 << 10;
         const TAG: usize = 16;
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let file = sealed_to(&id, &vec![7u8; CHUNK + 100]);
         let (_, _, payload) = parts(&file);
         let first_end = payload + 16 + CHUNK + TAG; // 16-byte nonce first
@@ -661,7 +652,7 @@ mod tests {
     // before any key is tried, even for the right key.
     #[test]
     fn scrypt_mixed_with_another_stanza_is_refused() {
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let by_pass = sealed_with("pw", b"x");
         let by_key = sealed_to(&id, b"x");
         let (_, key_mac, _) = parts(&by_key);
@@ -697,7 +688,7 @@ mod tests {
 
     #[test]
     fn size_limits_are_checked_first() {
-        let id = VaultIdentity::generate();
+        let id = VaultIdentity::generate().unwrap();
         let huge = vec![0u8; MAX_CIPHERTEXT + 1];
         let err = decrypt_with_identity(&huge, &id).unwrap_err();
         assert_eq!(err, CryptoError::TooLarge);
@@ -715,6 +706,109 @@ mod tests {
         );
     }
 
+    /// What Crystal wrote before step C2: the age crate (the
+    /// dev-dependency, 0.11.5, which old Crystal linked) encrypting to an
+    /// age scrypt or X25519 recipient, with age's grease stanza.
+    fn age_crate_encrypts(recipient: &dyn age::Recipient, plaintext: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let encryptor = age::Encryptor::with_recipients(std::iter::once(recipient)).unwrap();
+        let mut file = Vec::new();
+        let mut writer = encryptor.wrap_output(&mut file).unwrap();
+        writer.write_all(plaintext).unwrap();
+        writer.finish().unwrap();
+        file
+    }
+
+    fn age_scrypt(p: &str, log_n: u8) -> age::scrypt::Recipient {
+        let mut recipient = age::scrypt::Recipient::new(p.to_owned().into());
+        recipient.set_work_factor(log_n);
+        recipient
+    }
+
+    // Decision 0042: existing vaults open unchanged. identity.age,
+    // identity.backup.age and vault.age as old Crystal wrote them through
+    // the age crate open here, and give the same key.
+    #[test]
+    fn opens_files_written_by_the_age_crate() {
+        use age::secrecy::ExposeSecret;
+        let old = age::x25519::Identity::generate();
+        let secret = old.to_string();
+        let identity_age = age_crate_encrypts(
+            &age_scrypt("correct horse", TEST_SCRYPT_LOG_N),
+            secret.expose_secret().as_bytes(),
+        );
+        let backup_age = age_crate_encrypts(
+            &age_scrypt("K7QM3XRD", TEST_SCRYPT_LOG_N),
+            secret.expose_secret().as_bytes(),
+        );
+        let vault_age = age_crate_encrypts(&old.to_public(), b"padded vault blob");
+
+        let id =
+            VaultIdentity::open_with_passphrase(&identity_age, &pass("correct horse")).unwrap();
+        assert_eq!(id.recipient().to_string(), old.to_public().to_string());
+        let from_backup =
+            VaultIdentity::open_with_passphrase(&backup_age, &pass("K7QM3XRD")).unwrap();
+        assert_eq!(
+            from_backup.recipient().to_string(),
+            old.to_public().to_string()
+        );
+        assert_eq!(
+            &decrypt_with_identity(&vault_age, &id).unwrap()[..],
+            b"padded vault blob"
+        );
+
+        // Wrong passphrase and wrong key give the same errors as before.
+        let err = VaultIdentity::open_with_passphrase(&identity_age, &pass("wrong")).err();
+        assert_eq!(err, Some(CryptoError::WrongPassphrase));
+        let other = VaultIdentity::generate().unwrap();
+        let err = decrypt_with_identity(&vault_age, &other).unwrap_err();
+        assert_eq!(err, CryptoError::NotForThisKey);
+    }
+
+    // decision 0027: files written at up to 16 times Crystal's own cost
+    // (log N + 4, as old age-timed files could be) still open; one more is
+    // refused before any scrypt work.
+    #[test]
+    fn age_crate_work_factors_up_to_the_cap_open() {
+        let at = |log_n| age_crate_encrypts(&age_scrypt("pw", log_n), b"x");
+        let plain = decrypt_with_passphrase(&at(TEST_SCRYPT_LOG_N + 4), &pass("pw")).unwrap();
+        assert_eq!(&plain[..], b"x");
+        let err = decrypt_with_passphrase(&at(TEST_SCRYPT_LOG_N + 5), &pass("pw")).unwrap_err();
+        assert_eq!(err, CryptoError::WorkFactorTooHigh);
+    }
+
+    // And the other way: what Crystal writes now opens with the age crate,
+    // so age and rage remain a way into a vault.
+    #[test]
+    fn age_crate_opens_what_crystal_writes() {
+        use age::secrecy::ExposeSecret;
+        use std::io::Read;
+        let read = |file: &[u8], identity: &dyn age::Identity| {
+            let decryptor = age::Decryptor::new_buffered(file).unwrap();
+            let mut out = Vec::new();
+            decryptor
+                .decrypt(std::iter::once(identity))
+                .unwrap()
+                .read_to_end(&mut out)
+                .unwrap();
+            out
+        };
+        let id = VaultIdentity::generate().unwrap();
+        let identity_age = id.seal_with_passphrase(&pass("correct horse")).unwrap();
+        let mut by_pass = age::scrypt::Identity::new("correct horse".to_owned().into());
+        by_pass.set_max_work_factor(TEST_SCRYPT_LOG_N);
+        let text = read(identity_age.as_bytes(), &by_pass);
+        let theirs: age::x25519::Identity = std::str::from_utf8(&text).unwrap().parse().unwrap();
+        assert_eq!(theirs.to_public().to_string(), id.recipient().to_string());
+        assert_eq!(
+            theirs.to_string().expose_secret().as_bytes(),
+            &text[..],
+            "the same AGE-SECRET-KEY-1 string"
+        );
+        let vault = encrypt_to_recipients(b"notes", &[id.recipient()]).unwrap();
+        assert_eq!(read(vault.as_bytes(), &theirs), b"notes");
+    }
+
     #[test]
     fn error_messages_are_fixed_text() {
         let file = sealed_with("pw", b"secret");
@@ -728,7 +822,7 @@ mod tests {
 
         #[test]
         fn arbitrary_plaintext_round_trips(secret in proptest::collection::vec(any::<u8>(), 0..200_000)) {
-            let id = VaultIdentity::generate();
+            let id = VaultIdentity::generate().unwrap();
             let file = sealed_to(&id, &secret);
             prop_assert_eq!(&decrypt_with_identity(&file, &id).unwrap()[..], &secret[..]);
         }

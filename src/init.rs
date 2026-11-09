@@ -202,7 +202,7 @@ fn build(
     let dir = created.vault_dir.insert(dir);
 
     format::write_version(dir).map_err(InitError::Write)?;
-    let identity = VaultIdentity::generate();
+    let identity = VaultIdentity::generate().map_err(InitError::Crypto)?;
     let vault_id = VaultId::random().map_err(InitError::Random)?;
     let write = |file: &str, sealed: &crate::crypto::Ciphertext| {
         // The four names are fixed and valid: this cannot fail.

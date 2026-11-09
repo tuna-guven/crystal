@@ -17,12 +17,8 @@ lexopt = "0.3.2"
 rustix = { version = "1.1.5", features = ["event", "fs", "mm", "pipe", "process", "rand", "termios", "thread"] }
 signal-hook = "0.4.5"
 # Phase 2 (#4). Exact pins: crypto and the on-disk codec change only by review.
-# age is the rage library. No default features: X25519 and scrypt are always
-# built in; `plugin` (YubiKey/TPM, needs execve) waits for Phase 8.
-age = { version = "=0.11.5", default-features = false }
-# Own age v1 implementation (src/age_v1/, decision 0042; steps C1-C3).
-# Already in the tree through age, at these exact versions; they become
-# direct dependencies so age can be removed in C3. Exact pins: crypto.
+# Crystal's own age v1 implementation (src/age_v1/, decision 0042) is built
+# on these primitives, at the versions the age crate used.
 # Payload and stanza AEAD. No `getrandom` (rand_core/OsRng): randomness comes
 # from rustix. `alloc` for the Vec-backed in-place buffers, as age enables it.
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
@@ -40,8 +36,6 @@ hmac = { version = "=0.12.1", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false }
 # Constant-time all-zero check on the X25519 shared secret, as age does.
 subtle = { version = "=2.6.1", default-features = false }
-# SecretBox for the vault identity; same version age-core re-exports.
-secrecy = "=0.10.3"
 # Zeroizing buffers and #[derive(ZeroizeOnDrop)] for plaintext.
 zeroize = { version = "=1.9.1", features = ["derive"] }
 # Vault and config codec. postcard's `alloc` also enables serde's `alloc`.
@@ -67,6 +61,11 @@ proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # as published. Pure Rust, forbid(unsafe_code); brings adler2. Only
 # `with-alloc`, for decompress_to_vec_zlib_with_limit.
 miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+# Test-only since step C2 (decision 0042): rage's library, to cross-check
+# Crystal's own age code both ways and to read the real binary's files in
+# the integration tests. No default features: X25519 and scrypt only.
+# Removed in step C3.
+age = { version = "=0.11.5", default-features = false }
 
 [profile.release]
 lto = true

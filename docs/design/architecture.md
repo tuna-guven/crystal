@@ -31,7 +31,7 @@ One process, one crypto boundary: everything above the age layer handles plainte
 |                                    |  plaintext                          |
 |                                    v                                     |
 | +----------------------------------------------------------------------+ |
-| | Crypto (age crate, rage)   <== CRYPTO BOUNDARY                       | |
+| | Crypto (own age v1 code)   <== CRYPTO BOUNDARY                       | |
 | | identity boxed, wiped on drop; decrypts on unlock, encrypts on save  | |
 | | unlocked by passphrase (scrypt) or YubiKey plugin, before sandbox    | |
 | +----------------------------------------------------------------------+ |

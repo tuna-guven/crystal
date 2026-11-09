@@ -9,9 +9,9 @@
 //! (LICENSES/age-MIT.txt). Nothing here is a custom construction: every
 //! step follows the spec and age's code.
 //!
-//! Step C1 of replacing the `age` crate: this module sits next to it,
-//! checked against it and against the C2SP/CCTV vectors, and is unused by
-//! the program until C2 switches `crypto` over.
+//! Since step C2, `crypto` encrypts and decrypts through this module; the
+//! `age` crate is a dev-dependency, kept to cross-check it, with the
+//! C2SP/CCTV vectors.
 //!
 //! `encrypt` and `decrypt` follow age 0.12.1, src/protocol.rs
 //! (`Encryptor::with_recipients`, `Decryptor`) and src/keys.rs, over
@@ -20,11 +20,6 @@
 //! scrypt stanza stands alone, reads the nonce, finds the file key by
 //! trying each stanza in order, verifies the header MAC, and only then
 //! touches the payload.
-
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used from C2 on, when crypto.rs switches over")
-)]
 
 use std::fmt;
 
@@ -40,7 +35,7 @@ mod header;
 mod primitives;
 mod scrypt;
 mod stream;
-mod x25519;
+pub(crate) mod x25519;
 
 /// The length of an age file key (C2SP age: 128 bits).
 const FILE_KEY_BYTES: usize = 16;
@@ -180,8 +175,8 @@ pub(crate) fn decrypt(identity: &Identity<'_>, file: &[u8]) -> Result<Zeroizing<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use age::secrecy::SecretString;
     use proptest::prelude::*;
-    use secrecy::SecretString;
     use std::io::{Read, Write};
     use std::sync::OnceLock;
 

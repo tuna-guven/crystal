@@ -10,12 +10,12 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 | Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions/0031-own-grid.md)) |
 | Editor widget | Crystal's own | Phase 4, on the grid; `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
 | Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
-| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and the `age` crate ([decision 0042](../decisions/0042-own-age-implementation.md)). Until step C2 the program still encrypts through the `age` crate (=0.11.5, no default features); C3 removes it |
+| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and the `age` crate ([decision 0042](../decisions/0042-own-age-implementation.md)). Since step C2 the program encrypts only through it; the `age` crate is a test-only dependency until C3 removes it |
 | AEAD | `chacha20poly1305` =0.10.1 (no default features, `alloc`) | Stanza key wrapping and STREAM chunks; no `getrandom` feature, randomness comes from rustix (decision 0042) |
 | Passphrase KDF | `scrypt` =0.11.0 (no default features) | The scrypt stanza; no `password-hash` (decision 0042) |
 | X25519 | `x25519-dalek` =2.0.1 (`static_secrets`, `zeroize`, `precomputed-tables`) | The X25519 stanza; keys built from getrandom bytes, wiped on drop (decision 0042) |
 | KDF and MAC | `hkdf` =0.12.4, `hmac` =0.12.1, `sha2` =0.10.9, `subtle` =2.6.1 (no default features) | age's HKDF-SHA-256 keys, the HMAC-SHA-256 header MAC, the constant-time all-zero check (decision 0042) |
-| Secret types | `secrecy`, `zeroize` | `SecretString` to hand passphrases and keys to age; `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext. The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions/0013-identity-box.md)) |
+| Secret types | `zeroize` =1.9.1 | `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext, passphrases and keys. `secrecy` was dropped in step C2: only the `age` crate's API needed `SecretString` ([decision 0042](../decisions/0042-own-age-implementation.md)). The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions/0013-identity-box.md)) |
 | Serialization | `serde` + `postcard` | Compact, schema-light, small attack surface for the vault contents |
 | Syscalls | `rustix` | prctl, setrlimit, mlockall, fsync, renameat without writing `unsafe` yourself |
 | Filesystem sandbox | `landlock` | Restrict file access to the vault and state directories. Version 0.4.7 supports Landlock ABI up to 9; no raw Landlock syscalls, which would need `unsafe` ([Sandboxing](sandboxing.md) 5.1) |
@@ -24,7 +24,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 
 **About age and rage:** Crystal's files are age files, readable by age, rage or any age implementation. Crystal implements the published format itself, ported from rage's library (the `age` crate), because that crate brought about a hundred crates for two recipient types ([decision 0042](../decisions/0042-own-age-implementation.md)). Never shell out to the `rage` or `age` binary, which would need `execve` and push plaintext through pipes.
 
-**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed ([decision 0042](../decisions/0042-own-age-implementation.md)). Neither is in the binary.
+**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed; `age` =0.11.5 (no default features), rage's library, to cross-check Crystal's age code in both directions and to read the real binary's files in the integration tests, until step C3 ([decision 0042](../decisions/0042-own-age-implementation.md)). None of them is in the binary.
 
 **Avoid:** `tokio` or any async runtime, HTTP clients, `clap` (large for this job), syntax highlighters (`syntect`), `tui-markdown` or other ready-made renderers, image crates, file watchers, logging crates that write files, `rpassword` (read the passphrase yourself in raw mode).
 

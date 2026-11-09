@@ -436,7 +436,8 @@ pub enum PromptError {
     Cancelled,
     /// More than `MAX_PASSPHRASE` bytes.
     TooLong,
-    /// Not valid UTF-8 (age's scrypt needs text).
+    /// Not valid UTF-8 (age tools take a text passphrase, and a Crystal
+    /// passphrase file must open with them too).
     NotText,
     /// The two entries of `read_new_passphrase` differ.
     Mismatch,
