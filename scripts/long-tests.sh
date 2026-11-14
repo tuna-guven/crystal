@@ -8,9 +8,10 @@
 # Needs RLIMIT_MEMLOCK at Crystal's floor (512 MiB), like `cargo test`.
 set -eu
 
-# Untrusted text: the renderer, sanitizer, wrapping, names, key decoding
-# and the vault codec. About 1 to 2.5 minutes each per million cases.
-for module in md::render md::safe ui::wrap model::name shell::keys vault::codec; do
+# Untrusted text: the renderer, sanitizer, wrapping, names, key decoding,
+# the vault codec and the editor (buffer and keys). About 1 to 2.5 minutes
+# each per million cases.
+for module in md::render md::safe ui::wrap model::name shell::keys vault::codec editor; do
     echo "== $module: 1000000 cases"
     PROPTEST_CASES=1000000 cargo test --locked --release --bin crystal "$module"
 done

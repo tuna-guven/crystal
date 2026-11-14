@@ -219,7 +219,8 @@ fn refuses_swapped_vault() {
     );
 }
 
-/// Phase 2 refuses a vault with a Syncthing conflict copy; Phase 4 merges.
+/// A vault with a Syncthing conflict copy is refused; Crystal never merges
+/// (decision 0045).
 #[test]
 fn refuses_sync_conflict() {
     let (home, vault) = home_with_vault("sync_conflict");
@@ -914,8 +915,8 @@ fn shell_commands_on_an_empty_vault() {
     assert!(ok, "{output}");
 }
 
-// ---- view and the clipboard, on notes added in memory by the debug-only
-// ---- --demo-notes-for-test (notes cannot be made before the editor) ----
+// ---- view and the clipboard, on fixed notes added in memory by the
+// ---- debug-only --demo-notes-for-test (one of them hostile; never saved) ----
 
 /// Runs `crystal --demo-notes-for-test diary` through `steps` after the
 /// passphrase.
@@ -983,4 +984,529 @@ fn hostile_note_cannot_set_the_clipboard() {
     let shown = visible(&output);
     assert!(shown.contains("<U+001B>]52;c;ZXZpbA==<U+0007>b"), "{shown}");
     assert!(shown.contains("<U+202E>"), "{shown}");
+}
+
+// ---- the editor (decision 0045): new, edit, save, preview ----
+
+/// A string only these tests type, to look for on disk.
+const CANARY: &str = "canary-7f3a9c";
+
+/// The files in the vault directory, sorted.
+fn vault_files(vault: &Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(vault)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    files
+}
+
+/// `new` opens the editor; Ctrl+S saves the note into vault.age, where
+/// only ciphertext lands; the next unlock shows it with `view`.
+#[test]
+fn new_note_is_saved_and_opens_again() {
+    let (home, vault) = home_with_vault("editor_new");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new work/plan\r".to_vec()));
+    steps.push(("Ctrl+S save", format!("hello {CANARY}\x13").into_bytes()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(!after_leaving(&output).contains(CANARY));
+
+    // Only Crystal's four files, and the text nowhere in them.
+    assert_eq!(
+        vault_files(&vault),
+        [
+            "VERSION",
+            "identity.age",
+            "identity.backup.age",
+            "vault.age"
+        ]
+    );
+    for file in vault_files(&vault) {
+        let bytes = std::fs::read(vault.join(&file)).unwrap();
+        let found = bytes.windows(CANARY.len()).any(|w| w == CANARY.as_bytes());
+        assert!(!found, "{file} holds the note's text");
+    }
+
+    let mut steps = pass_step(PASS);
+    steps.push(("unlocked.", b"view work/plan\r".to_vec()));
+    steps.push((CANARY, b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// `edit` changes a saved note; Ctrl+E shows the unsaved text rendered and
+/// returns; Ctrl+Q with unsaved changes warns before it discards them.
+#[test]
+fn edit_previews_saves_and_guards_unsaved_changes() {
+    let (home, _) = home_with_vault("editor_edit");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    // End of the text, a new line, unsaved; then the preview.
+    steps.push(("Ctrl+S save", b"\x1b[B\x1b[F\rdraft-line\x05".to_vec()));
+    steps.push(("preview", b"\x05".to_vec()));
+    // Back in the editor (its title shows unsaved changes): save, change
+    // again, and try to leave.
+    steps.push(("[+]", b"\x13".to_vec()));
+    steps.push(("Saved.", b"!\x11".to_vec()));
+    steps.push(("again", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+
+    // Saved: the new line. Discarded: the "!" typed after the save.
+    let mut steps = pass_step(PASS);
+    steps.push(("unlocked.", b"view plan\r".to_vec()));
+    steps.push(("draft-line", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(!visible(&output).contains("draft-line!"), "{output:?}");
+}
+
+/// A session with the debug-only demo notes never saves: vault.age stays
+/// byte for byte the same.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "uses the debug-only --demo-notes-for-test"
+)]
+fn demo_notes_are_never_saved() {
+    let (home, vault) = home_with_vault("editor_demo");
+    let before = std::fs::read(vault.join("vault.age")).unwrap();
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit welcome\r".to_vec()));
+    steps.push(("Ctrl+S save", b"x\x13".to_vec()));
+    steps.push(("never saved", b"\x11\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(
+        &format!("'{BIN}' --demo-notes-for-test diary"),
+        &home,
+        &steps,
+    );
+    assert!(ok, "{output}");
+    assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before);
+}
+
+// ---- Phase 4 acceptance: kill -9 during a save never corrupts the vault ----
+
+/// Unlocks the vault, opens `edit n`, types 300 characters each followed
+/// by Ctrl+S (300 saves in a row), and kills Crystal with SIGKILL
+/// `delay_ms` after the burst was sent.
+fn kill_during_saves(home: &Path, delay_ms: u64) {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let cmd = format!("'{BIN}' diary & echo; echo crystal-pid=$!; wait $!");
+    let mut child = Command::new("script")
+        .args(["-qec", &cmd, "/dev/null"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .env("HOME", home)
+        .current_dir(home)
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n @ 1..) = stdout.read(&mut buf) {
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut seen = 0;
+    let mut wait_for = |marker: &str, output: &mut Vec<u8>| {
+        loop {
+            if let Some(at) = output[seen..]
+                .windows(marker.len())
+                .position(|w| w == marker.as_bytes())
+            {
+                seen += at + marker.len();
+                return;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(chunk) => output.extend(chunk),
+                Err(_) => panic!("no {marker:?}: {:?}", text(output)),
+            }
+        }
+    };
+    wait_for("crystal-pid=", &mut output);
+    wait_for("\n", &mut output);
+    let line = text(&output);
+    let pid: String = line[line.rfind("crystal-pid=").unwrap() + 12..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    wait_for(PROMPT, &mut output);
+    stdin.write_all(format!("{PASS}\r").as_bytes()).unwrap();
+    wait_for(SHELL_READY, &mut output);
+    stdin.write_all(b"edit n\r").unwrap();
+    wait_for("Ctrl+S save", &mut output);
+    stdin.write_all(&b"x\x13".repeat(300)).unwrap();
+    stdin.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(delay_ms));
+    let killed = Command::new("kill").args(["-9", &pid]).status().unwrap();
+    assert!(killed.success(), "kill -9 {pid}");
+    drop(stdin);
+    let _ = child.wait();
+}
+
+/// The vault's generation counter, as stored in the state directory.
+fn counter(home: &Path) -> u64 {
+    let text = std::fs::read_to_string(vault_counter(home, "diary")).unwrap();
+    text.trim_end().parse().unwrap()
+}
+
+/// Phase 4 acceptance: Crystal is killed with SIGKILL while saving, at a
+/// different moment each round. Every time, the vault opens again without
+/// a rollback warning (the counter is never ahead of the file), and only
+/// Crystal's own files and atomic-writer leftovers are in the directory.
+///
+/// At least one kill must land mid-write, between the atomic writer's
+/// temp file and its rename: the rounds go on until one leaves a temp file
+/// behind (each write sweeps older ones, and the test removes them before
+/// each round, so a temp file after a kill is that round's).
+#[test]
+fn kill_9_during_saves_never_corrupts_the_vault() {
+    const MIN_ROUNDS: u64 = 12;
+    const MAX_ROUNDS: u64 = 60;
+    let (home, vault) = home_with_vault("kill_during_saves");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new n\r".to_vec()));
+    steps.push(("Ctrl+S save", b"start\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let first = counter(&home);
+    let is_temp = |file: &str| file.starts_with(".vault.age.tmp-");
+
+    let mut mid_write = 0;
+    let mut round = 0;
+    while round < MIN_ROUNDS || (mid_write == 0 && round < MAX_ROUNDS) {
+        for file in vault_files(&vault).into_iter().filter(|f| is_temp(f)) {
+            std::fs::remove_file(vault.join(file)).unwrap();
+        }
+        // 0 to 330 ms after the burst: before, during and after saves.
+        kill_during_saves(&home, (round % 12) * 30);
+        let files = vault_files(&vault);
+        for file in &files {
+            let known = [
+                "VERSION",
+                "identity.age",
+                "identity.backup.age",
+                "vault.age",
+            ];
+            assert!(
+                known.contains(&file.as_str()) || is_temp(file),
+                "round {round}: unexpected {file}"
+            );
+        }
+        if files.iter().any(|f| is_temp(f)) {
+            mid_write += 1;
+        }
+        // Opens at once: no damage, and no rollback (a counter ahead of
+        // the file would stop at the `restore` question instead).
+        let steps = vec![
+            (PROMPT, format!("{PASS}\r").into_bytes()),
+            (SHELL_READY, b"quit\r".to_vec()),
+        ];
+        let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+        assert!(ok, "round {round}: {output}");
+        assert!(!output.contains("restore"), "round {round}: {output}");
+        round += 1;
+    }
+    assert!(
+        mid_write > 0,
+        "no kill in {round} rounds landed between a temp file and its rename"
+    );
+    // Saves ran in the rounds, not only before them.
+    assert!(
+        counter(&home) > first + MIN_ROUNDS,
+        "too few saves happened: {} after {first}",
+        counter(&home)
+    );
+}
+
+// ---- Phase 4 acceptance: strace shows only ciphertext writes inside the vault ----
+
+/// Whether strace can trace a child here. secureblue's SELinux boolean
+/// `deny_ptrace` blocks it (docs/guide/setup.md, "ptrace and SELinux
+/// deny_ptrace"); GitHub's runners allow it, and CI installs strace.
+fn strace_works() -> bool {
+    std::process::Command::new("strace")
+        .args(["-f", "-o", "/dev/null", "true"])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// `-xx` prints every byte as `\xHH`; this undoes it.
+fn unhex(quoted: &str) -> Vec<u8> {
+    quoted
+        .split("\\x")
+        .skip(1)
+        .map(|h| u8::from_str_radix(&h[..2], 16).unwrap())
+        .collect()
+}
+
+/// The path `strace -yy` printed for the first fd argument, `name(N</path>`.
+fn fd_path(call: &str) -> Option<&str> {
+    let start = call.find('<')? + 1;
+    let end = start + call[start..].find('>')?;
+    Some(&call[start..end])
+}
+
+/// A note title only the strace test types, to look for on disk.
+const TITLE_CANARY: &str = "title-canary-5e1d0b";
+
+/// Every syscall that can write, create, rename or remove a file. strace
+/// traces them all; Crystal may use only some, and only as checked below.
+const WRITE_FAMILY: &str = "open,openat,creat,write,writev,pwrite64,pwritev,pwritev2,\
+                            sendfile,copy_file_range,splice,rename,renameat,renameat2,\
+                            unlink,unlinkat,link,linkat,symlink,symlinkat,mkdir,mkdirat,\
+                            truncate,ftruncate,fallocate";
+
+/// Phase 4 acceptance: with every write-family syscall of a `new`, type,
+/// Ctrl+S session traced, Crystal writes inside the vault directory only
+/// the atomic writer's temp files, holding an age file and never the
+/// note's title or text; in the state directory only the counter's temp
+/// file, holding a number; and otherwise only to its terminal (/dev/pts).
+/// Each file's bytes are checked whole, so text split across two writes
+/// is still found.
+///
+/// Crystal is non-dumpable, so strace sees its file paths and written
+/// bytes only with CAP_SYS_PTRACE; without it, it shows addresses. The test
+/// therefore runs in CI only, which gives strace the capability and runs
+/// it with `--ignored`.
+#[test]
+#[ignore = "CI only: needs strace with CAP_SYS_PTRACE (see .github/workflows/ci.yml)"]
+fn strace_shows_only_ciphertext_written() {
+    use std::collections::BTreeMap;
+
+    assert!(
+        strace_works(),
+        "strace cannot trace here (not installed, or ptrace denied): this test runs in CI"
+    );
+    let (home, vault) = home_with_vault("strace");
+    let state = state_dir(&home);
+    let trace = home.join("trace.txt");
+    let cmd = format!(
+        "strace -f -qq -yy -xx -s 100000000 -e trace={WRITE_FAMILY} -o '{}' '{BIN}' diary",
+        trace.display()
+    );
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, format!("new {TITLE_CANARY}\r").into_bytes()));
+    steps.push(("Ctrl+S save", format!("{CANARY}\x13").into_bytes()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+
+    let vault = vault.to_str().unwrap();
+    let state = state.to_str().unwrap();
+    let temp_in = |path: &str, dir: &str, name: &str| {
+        path.strip_prefix(dir)
+            .and_then(|rest| rest.strip_prefix("/."))
+            .is_some_and(|file| file.starts_with(name) && file[name.len()..].starts_with(".tmp-"))
+    };
+    let terminal = |path: &str| path.starts_with("/dev/pts/");
+    // What was written to each file, in order.
+    let mut written: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let log = std::fs::read_to_string(&trace).unwrap();
+    for line in log.lines() {
+        // `-f` puts the pid first.
+        let call = line
+            .split_once(' ')
+            .map_or(line, |(_, call)| call.trim_start());
+        // Signals (`---`), exits (`+++`) and anything not a call.
+        let Some((name, _)) = call.split_once('(') else {
+            continue;
+        };
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            continue;
+        }
+        match name {
+            "open" | "openat" => {
+                let writes = ["O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"];
+                if !writes.iter().any(|flag| call.contains(flag)) {
+                    continue;
+                }
+                let Some((_, result)) = call.rsplit_once(" = ") else {
+                    continue;
+                };
+                let Some(path) = fd_path(result) else {
+                    continue; // failed open
+                };
+                assert!(
+                    terminal(path)
+                        || temp_in(path, vault, "vault.age")
+                        || temp_in(path, vault, "VERSION")
+                        || (path.starts_with(state) && path.contains(".gen.tmp-")),
+                    "opened for writing: {call}"
+                );
+            }
+            "write" | "writev" | "pwrite64" | "pwritev" | "pwritev2" => {
+                let path = fd_path(call).unwrap_or("");
+                if terminal(path) {
+                    continue;
+                }
+                assert_eq!(name, "write", "only write() reaches a file: {call}");
+                // Without CAP_SYS_PTRACE, strace cannot read a non-dumpable
+                // process and prints an address instead of the bytes.
+                let Some(quote) = call.find('"') else {
+                    panic!(
+                        "strace could not read what Crystal wrote ({call}): it needs \
+                         CAP_SYS_PTRACE, as CI gives it"
+                    );
+                };
+                written
+                    .entry(path.to_owned())
+                    .or_default()
+                    .extend(unhex(&call[quote..]));
+            }
+            "renameat2" => assert!(
+                call.contains("\"vault.age\"")
+                    || call.contains("\"VERSION\"")
+                    || call.contains(".gen\""),
+                "renamed: {call}"
+            ),
+            "unlinkat" => assert!(call.contains(".tmp-"), "deleted: {call}"),
+            // The state directory's walk: each level exists already.
+            "mkdirat" => assert!(call.contains("= -1 EEXIST"), "created: {call}"),
+            _ => panic!("unexpected write-family call: {call}"),
+        }
+    }
+
+    let mut vault_files = 0;
+    for (path, data) in &written {
+        for canary in [CANARY, TITLE_CANARY] {
+            assert!(
+                !data.windows(canary.len()).any(|w| w == canary.as_bytes()),
+                "note content ({canary}) written to {path}"
+            );
+        }
+        if temp_in(path, vault, "vault.age") {
+            vault_files += 1;
+            assert!(
+                data.starts_with(b"age-encryption.org/v1\n"),
+                "not an age file: {path}"
+            );
+        } else if path.starts_with(state) {
+            assert!(
+                data.iter().all(|b| b.is_ascii_digit() || *b == b'\n'),
+                "not a counter: {path}"
+            );
+        } else {
+            assert!(temp_in(path, vault, "VERSION"), "written: {path}");
+            assert_eq!(data, b"2\n");
+        }
+    }
+    assert!(vault_files >= 1, "no save was traced: {log}");
+}
+
+// ---- mv and rm (decision 0033) ----
+
+/// `mv` renames a note and rewrites the links to it in the same save; `rm`
+/// deletes only after `y`. Both hold after a fresh unlock.
+#[test]
+fn mv_rewrites_links_and_rm_asks_first() {
+    let (home, _) = home_with_vault("mv_rm");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
+    steps.push((SHELL_READY, b"new index\r".to_vec()));
+    steps.push(("Ctrl+S save", b"See [[plan|the plan]].\x13\x11".to_vec()));
+    steps.push((SHELL_READY, b"mv plan work/goals\r".to_vec()));
+    steps.push(("Moved.", b"rm index\r".to_vec()));
+    // Waits on the last word of a line: the frame writer skips cells
+    // that did not change, so a line may arrive in pieces. The answer is
+    // typed after the question showed (a typed-ahead one is dropped, see
+    // rm_ignores_a_typed_ahead_answer); the next unlock checks the result.
+    steps.push(("delete.", b"no\r".to_vec()));
+    steps.push(("", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+
+    // The link followed the note (Tab selects it, Enter follows it to
+    // work/goals); then index is deleted for good.
+    let mut steps = pass_step(PASS);
+    steps.push(("unlocked.", b"view index\r".to_vec()));
+    steps.push(("the plan", b"\t\r".to_vec()));
+    steps.push(("work/goals", b"q".to_vec()));
+    steps.push((SHELL_READY, b"rm index\r".to_vec()));
+    steps.push(("delete.", b"y\r".to_vec()));
+    steps.push(("", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+
+    let mut steps = pass_step(PASS);
+    steps.push(("unlocked.", b"view index\r".to_vec()));
+    steps.push(("No note with that name", b"view goals\r".to_vec()));
+    steps.push(("Plan", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// "rm NAME⏎y⏎" arriving in one read (pasted or typed ahead) deletes
+/// nothing: the answer must be typed after the question showed. A command
+/// typed while rm waits still runs after "Not deleted.", and an empty
+/// Enter answers like `n`.
+#[test]
+fn rm_ignores_a_typed_ahead_answer() {
+    let (home, _) = home_with_vault("rm_typed_ahead");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
+    // One write, so one read: the `y` is dropped with the rest of it.
+    steps.push((SHELL_READY, b"rm plan\ry\r".to_vec()));
+    // The pager opens at once, so the shell's "Not deleted." shows after q.
+    steps.push(("delete.", b"view plan\r".to_vec()));
+    steps.push(("Plan", b"q".to_vec()));
+    steps.push(("deleted.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let shown = visible(&output);
+    assert!(shown.contains("Not deleted."), "{shown}");
+    assert!(!shown.contains("Deleted."), "{shown}");
+
+    // An empty Enter answers too: a later `y` is just an unknown command.
+    let mut steps = pass_step(PASS);
+    // "trash:" lies right of the unlock lines, so the frame writer, which
+    // skips cells that did not change, draws it whole.
+    steps.push(("unlocked.", b"rm plan\r".to_vec()));
+    steps.push(("trash:", b"\r".to_vec()));
+    steps.push(("Not", b"y\r".to_vec()));
+    steps.push(("unknown", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let shown = visible(&output);
+    assert!(shown.contains("unknown command: y"), "{shown}");
+    assert!(!shown.contains("Deleted."), "{shown}");
+
+    // Still there after a fresh unlock.
+    let mut steps = pass_step(PASS);
+    steps.push(("unlocked.", b"view plan\r".to_vec()));
+    steps.push(("Plan", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
 }

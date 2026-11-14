@@ -3,7 +3,9 @@
 - **Date:** 2026-11-08 (Phase 3)
 - **Status:** Accepted. Supersedes the U+FFFD replacement in
   [0031](0031-own-grid.md) (and in the clipboard record 0035, since
-  replaced by [0041](0041-internal-clipboard-only.md)).
+  replaced by [0041](0041-internal-clipboard-only.md)). Extended by
+  [0046](0046-invisible-characters-spelled-out.md): invisible characters
+  inside a visible grapheme are spelled out too.
 
 ## Context
 

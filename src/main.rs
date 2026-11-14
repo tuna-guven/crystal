@@ -10,9 +10,11 @@
 #![cfg_attr(test, deny(unsafe_code))]
 
 mod age_v1;
+mod app;
 mod cli;
 mod commands;
 mod crypto;
+mod editor;
 mod harden;
 mod init;
 mod md;
@@ -22,6 +24,7 @@ mod pager;
 mod recover;
 mod recovery;
 mod rm;
+mod session;
 mod shell;
 mod sys;
 mod term;
@@ -148,90 +151,29 @@ fn startup() -> Result<(), Box<dyn Error>> {
     if args.demo_notes_for_test {
         demo_notes_for_test(&mut contents);
     }
-    let notes = notes::Notes::new(contents);
-    shell.set_names(
-        (0..notes.len())
-            .map(|i| zeroize::Zeroizing::new(notes.name(i).to_owned()))
-            .collect(),
+    #[cfg(debug_assertions)]
+    let demo = args.demo_notes_for_test;
+    #[cfg(not(debug_assertions))]
+    let demo = false;
+    let mut session = session::Session::new(
+        unlocked.vault_dir,
+        state_dir,
+        unlocked.recipient,
+        unlocked.stamp,
+        notes::Notes::new(contents),
     );
-    let count = notes.len();
+    shell.set_names(app::names(session.notes()));
+    let count = session.notes().len();
     shell.print(
         &format!("{count} notes unlocked.{first}{restored}"),
         ui::grid::Style::PLAIN,
     );
     shell.print("Type help for the commands.", ui::grid::Style::PLAIN);
-    run_shell(&mut terminal, &signals, &mut shell, &notes)?;
+    app::run(&mut terminal, &signals, &mut shell, &mut session, demo)?;
     drop(shell);
-    drop(notes);
-    drop(unlocked.vault_dir);
-    drop(state_dir);
+    // The notes, the recipient and the vault and state fds.
+    drop(session);
     Ok(())
-}
-
-/// The shell's loop: draw, wait, handle keys; a resize or resume redraws
-/// everything. `view` hands the screen to the pager until `q`. Ends on
-/// `quit`, Ctrl+D, an exit signal or a closed terminal; Crystal's own
-/// clipboard is wiped on the way out.
-fn run_shell(
-    terminal: &mut term::TerminalGuard,
-    signals: &term::Signals,
-    shell: &mut shell::Shell,
-    notes: &notes::Notes,
-) -> Result<(), Box<dyn Error>> {
-    let mut clipboard = ui::clipboard::Clipboard::default();
-    let result = shell_loop(terminal, signals, shell, notes, &mut clipboard);
-    clipboard.wipe();
-    result
-}
-
-fn shell_loop(
-    terminal: &mut term::TerminalGuard,
-    signals: &term::Signals,
-    shell: &mut shell::Shell,
-    notes: &notes::Notes,
-    clipboard: &mut ui::clipboard::Clipboard,
-) -> Result<(), Box<dyn Error>> {
-    let mut screen = ui::screen::Screen::new(terminal.size()?);
-    let mut decoder = shell::keys::Decoder::new();
-    let mut input = zeroize::Zeroizing::new([0u8; 256]);
-    let mut keys = Vec::new();
-    let mut pager: Option<pager::Pager> = None;
-    loop {
-        screen.frame(terminal.output(), |grid| match &mut pager {
-            Some(pager) => pager.draw(grid, notes),
-            None => shell.draw(grid),
-        })?;
-        match terminal.wait(signals, &mut input[..], None)? {
-            term::Event::Exit => return Ok(()),
-            term::Event::Redraw | term::Event::Resumed => screen.redraw_all(terminal.size()?),
-            term::Event::Timeout => {}
-            term::Event::Keys(n) => {
-                decoder.feed(&input[..n], &mut keys);
-                for key in keys.drain(..) {
-                    if let Some(open) = &mut pager {
-                        match open.key(key, notes) {
-                            pager::PagerAction::Stay => {}
-                            pager::PagerAction::Close => pager = None,
-                            pager::PagerAction::Copy(note) => {
-                                clipboard.set(notes.note(note).body.as_str());
-                                open.tell("Copied inside Crystal; it never leaves it.");
-                            }
-                        }
-                        continue;
-                    }
-                    match shell.key(key) {
-                        shell::Action::Nothing => {}
-                        shell::Action::Quit => return Ok(()),
-                        shell::Action::Command(words) => {
-                            if let Some(note) = commands::run(notes, &words, shell) {
-                                pager = Some(pager::Pager::open(note));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 const PROMPT: &str = "Passphrase: ";

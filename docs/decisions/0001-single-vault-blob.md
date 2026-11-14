@@ -1,7 +1,9 @@
 # 0001 One encrypted vault blob
 
 - **Date:** 2026-10-11
-- **Status:** Accepted
+- **Status:** Accepted; the per-note merge of sync conflicts is dropped
+  by [0045](0045-simple-editor.md): a conflict copy is refused, and the
+  user keeps one version
 
 ## Context
 

@@ -120,13 +120,21 @@ impl NameKey {
     }
 }
 
+/// Allocated at its exact size first: lowercasing can make a name longer
+/// (`İ`, 2 bytes, becomes `i̇`, 3), and a `String` that grew would leave
+/// an unwiped copy of the name behind.
 pub fn unique_key(folder: &str, title: &str) -> NameKey {
-    let mut key = Zeroizing::new(String::with_capacity(folder.len() + 1 + title.len()));
-    for part in [folder, "/", title] {
-        for c in part.chars().flat_map(char::to_lowercase) {
-            key.push(c);
-        }
-    }
+    let lowered = || {
+        [folder, "/", title]
+            .into_iter()
+            .flat_map(str::chars)
+            .flat_map(char::to_lowercase)
+    };
+    let len = lowered().map(char::len_utf8).sum();
+    let mut key = Zeroizing::new(String::with_capacity(len));
+    let buffer = key.as_ptr();
+    key.extend(lowered());
+    debug_assert_eq!(key.as_ptr(), buffer, "the key grew");
     NameKey(KeyText(key))
 }
 
@@ -134,6 +142,15 @@ pub fn unique_key(folder: &str, title: &str) -> NameKey {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Lowercasing can lengthen a name; the key is still sized once (the
+    /// debug assertion in `unique_key` checks it never moved).
+    #[test]
+    fn unique_key_lowercases_names_that_grow() {
+        let key = unique_key("İstanbul", "ΣΑΣ");
+        assert_eq!(key.as_str(), "i\u{307}stanbul/σασ");
+        assert!(key.as_str().len() > "İstanbul/ΣΑΣ".len());
+    }
 
     #[test]
     fn good_titles_and_folders() {

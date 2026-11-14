@@ -154,9 +154,10 @@ impl TerminalGuard {
             .map_err(|e| TermError::Write(e.kind()))
     }
 
-    /// Ctrl+Z or SIGTSTP: restore the terminal, stop, and re-engage once
-    /// resumed. Phase 5: lock first (zeroize notes, forget the identity)
-    /// and ask for the passphrase again after resume.
+    /// SIGTSTP: restore the terminal, stop, and re-engage once resumed.
+    /// Ctrl+Z is a key, not a suspend (docs/decisions/0045-simple-editor.md).
+    /// Phase 5: lock first (zeroize notes, forget the identity) and ask for
+    /// the passphrase again after resume.
     fn suspend(&mut self) -> Result<(), TermError> {
         restore_terminal();
         // SIGSTOP cannot be caught. kill() on ourselves returns only after
@@ -228,9 +229,6 @@ const RT_SIGNALS: RangeInclusive<i32> = 32..=64;
 /// handlers for them with EINVAL (musl: 32 to 34; glibc: 32 and 33). Those
 /// stay uncatchable, like SIGKILL; any other failure is an error.
 const LIBC_RESERVED_MAX: i32 = 34;
-
-/// Ctrl+Z arrives as this byte in raw mode instead of as SIGTSTP.
-const CTRL_Z: u8 = 0x1a;
 
 /// Self-pipes for signals: one for exit, one for suspend (SIGTSTP), one
 /// for resize (SIGWINCH). Each handler only writes one byte to its pipe
@@ -317,8 +315,8 @@ const FALLBACK_SIZE: (u16, u16) = (80, 24);
 impl TerminalGuard {
     /// Waits for keys, a resize, a suspend or an exit signal. Exit wins
     /// over suspend, suspend over resize, resize over keys. Suspend
-    /// (SIGTSTP, or Ctrl+Z among the keys, which are then discarded) is
-    /// handled here and reported as `Redraw`, since resuming re-enters a
+    /// (SIGTSTP; raw mode makes Ctrl+Z an ordinary key, the editor's undo)
+    /// is handled here and reported as `Redraw`, since resuming re-enters a
     /// cleared alternate screen. Phase 5: lock before suspending.
     ///
     /// `timeout` bounds the wait (`None`: wait for an event); auto-lock
@@ -372,14 +370,6 @@ impl TerminalGuard {
                 }
                 Err(e) => return Err(TermError::Read(e.kind())),
             };
-            // The whole read is dropped: keys typed in the same burst as
-            // Ctrl+Z are lost, and a paste holding the byte 0x1a suspends
-            // too. Accepted: rare, and simpler than splitting a read.
-            if keys[..n].contains(&CTRL_Z) {
-                keys[..n].zeroize();
-                self.suspend()?;
-                return Ok(Event::Resumed);
-            }
             return Ok(Event::Keys(n));
         }
     }

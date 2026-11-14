@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status (2026-11-09)
+## Status (2026-11-12)
 
 | Phase | State |
 | --- | --- |
@@ -9,14 +9,33 @@
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
-| 4 to 8 | Not started; Phase 7 dropped (decision 0036) |
+| 4 Editor | Done (E0 to E7), apart from one acceptance check: the editor (decision 0045), `edit`, `new`, `mv` with link rewriting, `rm`, saving. kill -9 during saves passes; the strace check runs in CI only and counts once CI has passed it |
+| 5 to 8 | Not started; Phase 7 dropped (decision 0036) |
 
 What runs today: `crystal init NAME` creates a vault in
 `~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
 with the recovery code, `crystal check-code NAME` checks the code,
 `crystal rm NAME` deletes a vault, and `crystal NAME` unlocks the vault
-into the Crystal shell, which so far knows `ls`, `tags`, `find`, `search`,
-`view`, `links`, `help`, `clear` and `quit`.
+into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
+`view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear` and `quit`.
+`edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
+rendered, Ctrl+Q closes).
+
+## Steps E0 to E7 (Phase 4, the editor)
+
+Approved 2026-11-10. Each step ends in a commit with passing checks and is
+approved before it starts.
+
+| Step | What | Why |
+| --- | --- | --- |
+| E0 (done) | Decision 0045 (a simple modeless editor; replaces 0041's automatic copy), this plan, the chapters | Fix the keys and the memory rules before more editor code |
+| E1 (done) | `editor::buffer`: zeroizing text buffer grown by hand (copy, wipe the old one), freed bytes overwritten, capped at 8 MiB; grapheme steps; the undo log (200 steps). Pastes keep their line breaks; the shell flattens them | Every later step edits through it; property tests that undo restores the text exactly and grapheme steps land on boundaries |
+| E2 (done) | Keys: Shift + arrows, Home and End; pastes up to 8 MiB with a notice when cut (the shell too); Ctrl+Z becomes a key and keyboard suspend goes (`SIGTSTP` still suspends); syscalls.md and the as-built notes | The editor's keys reach it; less special-casing in `term.rs` |
+| E3 (done) | `editor::Editor`: the 0045 keys as a terminal-free state machine, like the pager | Tested key by key |
+| E4 (done) | The editor's view (soft wrap, tabs, hidden characters spelled out, status line) and Ctrl+E to the viewer and back, previewing unsaved text | Drawing on the grid; property tests that no cell holds a forbidden character and the cursor stays on screen |
+| E5 (done) | Saving: the session holds the notes and the recipient (the identity is wiped after unlock); `VERSION` before the first format-2 `vault.age`, generation, counter, indexes; a save over a `vault.age` changed on disk is refused; `edit NAME`, `new NAME`; the acceptance tests (strace, kill -9 during saves) | A usable editor that never writes plaintext and never leaves a broken vault |
+| E6 (done) | `mv OLD NEW` rewriting `[[links]]` (keeping `\|shown text` and `#fragment`); `rm NAME`, confirmed with `y`, final | The remaining note commands of 0033 |
+| E7 (done) | Phase 4 acceptance, the book finished, status updated | Ends Phase 4 |
 
 ## Steps C1 to C3 (done, before Phase 4)
 
@@ -59,7 +78,7 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: round-trip property tests; tamper suite refuses swapped, truncated and bit-flipped vaults; an older vault needs `restore`.
 4. **Phase 3: Shell and viewer.** Own screen grid (decision 0031), the Crystal shell (decision 0033), vault format 2 (decision 0034), renderer and sanitizer, the pager with Obsidian links and backlinks, full-text search, Crystal's own clipboard (decision 0041), completion. Steps above.
    - Accept: the escape-injection corpus renders as inert text; the renderer and sanitizer property tests run clean for a million cases each; no note text reaches the terminal's scrollback, stdout or disk. The shell's `lock` command moves to Phase 5, with auto-lock.
-5. **Phase 4: Editor.** To be decided when the phase starts (requested 2026-11-08): Helix-like navigation keys instead of the nano-like scheme below, and every selection copied automatically into the internal clipboard (never the system one). A small editor on the grid (nano-like: arrows, Home/End, PgUp/PgDn, selection with Shift, internal and system copy, paste, simple undo; about 650 lines), `edit`, `new`, `mv` (rewriting links), `rm` (confirmed, final), save (writing `VERSION` before the first format-2 `vault.age`, decision 0034), Syncthing conflict detection with per-note merge (newest wins per note; the other version kept as a note named "… (conflict)").
+5. **Phase 4: Editor** (done; the strace check runs in CI). A simple modeless editor on the grid ([decision 0045](../decisions/0045-simple-editor.md)): arrows, Home/End, PgUp/PgDn, selection with Shift, Ctrl+C/X/V with Crystal's own clipboard (the system clipboard is the terminal's Ctrl+Shift+C/V), Ctrl+Z/Y undo and redo, Ctrl+S save, Ctrl+E to the viewer and back, Ctrl+Q close; about 850 lines. Then `edit`, `new`, `mv` (rewriting links), `rm` (confirmed, final), save (writing `VERSION` before the first format-2 `vault.age`, decision 0034), Syncthing conflicts detected, never merged: a conflict copy is refused at unlock and a save over a changed `vault.age` is refused (decision 0045). Steps E0 to E7 above.
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock and the shell's `lock` command, lock on signals, settings in `~/.config/crystal` (read-only plain text; decision 0032).
    - Accept: the canary scan finds no plaintext after lock.

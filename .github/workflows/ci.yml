@@ -36,6 +36,15 @@ jobs:
       # Raise this shell's memlock limit to exactly the floor Crystal
       # requires (harden::MEMLOCK_FLOOR, docs/guide/setup.md), so the test locks
       # memory for real instead of only checking the refusal path.
+      # Crystal is non-dumpable, so strace reads the paths and bytes it
+      # writes only with CAP_SYS_PTRACE. Crystal itself gets no capability
+      # (file capabilities are not passed on across exec).
+      - name: Install strace
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes strace
+          sudo setcap cap_sys_ptrace+ep "$(readlink -f "$(command -v strace)")"
+
       - name: Test
         run: |
           sudo prlimit --pid $$ --memlock=536870912:536870912
@@ -53,6 +62,10 @@ jobs:
             fi
           done
           cargo test --locked
+          # Phase 4 acceptance: strace shows only ciphertext written inside
+          # the vault. Ignored in a plain run, since it needs strace with
+          # CAP_SYS_PTRACE (installed above).
+          cargo test --locked --test vault strace -- --ignored
           # The release binary too, at the same memlock floor: an optimized
           # build stretches passphrases far harder (scrypt), and only this
           # run shows whether that fits in locked memory

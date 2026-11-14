@@ -60,9 +60,10 @@ pub struct RunArgs {
     /// which need no vault. Not in release builds.
     #[cfg(debug_assertions)]
     pub skip_unlock_for_test: bool,
-    /// Debug builds only: after unlock, add a few notes in memory (never
-    /// saved), so the shell, pager and clipboards can be tested through
-    /// the binary before the editor exists. Not in release builds.
+    /// Debug builds only: after unlock, add a few notes in memory, so the
+    /// shell, pager and clipboard can be tested through the binary on
+    /// fixed notes, a hostile one among them. They are never saved: the
+    /// session refuses every save. Not in release builds.
     #[cfg(debug_assertions)]
     pub demo_notes_for_test: bool,
 }

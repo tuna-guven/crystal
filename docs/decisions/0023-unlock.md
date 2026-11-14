@@ -3,7 +3,8 @@
 - **Date:** 2026-11-06 (#15)
 - **Status:** Accepted; the config steps are superseded by
   [0032](0032-fixed-locations.md) (no config, a pin in the state
-  directory)
+  directory); the per-note merge of step 4 is dropped by
+  [0045](0045-simple-editor.md): the refusal stays
 
 ## Context
 

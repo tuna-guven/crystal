@@ -8,11 +8,6 @@
 //! docs/decisions/0019-generation-counters.md). A malformed file fails
 //! closed: Crystal never resets a counter it cannot read.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "unlock and save (#15, Phase 4)")
-)]
-
 use std::fmt;
 use std::os::fd::OwnedFd;
 

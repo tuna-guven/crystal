@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2f8fd070bf28906a58ded9d26f38229a82c5dc47a253833f283bac2bbc8bf895 # shrinks to text = "\r", moves = [2], width = 2, height = 3
+cc 7e8106f4f10cf56a302734d1fa91c1c940e56f7ba79f29d3e11f2d8f7275276f # shrinks to text = "\t\u{301}", moves = [1, 1], width = 2, height = 3
+cc 32632d441488d6449252c1d7d1d9d55e2245bf094d27d6436957087f3a0b6176 # shrinks to text = "\n😀a\u{200b}\r\n\u{200b}😀日", moves = [0, 4, 1, 5, 1, 5, 2], width = 2, height = 4
+cc 4fd00bcec03e299b80b62f1fd6eb54123c0d228fc05c42dbf705d42842ce89c1 # shrinks to text = "\r\n", moves = [4, 3, 3, 5, 2], width = 2, height = 3
+cc b1d738f054788482394616b35bf287f72257624a59402cb6af8514d45b14c12e # shrinks to text = "\r\na\n", moves = [4, 0, 2, 3], width = 2, height = 3

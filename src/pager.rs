@@ -6,7 +6,13 @@
 //! follows one (to a note, a heading or a `^block`), Backspace goes back. b
 //! lists the notes linking here. y copies the note into Crystal's own
 //! clipboard (docs/decisions/0041-internal-clipboard-only.md). q or Esc
-//! returns to the shell.
+//! returns to the shell. Ctrl+E asks to edit the note shown
+//! (docs/decisions/0045-simple-editor.md).
+//!
+//! From the editor, Ctrl+E opens a preview: the editor's current text,
+//! unsaved changes included, rendered in place of the saved note and
+//! marked "preview" on the top row. Notes reached by following a link
+//! show their saved text. Links resolve against the saved notes.
 //!
 //! Like the shell, it is terminal-free: keys in, frames out. A page is
 //! rendered for the current width and again after a resize.
@@ -18,13 +24,14 @@ use crate::notes::{Fragment, Notes};
 use crate::shell::keys::Key;
 use crate::ui::grid::{Color, Grid, Mods, Style};
 use crate::ui::layout::Rect;
+use crate::ui::widgets::status_line;
 
 const TITLE: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::BOLD));
 const HINT: Style = Style::PLAIN.mods(Mods::DIM);
 const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
 const HINTS: &str = "q back to shell · j/k scroll · Tab links · Enter follow · Backspace \
-                     previous · b backlinks · y copy";
+                     previous · b backlinks · y copy · Ctrl+E edit";
 
 /// After a key: stay, or go back to the shell.
 #[derive(Debug, PartialEq, Eq)]
@@ -33,6 +40,8 @@ pub enum PagerAction {
     Close,
     /// Copy this note into Crystal's own clipboard.
     Copy(usize),
+    /// Ctrl+E: edit this note (or go back to the editor it previews).
+    Edit(usize),
 }
 
 /// Where to scroll once the page is rendered.
@@ -60,6 +69,8 @@ pub struct Pager {
     jump: Option<Jump>,
     backlinks: Option<Backlinks>,
     notice: Option<&'static str>,
+    /// The note whose text comes from the editor, not from the vault.
+    preview: Option<usize>,
 }
 
 impl Pager {
@@ -75,6 +86,16 @@ impl Pager {
             jump: None,
             backlinks: None,
             notice: None,
+            preview: None,
+        }
+    }
+
+    /// From the editor: shows `note` with the text `draw` is given, the
+    /// editor's, instead of the saved one.
+    pub fn preview(note: usize) -> Self {
+        Self {
+            preview: Some(note),
+            ..Self::open(note)
         }
     }
 
@@ -87,6 +108,7 @@ impl Pager {
     }
 
     pub fn key(&mut self, key: Key, notes: &Notes) -> PagerAction {
+        let key = key.without_shift();
         self.notice = None;
         if let Some(list) = &mut self.backlinks {
             match key {
@@ -109,6 +131,7 @@ impl Pager {
         match key {
             Key::Char('q') | Key::Esc => return PagerAction::Close,
             Key::Char('y') => return PagerAction::Copy(self.note),
+            Key::Ctrl('e') => return PagerAction::Edit(self.note),
             Key::Char('j') | Key::Down => self.scroll_to(self.scroll + 1),
             Key::Char('k') | Key::Up => self.scroll_to(self.scroll.saturating_sub(1)),
             Key::Char(' ') | Key::PageDown => self.scroll_to(self.scroll + page),
@@ -214,18 +237,21 @@ impl Pager {
     }
 
     /// The title row, the note, the key line.
-    pub fn draw(&mut self, grid: &mut Grid, notes: &Notes) {
+    /// Draws the pager. `editor_text` is the editor's current text while
+    /// this pager previews it, else `None`.
+    pub fn draw(&mut self, grid: &mut Grid, notes: &Notes, editor_text: Option<&str>) {
         let area = grid.area();
         let (top, rest) = area.split_top(1);
         let (body, bottom) = rest.split_bottom(1);
         self.rows = usize::from(body.height).max(1);
+        let previewing = self.preview == Some(self.note) && editor_text.is_some();
         if self.page.is_none() || self.width != body.width {
             let note = notes.note(self.note);
-            self.page = Some(render(
-                note.body.as_str(),
-                kind_of(note.title.as_str()),
-                body.width,
-            ));
+            let text = match editor_text {
+                Some(text) if previewing => text,
+                _ => note.body.as_str(),
+            };
+            self.page = Some(render(text, kind_of(note.title.as_str()), body.width));
             self.width = body.width;
             self.selected = None;
         }
@@ -242,13 +268,9 @@ impl Pager {
         self.scroll = self.scroll.min(self.max_scroll());
 
         grid.fill(top, TITLE);
-        grid.put_str(
-            top.x + 1,
-            top.y,
-            notes.name(self.note),
-            TITLE,
-            top.width.saturating_sub(2),
-        );
+        let marker = if previewing { "preview " } else { "" };
+        let title = Rect::new(top.x + 1, top.y, top.width.saturating_sub(1), 1);
+        status_line(grid, title, notes.name(self.note), marker, TITLE);
         if let Some(list) = &self.backlinks {
             grid.put_str(
                 body.x,
@@ -309,7 +331,7 @@ mod tests {
 
     fn rows(pager: &mut Pager, notes: &Notes, width: u16, height: u16) -> Vec<String> {
         let mut grid = Grid::new(width, height);
-        pager.draw(&mut grid, notes);
+        pager.draw(&mut grid, notes, None);
         (0..height)
             .map(|y| {
                 (0..width)
@@ -329,6 +351,36 @@ mod tests {
         assert_eq!(shown[0], " home");
         assert_eq!(shown[1], "Start at b or b#Second or b#^k.");
         assert!(shown[5].starts_with("q back to shell"));
+    }
+
+    /// From the editor: its text, unsaved, in place of the saved note, and
+    /// only for that note; Ctrl+E goes back to editing.
+    #[test]
+    fn preview_shows_the_editors_text_for_its_note_only() {
+        let n = sample();
+        let draft = "# Draft\n\nNot saved yet, see [[c]].";
+        let mut grid = Grid::new(60, 8);
+        let mut p = Pager::preview(0);
+        p.draw(&mut grid, &n, Some(draft));
+        let shown = |grid: &Grid, y| -> String {
+            (0..60).map(|x| grid.cell(x, y).unwrap().symbol()).collect()
+        };
+        assert!(shown(&grid, 0).starts_with(" home"));
+        assert!(shown(&grid, 0).trim_end().ends_with("preview"));
+        assert!((1..7).any(|y| shown(&grid, y).contains("Not saved yet")));
+        // A followed link shows the saved note, not the draft.
+        p.key(Key::Tab, &n);
+        p.key(Key::Enter, &n);
+        p.draw(&mut grid, &n, Some(draft));
+        assert!(shown(&grid, 0).starts_with(" c"));
+        assert!(!shown(&grid, 0).contains("preview"));
+        assert!((1..7).any(|y| shown(&grid, y).contains("Back to home")));
+        assert_eq!(p.key(Key::Ctrl('e'), &n), PagerAction::Edit(2));
+        // A plain `view` ignores any text it is handed.
+        let mut p = Pager::open(0);
+        p.draw(&mut grid, &n, Some(draft));
+        assert!(!(1..7).any(|y| shown(&grid, y).contains("Not saved yet")));
+        assert_eq!(p.key(Key::Ctrl('e'), &n), PagerAction::Edit(0));
     }
 
     #[test]

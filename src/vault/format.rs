@@ -17,8 +17,7 @@ use super::atomic::{FileName, Payload, PublicBytes, WriteError, atomic_write};
 use super::codec::{self, CodecError, FORMAT, OLDEST_FORMAT, VaultContents};
 use super::padme::{self, PadError};
 use super::public_file::{ReadError, parse_decimal_line, read_bounded};
-use crate::age_v1::x25519;
-use crate::crypto::{self, Ciphertext, CryptoError, VaultIdentity};
+use crate::crypto::{self, Ciphertext, CryptoError, VaultIdentity, VaultRecipient};
 
 /// Why sealing or opening `vault.age` failed. Each part holds only a fixed
 /// variant, never content.
@@ -45,12 +44,11 @@ impl std::error::Error for VaultError {}
 /// plaintext stage lives in a zeroizing buffer of exact size.
 pub fn seal(
     contents: &VaultContents,
-    recipient: &x25519::Recipient,
+    recipient: &VaultRecipient,
 ) -> Result<Ciphertext, VaultError> {
     let encoded = codec::encode(contents).map_err(VaultError::Codec)?;
     let padded = padme::pad(&encoded).map_err(VaultError::Padding)?;
-    crypto::encrypt_to_recipients(&padded, std::slice::from_ref(recipient))
-        .map_err(VaultError::Crypto)
+    recipient.encrypt(&padded).map_err(VaultError::Crypto)
 }
 
 /// The vault back from `vault.age`: decrypt, unpad, decode. age
@@ -217,7 +215,7 @@ mod tests {
                     })
                     .collect(),
             };
-            let sealed = seal(&contents, &identity.recipient()).unwrap();
+            let sealed = seal(&contents, &identity.vault_recipient()).unwrap();
             let back = open(sealed.as_bytes(), &identity, FORMAT).unwrap();
             prop_assert_eq!(back.vault_id, contents.vault_id);
             prop_assert_eq!(back.generation, generation);
@@ -232,7 +230,11 @@ mod tests {
     #[test]
     fn open_refuses_other_keys_and_tampering() {
         let identity = VaultIdentity::generate().unwrap();
-        let sealed = seal(&vault(&[(1, "T", "secret body")]), &identity.recipient()).unwrap();
+        let sealed = seal(
+            &vault(&[(1, "T", "secret body")]),
+            &identity.vault_recipient(),
+        )
+        .unwrap();
         let other = VaultIdentity::generate().unwrap();
         let err = open(sealed.as_bytes(), &other, FORMAT).err();
         assert_eq!(err, Some(VaultError::Crypto(CryptoError::NotForThisKey)));
@@ -251,7 +253,11 @@ mod tests {
     #[test]
     fn seal_refuses_invalid_contents() {
         let identity = VaultIdentity::generate().unwrap();
-        let err = seal(&vault(&[(1, "a", ""), (1, "b", "")]), &identity.recipient()).err();
+        let err = seal(
+            &vault(&[(1, "a", ""), (1, "b", "")]),
+            &identity.vault_recipient(),
+        )
+        .err();
         assert_eq!(err, Some(VaultError::Codec(CodecError::DuplicateId)));
     }
 
@@ -271,8 +277,8 @@ mod tests {
     fn sealed_size_hides_small_differences() {
         let identity = VaultIdentity::generate().unwrap();
         let body = "x".repeat(5000);
-        let a = seal(&vault(&[(1, "T", &body)]), &identity.recipient()).unwrap();
-        let b = seal(&vault(&[(1, "Title", &body)]), &identity.recipient()).unwrap();
+        let a = seal(&vault(&[(1, "T", &body)]), &identity.vault_recipient()).unwrap();
+        let b = seal(&vault(&[(1, "Title", &body)]), &identity.vault_recipient()).unwrap();
         assert_eq!(payload(a.as_bytes()).len(), payload(b.as_bytes()).len());
         // 5120-byte Padmé frame: 16-byte nonce, one chunk plus its 16-byte tag.
         assert_eq!(payload(a.as_bytes()).len(), 16 + 5120 + 16);
@@ -369,7 +375,7 @@ mod tests {
         let identity = VaultIdentity::generate().unwrap();
         let sealed = seal(
             &vault(&[(1, "Title", "secret body")]),
-            &identity.recipient(),
+            &identity.vault_recipient(),
         )
         .unwrap();
         let err = open(&sealed.as_bytes()[..40], &identity, FORMAT)

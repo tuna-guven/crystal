@@ -44,7 +44,8 @@ impl Line {
     }
 
     /// Inserts `s` at the cursor, as much of it as fits (whole characters).
-    pub fn insert(&mut self, s: &str) {
+    /// Returns false when some of it did not fit.
+    pub fn insert(&mut self, s: &str) -> bool {
         let room = MAX_LINE - self.text.len();
         let mut end = s.len().min(room);
         while !s.is_char_boundary(end) {
@@ -52,6 +53,7 @@ impl Line {
         }
         self.text.insert_str(self.cursor, &s[..end]);
         self.cursor += end;
+        end == s.len()
     }
 
     /// The grapheme boundary before the cursor.

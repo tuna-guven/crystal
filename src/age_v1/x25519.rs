@@ -21,7 +21,7 @@ use std::fmt;
 
 use subtle::ConstantTimeEq;
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::header::Stanza;
 use super::primitives::{TAG_LEN, aead_decrypt, aead_encrypt, hkdf};
@@ -139,6 +139,15 @@ impl Identity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Recipient(PublicKey);
 
+/// For `crypto::VaultRecipient`, which wipes the vault's recipient on drop
+/// (docs/decisions/0044-vault-recipient-private.md). `PublicKey` derives
+/// `Zeroize` but does not wipe itself.
+impl Zeroize for Recipient {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl Recipient {
     /// Parses `age1…` (either case, not mixed). Test builds only: the
     /// program derives its one recipient from the vault identity and never
@@ -192,6 +201,15 @@ mod tests {
     const TEST_SK: &str =
         "AGE-SECRET-KEY-1GQ9778VQXMMJVE8SK7J6VT8UJ4HDQAJUVSFCWCM02D8GEWQ72PVQ2Y5J33";
     const TEST_PK: &str = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa";
+
+    /// What `VaultRecipient`'s Drop calls: every key byte becomes zero.
+    #[test]
+    fn zeroize_wipes_the_recipient() {
+        let mut recipient = Recipient::parse(TEST_PK).unwrap();
+        assert_ne!(recipient.0.as_bytes(), &[0; 32]);
+        recipient.zeroize();
+        assert_eq!(recipient.0.as_bytes(), &[0; 32]);
+    }
 
     // Ported: pubkey_encoding.
     #[test]

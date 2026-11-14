@@ -8,7 +8,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 | Display width | `unicode-width` =0.2.3 (no default features, so no `cjk` tables) | Columns a grapheme takes; no dependencies, `forbid(unsafe_code)` (decision 0031) |
 | Grapheme clusters | `unicode-segmentation` =1.13.3 | A character with its combining marks, or an emoji sequence, fills one cell; no dependencies (decision 0031) |
 | Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions/0031-own-grid.md)) |
-| Editor widget | Crystal's own | Phase 4, on the grid; `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
+| Editor widget | Crystal's own | Phase 4, on the grid, modeless (decision 0045); `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
 | Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
 | Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and files the `age` crate wrote ([decisions 0042](../decisions/0042-own-age-implementation.md) and [0043](../decisions/0043-age-checked-against-stored-files.md)). Since step C2 the program encrypts only through it; since step C3 the `age` crate is not in the tree at all |
 | AEAD | `chacha20poly1305` =0.10.1 (no default features, `alloc`) | Stanza key wrapping and STREAM chunks; no `getrandom` feature, randomness comes from rustix (decision 0042) |
@@ -46,13 +46,13 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Vault format | Build | 600 lines | Defines integrity, rollback and metadata hiding |
 | Atomic writer | Build | 80 lines | Ciphertext-only, temp + fsync + rename + dir fsync |
 | Markdown renderer | Build | 450 lines | `md::render`: a small subset as styled, wrapped lines over the sanitized text, plain text for `*.txt`; one pass, no recursion, lines kept flat ([decision 0038](../decisions/0038-plain-text-notes.md)) |
-| Sanitizer | Build | 80 lines | Spells out C0, C1 (ESC, CSI) and BiDi controls as dimmed `<U+XXXX>` in every rendered span; only its `SafeText` reaches a widget ([decision 0037](../decisions/0037-visible-escapes.md)) |
+| Sanitizer | Build | 90 lines | Spells out C0, C1 (ESC, CSI) and BiDi controls, and every grapheme that hides an invisible character ([decision 0046](../decisions/0046-invisible-characters-spelled-out.md)), as dimmed `<U+XXXX>` in every rendered span; only its `SafeText` reaches a widget ([decision 0037](../decisions/0037-visible-escapes.md)) |
 | Wikilink and backlink index | Build | 200 lines | Simple map over titles, rebuilt on unlock |
 | `find` and `search` | Build | 150 lines | Subsequence scorer over names, case-insensitive full-text search ([decision 0033](../decisions/0033-shell.md)) |
 | Terminal guard | Build | 120 lines | Alt screen, raw mode, clear on exit, panic hook, signals |
 | Hardening bootstrap | Build | 150 lines | prctl, rlimits, mlockall, env scrub, tty checks |
 | Passphrase prompt | Build | 60 lines | Reads from /dev/tty in raw mode into zeroizing memory |
 | Zeroizing allocator | Build | 40 lines | GlobalAlloc wrapper that zeroes on free and on realloc |
-| Editor | Build | 800 lines | On the grid, in zeroizing memory; `tui-textarea` needs ratatui and crossterm (decision 0031) |
+| Editor | Build | 850 lines | On the grid, in zeroizing memory, modeless (decision 0045); `tui-textarea` needs ratatui and crossterm (decision 0031) |
 
 The zeroizing allocator is the key trick for Rust. `String` and `Vec` growth reallocates and leaves old copies in freed heap where `zeroize` cannot reach them. A global allocator that zeroes every block before freeing it closes that gap for the whole program, including inside `pulldown-cmark`. The cost is negligible for a notes app.

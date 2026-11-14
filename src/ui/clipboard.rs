@@ -1,6 +1,7 @@
 //! Crystal's own clipboard (docs/decisions/0041-internal-clipboard-only.md):
 //! `y` in the pager copies the note into zeroizing memory that never
-//! leaves Crystal; the editor pastes from it (Phase 4). It is wiped on
+//! leaves Crystal; the editor's Ctrl+C and Ctrl+X copy into it and Ctrl+V
+//! pastes from it (docs/decisions/0045-simple-editor.md). It is wiped on
 //! quit, and on lock once that exists (Phase 5).
 //!
 //! Crystal never writes to the system clipboard: copying to other
@@ -20,10 +21,6 @@ impl Clipboard {
         self.text = Some(Zeroizing::new(text.to_owned()));
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the editor pastes from it (Phase 4)")
-    )]
     pub fn get(&self) -> Option<&str> {
         self.text.as_deref().map(String::as_str)
     }

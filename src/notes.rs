@@ -12,6 +12,7 @@
 //! Plain text notes (`*.txt`, decision 0038) contribute names only.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use zeroize::Zeroizing;
@@ -96,19 +97,43 @@ pub enum Found {
     Ambiguous(Vec<usize>),
 }
 
+/// A rename not yet saved, for `find_as`: `note` will have the full name
+/// `name` and the title `title` (both as `unique_key`s). No Debug: the
+/// keys are note names.
+struct Moved {
+    note: usize,
+    name: NameKey,
+    title: NameKey,
+}
+
 impl Notes {
     pub fn new(contents: VaultContents) -> Self {
-        let count = contents.notes.len();
         let mut notes = Self {
-            names: Vec::with_capacity(count),
-            by_name: HashMap::with_capacity(count),
-            by_title: HashMap::with_capacity(count),
+            names: Vec::new(),
+            by_name: HashMap::new(),
+            by_title: HashMap::new(),
             tags: HashMap::new(),
-            links: Vec::with_capacity(count),
-            headings: Vec::with_capacity(count),
-            blocks: Vec::with_capacity(count),
+            links: Vec::new(),
+            headings: Vec::new(),
+            blocks: Vec::new(),
             contents,
         };
+        notes.reindex();
+        notes
+    }
+
+    /// Builds the indexes from `contents` again, after a save changed the
+    /// notes. The old entries are dropped, which wipes them.
+    pub fn reindex(&mut self) {
+        let count = self.contents.notes.len();
+        self.names = Vec::with_capacity(count);
+        self.by_name = HashMap::with_capacity(count);
+        self.by_title = HashMap::with_capacity(count);
+        self.tags = HashMap::new();
+        self.links = Vec::with_capacity(count);
+        self.headings = Vec::with_capacity(count);
+        self.blocks = Vec::with_capacity(count);
+        let notes = self;
         for index in 0..count {
             let note = &notes.contents.notes[index];
             notes.names.push(full_name(note));
@@ -145,7 +170,6 @@ impl Notes {
             }
             notes.links.push(links);
         }
-        notes
     }
 
     pub fn len(&self) -> usize {
@@ -165,28 +189,154 @@ impl Notes {
     /// Obsidian, `name.md` also finds the note `name` (a note really
     /// titled `name.md` comes first).
     pub fn find(&self, name: &str) -> Found {
-        match self.find_exact(name) {
+        self.find_as(name, None)
+    }
+
+    /// `find`, or with `after`, what `find` will answer once that move is
+    /// saved: one set of rules for both, so `relinked` cannot disagree
+    /// with the resolver.
+    fn find_as(&self, name: &str, after: Option<&Moved>) -> Found {
+        match self.find_exact(name, after) {
             Found::None => name
                 .len()
                 .checked_sub(3)
                 .filter(|&at| name.is_char_boundary(at) && name[at..].eq_ignore_ascii_case(".md"))
-                .map_or(Found::None, |at| self.find_exact(&name[..at])),
+                .map_or(Found::None, |at| self.find_exact(&name[..at], after)),
             found => found,
         }
     }
 
-    fn find_exact(&self, name: &str) -> Found {
+    /// For `mv` (docs/decisions/0034-vault-format-2.md, "Renames rewrite
+    /// links"): the new text of every note whose `[[links]]` must change
+    /// when `moved` becomes `folder/title`, so each link leads where it did.
+    /// For `new`, `moved` is `len()`, the index the new note gets: no link
+    /// leads there yet, so only links the new name would capture or make
+    /// ambiguous change.
+    ///
+    /// Every link that leads to one note now is resolved again as it will
+    /// be after the move (`find_as`). If it would then lead elsewhere, or
+    /// nowhere, or become ambiguous, it is rewritten: a link to `moved` to
+    /// its new title, or its full name when another note has that title
+    /// too; a link to another note to that note's full name. That covers a
+    /// bare title the new title makes ambiguous, and a name the new one
+    /// captures (`[[plan.md]]` led to `plan` by dropping `.md`, and would
+    /// lead to a note renamed `plan.md`; found by review).
+    ///
+    /// `|shown text` and `#fragment` stay. Broken and ambiguous links,
+    /// `[[#heading]]` links within a note, code and plain text notes are
+    /// not touched. Nothing is changed here; the session saves the result.
+    pub fn relinked(
+        &self,
+        moved: usize,
+        folder: &str,
+        title: &str,
+    ) -> Vec<(usize, Zeroizing<String>)> {
+        let after = Moved {
+            note: moved,
+            name: unique_key(folder, title),
+            title: unique_key("", title),
+        };
+        // The notes that will share `moved`'s new title.
+        let sharing: Vec<usize> = self
+            .by_title
+            .get(&after.title)
+            .map(|list| list.iter().copied().filter(|&i| i != moved).collect())
+            .unwrap_or_default();
+        let moved_name = if sharing.is_empty() {
+            Zeroizing::new(title.to_owned())
+        } else {
+            let mut name = Zeroizing::new(String::with_capacity(folder.len() + 1 + title.len()));
+            if !folder.is_empty() {
+                name.push_str(folder);
+                name.push('/');
+            }
+            name.push_str(title);
+            name
+        };
+        let mut changed = Vec::new();
+        for (index, note) in self.contents.notes.iter().enumerate() {
+            if kind_of(note.title.as_str()) != Kind::Markdown {
+                continue;
+            }
+            let body = note.body.as_str();
+            let mut edits: Vec<(Range<usize>, &str)> = Vec::new();
+            for range in link_names(body) {
+                let name = &body[range.clone()];
+                let Found::One(to) = self.find(name) else {
+                    continue;
+                };
+                // Still leads there after the move: stays as written.
+                if matches!(self.find_as(name, Some(&after)), Found::One(now) if now == to) {
+                    continue;
+                }
+                let new_name = if to == moved {
+                    moved_name.as_str()
+                } else {
+                    self.names[to].as_str()
+                };
+                if new_name != name {
+                    edits.push((range, new_name));
+                }
+            }
+            if edits.is_empty() {
+                continue;
+            }
+            // Built at its final size, so it never reallocates.
+            let len = edits
+                .iter()
+                .fold(body.len(), |len, (r, new)| len - r.len() + new.len());
+            let mut text = Zeroizing::new(String::with_capacity(len));
+            let mut at = 0;
+            for (range, new_name) in edits {
+                text.push_str(&body[at..range.start]);
+                text.push_str(new_name);
+                at = range.end;
+            }
+            text.push_str(&body[at..]);
+            changed.push((index, text));
+        }
+        changed
+    }
+
+    /// Whether a note has exactly this folder and title, ignoring case (the
+    /// vault's uniqueness rule).
+    pub fn exists(&self, folder: &str, title: &str) -> bool {
+        self.by_name.contains_key(&unique_key(folder, title))
+    }
+
+    /// A full name, else a bare title. With `after`, the moved note is
+    /// found by its new name and title only.
+    fn find_exact(&self, name: &str, after: Option<&Moved>) -> Found {
+        let moved = after.map(|m| m.note);
         let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
-        if let Some(&index) = self.by_name.get(&unique_key(folder, title)) {
-            return Found::One(index);
+        let key = unique_key(folder, title);
+        if let Some(m) = after
+            && key == m.name
+        {
+            return Found::One(m.note);
+        }
+        match self.by_name.get(&key) {
+            Some(&index) if Some(index) != moved => return Found::One(index),
+            _ => {}
         }
         if name.contains('/') {
             return Found::None;
         }
-        match self.by_title.get(&unique_key("", name)) {
-            None => Found::None,
-            Some(list) if list.len() == 1 => Found::One(list[0]),
-            Some(list) => Found::Ambiguous(list.clone()),
+        let key = unique_key("", name);
+        let mut list: Vec<usize> = self
+            .by_title
+            .get(&key)
+            .map(|list| list.iter().copied().filter(|&i| Some(i) != moved).collect())
+            .unwrap_or_default();
+        if let Some(m) = after
+            && key == m.title
+        {
+            list.push(m.note);
+        }
+        match list[..] {
+            [] => Found::None,
+            [one] => Found::One(one),
+            _ => Found::Ambiguous(list),
         }
     }
 
@@ -336,11 +486,21 @@ fn scan(body: &str) -> Scan {
                 }
             }
             Event::Text(text) if !in_code => tags_in(&text, &mut tags),
-            Event::Start(Tag::Link {
-                link_type: LinkType::WikiLink { .. },
-                dest_url,
-                ..
-            }) => links.push(Zeroizing::new(dest_url.to_string())),
+            // An embed, `![[name]]`, is parsed as an image; as in Obsidian
+            // it is a link too (backlinks, `links`), shown as a plain link
+            // (docs/decisions/0034-vault-format-2.md).
+            Event::Start(
+                Tag::Link {
+                    link_type: LinkType::WikiLink { .. },
+                    dest_url,
+                    ..
+                }
+                | Tag::Image {
+                    link_type: LinkType::WikiLink { .. },
+                    dest_url,
+                    ..
+                },
+            ) => links.push(Zeroizing::new(dest_url.to_string())),
             _ => {}
         }
     }
@@ -354,6 +514,48 @@ fn scan(body: &str) -> Scan {
         headings,
         blocks,
     }
+}
+
+/// Where the note name of each `[[link]]` and `![[embed]]` in `body` is:
+/// the target before any `#fragment` and `|shown text`, as written. Found
+/// with the same parser as the indexes, so links inside code are not
+/// links; empty names
+/// (`[[#heading]]`) are left out.
+fn link_names(body: &str) -> Vec<Range<usize>> {
+    let options = Options::ENABLE_WIKILINKS | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    let mut names = Vec::new();
+    for (event, range) in Parser::new_ext(body, options).into_offset_iter() {
+        // An embed, `![[name]]`, is parsed as an image; it names a note
+        // the same way.
+        let dest_url = match event {
+            Event::Start(
+                Tag::Link {
+                    link_type: LinkType::WikiLink { .. },
+                    dest_url,
+                    ..
+                }
+                | Tag::Image {
+                    link_type: LinkType::WikiLink { .. },
+                    dest_url,
+                    ..
+                },
+            ) => dest_url,
+            _ => continue,
+        };
+        let Some(open) = body[range.clone()].find("[[") else {
+            continue;
+        };
+        let start = range.start + open + 2;
+        // Only a target written exactly as the parser read it is rewritten.
+        if !body[start..].starts_with(&*dest_url) {
+            continue;
+        }
+        let (name, _) = split_target(&dest_url);
+        if !name.is_empty() {
+            names.push(start..start + name.len());
+        }
+    }
+    names
 }
 
 /// `#tag` at the start or after whitespace: letters, digits, `_`, `-`,
@@ -559,5 +761,190 @@ pub(crate) mod tests {
         let links: Vec<&str> = n.links(0).iter().map(|l| l.as_str()).collect();
         assert_eq!(links, ["ideas"]);
         assert!(n.links(4).is_empty());
+    }
+
+    fn after_move(n: &Notes, moved: usize, folder: &str, title: &str) -> Vec<(usize, String)> {
+        n.relinked(moved, folder, title)
+            .into_iter()
+            .map(|(i, text)| (i, text.as_str().to_owned()))
+            .collect()
+    }
+
+    /// Links to the moved note follow it, keeping their shown text and
+    /// fragment; code, broken links and plain text notes are left alone.
+    #[test]
+    fn relinked_follows_the_moved_note() {
+        let n = notes(vec![
+            note(1, "", "plan", "Self: [[plan#Goals]]."),
+            note(
+                2,
+                "",
+                "index",
+                "[[plan]], [[plan|the plan]], [[Plan#^b1]], ![[plan]], [[plan.md]]\n\n\
+                 `[[plan]]` [[missing]] [[#Top]]\n\n```\n[[plan]]\n```",
+            ),
+            note(3, "", "list.txt", "[[plan]]"),
+        ]);
+        assert_eq!(
+            after_move(&n, 0, "work", "goals"),
+            [
+                (0, "Self: [[goals#Goals]].".to_owned()),
+                (
+                    1,
+                    "[[goals]], [[goals|the plan]], [[goals#^b1]], ![[goals]], [[goals]]\n\n\
+                     `[[plan]]` [[missing]] [[#Top]]\n\n```\n[[plan]]\n```"
+                        .to_owned()
+                ),
+            ]
+        );
+        // Only the folder changes: bare-title links stay as they are.
+        assert!(after_move(&n, 0, "work", "plan").is_empty());
+    }
+
+    /// A new title another note has: links to the moved note get its full
+    /// name, and bare links to the other note get the other's full name,
+    /// so neither becomes ambiguous.
+    #[test]
+    fn relinked_keeps_links_unambiguous() {
+        let n = notes(vec![
+            note(1, "", "draft", ""),
+            note(2, "home", "ideas", ""),
+            note(3, "", "index", "[[draft]] [[ideas]] [[home/ideas]]"),
+        ]);
+        assert_eq!(
+            after_move(&n, 0, "work", "Ideas"),
+            [(2, "[[work/Ideas]] [[home/ideas]] [[home/ideas]]".to_owned())]
+        );
+    }
+
+    /// Found by review: `[[plan.md]]` led to `plan` (dropping `.md`), and
+    /// a note renamed `plan.md` captured it, as an exact name comes first.
+    /// The link now gets `plan`'s full name; the same for a full name.
+    #[test]
+    fn relinked_keeps_links_a_new_name_would_capture() {
+        let n = notes(vec![
+            note(1, "", "plan", ""),
+            note(2, "work", "plan", ""),
+            note(3, "", "x", ""),
+            note(4, "", "index", "[[plan.md]] [[work/plan.md]] [[x]]"),
+        ]);
+        assert_eq!(
+            after_move(&n, 2, "", "plan.md"),
+            [(3, "[[plan]] [[work/plan.md]] [[plan.md]]".to_owned())]
+        );
+        // `x` to `work/plan.md`: its new title captures `[[plan.md]]` and
+        // its full name `[[work/plan.md]]`; both keep their notes.
+        assert_eq!(
+            after_move(&n, 2, "work", "plan.md"),
+            [(3, "[[plan]] [[work/plan]] [[plan.md]]".to_owned())]
+        );
+    }
+
+    proptest::proptest! {
+        /// After any valid `mv`, or `new` (`create`), every link that led
+        /// to one note leads to the same note, among names chosen to
+        /// collide: titles that differ in case or by `.md`, the same title
+        /// in several folders.
+        #[test]
+        fn mv_and_new_keep_every_link_leading_where_it_did(
+            names in proptest::collection::vec((0..3usize, 0..5usize), 2..6),
+            links in proptest::collection::vec(proptest::collection::vec(0..LINKS.len(), 0..6), 6),
+            moved in 0..6usize,
+            to in (0..3usize, 0..5usize),
+            create in proptest::prelude::any::<bool>(),
+        ) {
+            // Unique names, as the vault requires.
+            let mut list: Vec<(&str, &str)> = Vec::new();
+            for (f, t) in names {
+                let name = (FOLDERS[f], TITLES[t]);
+                let key = unique_key(name.0, name.1);
+                if !list.iter().any(|(f, t)| unique_key(f, t) == key) {
+                    list.push(name);
+                }
+            }
+            // `new`: the index the new note gets, which no note has.
+            let moved = if create { list.len() } else { moved % list.len() };
+            let (folder, title) = (FOLDERS[to.0], TITLES[to.1]);
+            let new_key = unique_key(folder, title);
+            let taken = list
+                .iter()
+                .enumerate()
+                .any(|(i, (f, t))| i != moved && unique_key(f, t) == new_key);
+            // `mv` and `new` refuse these; nothing to check.
+            if taken || list.get(moved) == Some(&(folder, title)) {
+                return Ok(());
+            }
+            let body = |i: usize| -> String {
+                links[i].iter().map(|&l| format!("[[{}]] ", LINKS[l])).collect()
+            };
+            let before = notes(
+                list.iter()
+                    .enumerate()
+                    .map(|(i, (f, t))| note(i as u8, f, t, &body(i)))
+                    .collect(),
+            );
+            let mut bodies: Vec<String> = (0..list.len()).map(body).collect();
+            for (i, text) in before.relinked(moved, folder, title) {
+                bodies[i] = text.as_str().to_owned();
+            }
+            let mut renamed: Vec<Note> = list
+                .iter()
+                .enumerate()
+                .map(|(i, &(f, t))| {
+                    let (f, t) = if i == moved { (folder, title) } else { (f, t) };
+                    note(i as u8, f, t, &bodies[i])
+                })
+                .collect();
+            if create {
+                renamed.push(note(9, folder, title, ""));
+            }
+            let after = notes(renamed);
+            for i in 0..list.len() {
+                let old_body = before.note(i).body.as_str();
+                let new_body = after.note(i).body.as_str();
+                let old = link_names(old_body);
+                let new = link_names(new_body);
+                proptest::prop_assert_eq!(old.len(), new.len());
+                for (o, n) in old.into_iter().zip(new) {
+                    if let Found::One(target) = before.find(&old_body[o.clone()]) {
+                        let now = after.find(&new_body[n.clone()]);
+                        proptest::prop_assert!(
+                            matches!(now, Found::One(t) if t == target),
+                            "{:?} -> {:?} in {:?}, {} {}/{}",
+                            &old_body[o], &new_body[n], list,
+                            list.get(moved).map_or("new", |_| "mv"), folder, title
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    const FOLDERS: [&str; 3] = ["", "a", "a/b"];
+    const TITLES: [&str; 5] = ["plan", "Plan.md", "plan.md", "goals", "x"];
+    const LINKS: [&str; 10] = [
+        "plan",
+        "PLAN",
+        "plan.md",
+        "plan.md.md",
+        "a/plan",
+        "a/plan.md",
+        "a/b/plan",
+        "goals",
+        "a/goals",
+        "x|shown",
+    ];
+
+    /// As in Obsidian, an embed is a link: it counts for backlinks, and a
+    /// broken one is reported.
+    #[test]
+    fn embeds_are_links() {
+        let n = notes(vec![
+            note(1, "", "a", "![[b]] ![[gone]]"),
+            note(2, "", "b", ""),
+        ]);
+        assert_eq!(n.backlinks(1), [0]);
+        let broken: Vec<&str> = n.broken_links().iter().map(|(_, t, _)| *t).collect();
+        assert_eq!(broken, ["gone"]);
     }
 }

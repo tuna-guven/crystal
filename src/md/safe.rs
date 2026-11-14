@@ -7,6 +7,11 @@
 //!   control (`ui::grid::is_forbidden`) becomes `<U+XXXX>`, marked so the
 //!   renderer draws it dimmed: visible in any font, and it says what was
 //!   hidden;
+//! - a grapheme that carries an invisible character behind a visible one
+//!   (`ui::grid::hides_something`: a tag character, variation selector,
+//!   zero-width character or Hangul filler) is spelled out whole, each
+//!   character as `<U+XXXX>`, as the editor does, so text that looks the
+//!   same is the same; emoji keep their joiners and U+FE0F;
 //! - a tab becomes four spaces;
 //! - a line ending stays a line ending: `\n`, and `\r\n` becomes `\n`;
 //!   a lone `\r` is a control character like any other.
@@ -23,10 +28,12 @@
 use std::fmt::Write;
 use std::ops::Range;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use zeroize::Zeroizing;
 
 use crate::model::assert_not_impl;
-use crate::ui::grid::{Mods, Style, is_forbidden};
+use crate::ui::grid::{Mods, Style, hides_something, is_forbidden};
 use crate::ui::wrap::Span;
 
 /// The spaces a tab becomes.
@@ -46,31 +53,44 @@ assert_not_impl!(SafeText: std::fmt::Debug, std::fmt::Display, Clone, serde::Ser
 /// Sanitizes `raw`. The result is allocated once at its final size, so it
 /// never grows (growing would leave unwiped copies behind).
 pub fn sanitize(raw: &str) -> SafeText {
-    let hidden = raw
-        .chars()
-        .filter(|&c| c != '\n' && c != '\t' && is_forbidden(c))
-        .count();
+    let hidden: usize = raw
+        .graphemes(true)
+        .map(|g| g.chars().filter(|&c| spelled_out(g, c)).count())
+        .sum();
     let tabs = raw.matches('\t').count();
     let capacity = raw.len() + hidden * MAX_ESCAPE_LEN + tabs * TAB.len();
     let mut text = Zeroizing::new(String::with_capacity(capacity));
     let mut escapes = Vec::with_capacity(hidden);
-    let mut chars = raw.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\n' => text.push('\n'),
-            '\r' if chars.peek() == Some(&'\n') => {}
-            '\t' => text.push_str(TAB),
-            c if is_forbidden(c) => {
-                let start = text.len();
-                // Writing to a String cannot fail.
-                let _ = write!(text, "<U+{:04X}>", u32::from(c));
-                escapes.push(start..text.len());
+    for grapheme in raw.graphemes(true) {
+        match grapheme {
+            "\n" | "\r\n" => text.push('\n'),
+            "\t" => text.push_str(TAB),
+            g => {
+                for c in g.chars() {
+                    if spelled_out(g, c) {
+                        let start = text.len();
+                        // Writing to a String cannot fail.
+                        let _ = write!(text, "<U+{:04X}>", u32::from(c));
+                        escapes.push(start..text.len());
+                    } else {
+                        text.push(c);
+                    }
+                }
             }
-            c => text.push(c),
         }
     }
     debug_assert!(text.len() <= capacity, "the buffer grew");
     SafeText { text, escapes }
+}
+
+/// Whether `c`, in `grapheme`, is drawn as `<U+XXXX>`: a forbidden
+/// character, or any character of a grapheme that hides one. A line
+/// ending and a tab are handled before.
+fn spelled_out(grapheme: &str, c: char) -> bool {
+    match grapheme {
+        "\n" | "\r\n" | "\t" => false,
+        _ => is_forbidden(c) || hides_something(grapheme),
+    }
 }
 
 impl SafeText {
@@ -170,7 +190,8 @@ mod tests {
             "Ünïcode 日本語 🙂",
             "a\nb",
             "e\u{301}",
-            "zero\u{200D}width",
+            // Emoji keep their joiners and U+FE0F.
+            "👨\u{200D}💻 ❤\u{FE0F} 1\u{FE0F}\u{20E3}",
         ] {
             assert_eq!(shown(raw), raw, "{raw:?}");
             assert!(sanitize(raw).escapes.is_empty());
@@ -189,6 +210,13 @@ mod tests {
             ("\u{2066}x\u{2069}", "<U+2066>x<U+2069>"),
             ("\u{200F}\u{061C}", "<U+200F><U+061C>"),
             ("lone\rcr", "lone<U+000D>cr"),
+            // Invisible characters: alone, or spelled out with the visible
+            // character they ride on (decision 0037).
+            ("zero\u{200D}width", "zer<U+006F><U+200D>width"),
+            ("a\u{E0041}b", "<U+0061><U+E0041>b"),
+            ("x\u{200B}y", "x<U+200B>y"),
+            ("a\u{3164}b", "a<U+3164>b"),
+            ("😀\u{E0101}", "<U+1F600><U+E0101>"),
         ];
         for (raw, want) in cases {
             assert_eq!(shown(raw), want, "{raw:?}");
@@ -260,13 +288,34 @@ mod tests {
         // changed at all.
         #[test]
         fn safe_text_is_untouched(raw in "[^\\p{Cc}\\u{061C}\\u{200E}\\u{200F}\\u{202A}-\\u{202E}\\u{2066}-\\u{2069}]*") {
+            prop_assume!(!raw.graphemes(true).any(hides_something));
             prop_assert_eq!(shown(&raw), raw);
+        }
+
+        // No invisible character reaches the output, but a joiner or
+        // U+FE0F inside an emoji.
+        #[test]
+        fn invisible_characters_are_spelled_out(
+            raw in "[ae\u{301}\u{E0041}\u{200B}\u{200D}\u{FE01}\u{FE0F}\u{3164}\u{2060}1\u{20E3}😀👨💻\n]{0,40}",
+        ) {
+            let safe = sanitize(&raw);
+            for grapheme in safe.as_str().graphemes(true) {
+                prop_assert!(!hides_something(grapheme), "{:?}", grapheme);
+            }
         }
 
         // The buffer is sized up front and never grows.
         #[test]
         fn never_grows(raw in any::<String>()) {
-            let hidden = raw.chars().filter(|&c| c != '\n' && c != '\t' && is_forbidden(c)).count();
+            let hidden: usize = raw
+                .graphemes(true)
+                .filter(|&g| g != "\n" && g != "\r\n" && g != "\t")
+                .map(|g| if hides_something(g) {
+                    g.chars().count()
+                } else {
+                    g.chars().filter(|&c| is_forbidden(c)).count()
+                })
+                .sum();
             let tabs = raw.matches('\t').count();
             let capacity = raw.len() + hidden * MAX_ESCAPE_LEN + tabs * TAB.len();
             prop_assert!(sanitize(&raw).text.len() <= capacity);

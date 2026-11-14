@@ -12,7 +12,7 @@ use std::fmt;
 
 use rustix::io::Errno;
 use rustix::rand::{GetRandomFlags, getrandom};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::age_v1::{self, x25519};
 
@@ -261,6 +261,29 @@ pub struct VaultIdentity(Box<x25519::Identity>);
 
 assert_not_impl!(VaultIdentity: fmt::Debug, fmt::Display, serde::Serialize, Clone);
 
+/// The vault's recipient (public key), kept for the session so each save
+/// can seal `vault.age` after the identity is wiped. Private data
+/// (docs/decisions/0044-vault-recipient-private.md): no Debug, Display,
+/// Clone or Serialize, so it cannot reach a message, a log or a file. The
+/// key never leaves this type: the only thing it does is encrypt. Wiped on
+/// drop (best effort, like every wiped value: a move may leave a copy).
+pub struct VaultRecipient(Box<x25519::Recipient>);
+
+assert_not_impl!(VaultRecipient: fmt::Debug, fmt::Display, serde::Serialize, Clone);
+
+impl VaultRecipient {
+    /// Encrypts `secret` to the vault's recipient, for `vault.age`.
+    pub fn encrypt(&self, secret: &[u8]) -> Result<Ciphertext, CryptoError> {
+        encrypt_to_recipients(secret, std::slice::from_ref(&self.0))
+    }
+}
+
+impl Drop for VaultRecipient {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl VaultIdentity {
     /// A new random identity, from the kernel's generator (getrandom).
     pub fn generate() -> Result<Self, CryptoError> {
@@ -272,6 +295,11 @@ impl VaultIdentity {
     /// The public key `vault.age` is encrypted to.
     pub fn recipient(&self) -> x25519::Recipient {
         self.0.to_public()
+    }
+
+    /// The recipient to keep for saving once the identity is wiped.
+    pub fn vault_recipient(&self) -> VaultRecipient {
+        VaultRecipient(Box::new(self.0.to_public()))
     }
 
     /// `identity.age` (sealed with the passphrase) and `identity.backup.age`

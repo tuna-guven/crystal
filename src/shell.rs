@@ -30,6 +30,10 @@ pub const MAX_HISTORY: usize = 200;
 const PROMPT_STYLE: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::BOLD);
 const ECHO_STYLE: Style = Style::PLAIN.mods(Mods::DIM);
 pub const ERROR_STYLE: Style = Style::PLAIN.fg(Color::Red);
+
+/// A paste longer than the prompt line (or than any paste may be) was cut
+/// (docs/decisions/0045-simple-editor.md).
+const PASTE_CUT: &str = "The paste was cut: it was longer than the line holds.";
 const CURSOR_STYLE: Style = Style::PLAIN.mods(Mods::REVERSED);
 
 pub const HELP: &str = "\
@@ -41,6 +45,12 @@ Commands:
   search TEXT   notes whose name or text holds TEXT (ignoring case)
   view NAME     the note, full screen: Tab and Enter follow [[links]],
                 Backspace goes back, b lists backlinks, q returns here
+  edit NAME     the note in the editor: Ctrl+S saves, Ctrl+E shows it
+                rendered, Ctrl+Q closes
+  new NAME      a new note (new FOLDER/NAME in a folder), in the editor;
+                it exists once Ctrl+S saves it
+  mv OLD NEW    rename or move a note; [[links]] to it follow
+  rm NAME       delete a note for good, after you type y
   links         every [[link]] that leads nowhere
   help          this list
   clear         clear the screen (Ctrl+L)
@@ -151,6 +161,7 @@ impl Shell {
     }
 
     pub fn key(&mut self, key: Key) -> Action {
+        let key = key.without_shift();
         if key != Key::Tab {
             self.tabbed = false;
         }
@@ -162,7 +173,12 @@ impl Shell {
                 let mut buf = [0u8; 4];
                 self.line.insert(c.encode_utf8(&mut buf));
             }
-            Key::Paste(text) => self.line.insert(&text),
+            Key::Paste { text, cut } => {
+                let fits = self.line.insert(&keys::one_line(&text));
+                if cut || !fits {
+                    self.print(PASTE_CUT, ERROR_STYLE);
+                }
+            }
             Key::Enter => return self.submit(),
             Key::Backspace => self.line.backspace(),
             Key::Delete => self.line.delete(),
@@ -187,6 +203,13 @@ impl Shell {
             // Completion comes with the commands (L7); other keys do nothing.
             Key::Tab => self.complete(),
             Key::BackTab | Key::Esc | Key::Ctrl(_) => {}
+            // Turned into plain keys by `without_shift` above.
+            Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ShiftUp
+            | Key::ShiftDown
+            | Key::ShiftHome
+            | Key::ShiftEnd => {}
         }
         Action::Nothing
     }
@@ -485,6 +508,26 @@ mod tests {
         for key in keys {
             assert!(matches!(s.key(key), Action::Nothing), "a paste never runs");
         }
-        assert_eq!(s.line.as_str(), "quit  view [2J");
+        assert_eq!(s.line.as_str(), "quit view [2J");
+    }
+
+    /// A paste that does not fit the line is cut, and the shell says so;
+    /// one that fits says nothing.
+    #[test]
+    fn a_cut_paste_is_reported() {
+        let mut s = shell();
+        let before = s.output_len();
+        let paste = |text: String, cut| Key::Paste {
+            text: Zeroizing::new(text),
+            cut,
+        };
+        s.key(paste("short".into(), false));
+        assert_eq!(s.output_len(), before);
+        s.key(paste("x".repeat(line::MAX_LINE), false));
+        assert_eq!(s.line.as_str().len(), line::MAX_LINE);
+        assert_eq!(s.output_len(), before + 1);
+        s.key(Key::Ctrl('u'));
+        s.key(paste("y".into(), true));
+        assert_eq!(s.output_len(), before + 2, "cut by the decoder");
     }
 }

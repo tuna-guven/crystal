@@ -106,6 +106,11 @@ impl VaultDir {
     pub fn version(&self) -> u16 {
         self.version
     }
+
+    /// After a save wrote `VERSION` anew.
+    pub fn set_version(&mut self, version: u16) {
+        self.version = version;
+    }
 }
 
 #[cfg(test)]

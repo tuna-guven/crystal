@@ -9,12 +9,12 @@ use std::fmt;
 use rustix::fs::{Dir, Mode, OFlags, openat};
 use rustix::io::Errno;
 
-use crate::crypto::{self, CryptoError, Passphrase, VaultIdentity};
+use crate::crypto::{self, CryptoError, Passphrase, VaultIdentity, VaultRecipient};
 use crate::vault::codec::VaultContents;
 use crate::vault::format::{self, IDENTITY_FILE, MAX_IDENTITY_FILE, VAULT_FILE, VaultError};
 use crate::vault::generation::{self, Counter, GenError, Older, Seen};
 use crate::vault::pin::{self, PinError, Pinned};
-use crate::vault::public_file::{ReadError, read_bounded};
+use crate::vault::public_file::{FileStamp, ReadError, read_bounded_with_stamp};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir};
 use crate::vault::{DataDir, StateDir, VaultName};
 
@@ -35,7 +35,8 @@ pub enum UnlockError {
     Vault(VaultError),
     Pin(PinError),
     Generation(GenError),
-    /// A sync conflict copy of `vault.age` is present (merge: Phase 4).
+    /// A sync conflict copy of `vault.age` is present. Crystal never
+    /// merges (docs/decisions/0045-simple-editor.md): the user keeps one.
     SyncConflict,
     ListDir(Errno),
     /// An older vault was not accepted with `restore`.
@@ -59,8 +60,8 @@ impl fmt::Display for UnlockError {
             Self::Generation(e) => e.fmt(f),
             Self::SyncConflict => write!(
                 f,
-                "the vault has a sync conflict copy (vault.sync-conflict-*.age); merging is not \
-                 implemented yet, resolve it by hand"
+                "the vault has a sync conflict copy (vault.sync-conflict-*.age); keep one version \
+                 and move the other out of the vault directory"
             ),
             Self::ListDir(errno) => write!(f, "cannot list the vault directory ({errno})"),
             Self::NotRestored => write!(f, "not restored; nothing was changed"),
@@ -75,6 +76,11 @@ impl std::error::Error for UnlockError {}
 pub struct Unlocked {
     pub vault_dir: VaultDir,
     pub contents: VaultContents,
+    /// For saving; the identity itself is wiped before `unlock` returns.
+    pub recipient: VaultRecipient,
+    /// The `vault.age` that was decrypted: a save refuses to replace a
+    /// different one (docs/decisions/0045-simple-editor.md).
+    pub stamp: FileStamp,
     /// `New` on the first unlock of this vault on this device.
     pub pinned: Pinned,
     /// `FirstUse` when this device had no rollback counter for the vault.
@@ -134,25 +140,25 @@ pub fn unlock(
 ) -> Result<Unlocked, UnlockError> {
     // read_bounded reads one byte past `max` to show the file is longer.
     let read = |file: &'static str, max: usize| {
-        let bytes = read_bounded(vault_dir.fd(), file, max)
+        let (bytes, stamp) = read_bounded_with_stamp(vault_dir.fd(), file, max)
             .map_err(UnlockError::Read)?
             .ok_or(UnlockError::MissingFile(file))?;
         if bytes.len() > max {
             return Err(UnlockError::TooLarge(file));
         }
-        Ok(bytes)
+        Ok((bytes, stamp))
     };
     let identity =
-        VaultIdentity::open_with_passphrase(&read(IDENTITY_FILE, MAX_IDENTITY_FILE)?, &pass)
+        VaultIdentity::open_with_passphrase(&read(IDENTITY_FILE, MAX_IDENTITY_FILE)?.0, &pass)
             .map_err(UnlockError::Identity)?;
     // The passphrase has done its job: wipe it before the vault is read.
     drop(pass);
-    let contents = format::open(
-        &read(VAULT_FILE, crypto::MAX_CIPHERTEXT)?,
-        &identity,
-        vault_dir.version(),
-    )
-    .map_err(UnlockError::Vault)?;
+    let (ciphertext, stamp) = read(VAULT_FILE, crypto::MAX_CIPHERTEXT)?;
+    let contents =
+        format::open(&ciphertext, &identity, vault_dir.version()).map_err(UnlockError::Vault)?;
+    // Saving needs only the recipient; the identity is wiped here.
+    let recipient = identity.vault_recipient();
+    drop(identity);
     let pinned = pin::check(state.fd(), name, &contents.vault_id).map_err(UnlockError::Pin)?;
     let (seen, older) = match generation::open_or_older(
         state.fd(),
@@ -167,6 +173,8 @@ pub fn unlock(
     Ok(Unlocked {
         vault_dir,
         contents,
+        recipient,
+        stamp,
         pinned,
         seen,
         older,

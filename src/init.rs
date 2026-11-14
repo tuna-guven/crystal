@@ -228,7 +228,7 @@ fn build(
     };
     write(
         VAULT_FILE,
-        &format::seal(&empty, &identity.recipient()).map_err(InitError::Vault)?,
+        &format::seal(&empty, &identity.vault_recipient()).map_err(InitError::Vault)?,
     )?;
 
     // The finished directory must pass the same check as any vault.

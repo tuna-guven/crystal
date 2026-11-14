@@ -6,7 +6,7 @@
 
 use std::os::fd::OwnedFd;
 
-use rustix::fs::{FileType, Mode, OFlags, fstat, openat};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, Stat, fstat, openat, statat};
 use rustix::io::{Errno, read};
 
 /// Why a small public file could not be read. Errnos only.
@@ -43,6 +43,47 @@ pub fn read_bounded(
     name: &str,
     max_len: usize,
 ) -> Result<Option<Vec<u8>>, ReadError> {
+    Ok(read_bounded_with_stamp(dir, name, max_len)?.map(|(bytes, _)| bytes))
+}
+
+/// One version of a file: its device, inode, size, and modification and
+/// change times. Replacing a file atomically (Crystal's writer, Syncthing)
+/// makes a new inode, and any write changes the change time, so a file
+/// with the same stamp has not been touched. Plain numbers, not secret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp([i128; 7]);
+
+impl FileStamp {
+    fn of(stat: &Stat) -> Self {
+        Self([
+            i128::from(stat.st_dev),
+            i128::from(stat.st_ino),
+            i128::from(stat.st_size),
+            i128::from(stat.st_mtime),
+            i128::from(stat.st_mtime_nsec),
+            i128::from(stat.st_ctime),
+            i128::from(stat.st_ctime_nsec),
+        ])
+    }
+}
+
+/// The stamp of `name` in `dir` now, without following a symlink; `None`
+/// if it does not exist.
+pub fn stamp(dir: &OwnedFd, name: &str) -> Result<Option<FileStamp>, Errno> {
+    match statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => Ok(Some(FileStamp::of(&stat))),
+        Err(Errno::NOENT) => Ok(None),
+        Err(errno) => Err(errno),
+    }
+}
+
+/// As `read_bounded`, with the stamp of the file that was read, taken from
+/// the same open file, so it describes exactly these bytes.
+pub fn read_bounded_with_stamp(
+    dir: &OwnedFd,
+    name: &str,
+    max_len: usize,
+) -> Result<Option<(Vec<u8>, FileStamp)>, ReadError> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let file = match openat(dir, name, flags, Mode::empty()) {
         Ok(file) => file,
@@ -74,7 +115,10 @@ pub fn read_bounded(
         }
     }
     buf.truncate(filled);
-    Ok(Some(buf))
+    // fstat again after reading: a write during the read changes the
+    // change time, so the stamp never vouches for bytes it did not see.
+    let after = fstat(&file).map_err(ReadError::Stat)?;
+    Ok(Some((buf, FileStamp::of(&after))))
 }
 
 /// Parses "decimal number, newline" with exactly one spelling per number:

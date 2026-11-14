@@ -3,6 +3,9 @@
 - **Date:** 2026-11-09 (Phase 3)
 - **Status:** Accepted. Replaces the clipboard records 0035 (two
   clipboards, OSC 52) and 0039 (filtered system copies), now removed.
+  Copying every editor selection automatically is replaced by
+  [0045](0045-simple-editor.md): the editor copies only on Ctrl+C or
+  Ctrl+X.
 
 ## Context
 

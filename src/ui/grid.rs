@@ -55,6 +55,75 @@ pub fn is_forbidden(c: char) -> bool {
         )
 }
 
+/// Whether `grapheme` carries a character that shows as nothing, or as a
+/// blank, behind a visible one: `a` and a tag character look like `a`.
+/// Such a grapheme is spelled out whole, so text that looks the same is
+/// the same. A joiner between two pictographs and the emoji-style selector
+/// U+FE0F stay, as emoji need them (`👨‍💻`, `❤️`, `1️⃣`).
+pub fn hides_something(grapheme: &str) -> bool {
+    let emoji = grapheme.starts_with(is_pictographic) || grapheme.ends_with('\u{20E3}');
+    let mut chars = grapheme.chars().peekable();
+    while let Some(c) = chars.next() {
+        let hidden = match c {
+            '\u{200D}' => !(emoji && chars.peek().is_some_and(|&next| is_pictographic(next))),
+            '\u{FE0F}' => !emoji,
+            c => is_invisible(c),
+        };
+        if hidden {
+            return true;
+        }
+    }
+    false
+}
+
+/// Characters that draw nothing (or a blank) yet are not spaces: the
+/// combining grapheme joiner, the Hangul fillers, the zero-width
+/// characters and marks, word joiner and invisible operators, the byte
+/// order mark, the variation selectors (which can carry hidden bytes
+/// inside one emoji), and the tag characters.
+pub fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{E0000}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
+}
+
+/// The start of an emoji, roughly Unicode's Extended_Pictographic: a few
+/// symbols that have an emoji form, and the emoji planes. Too wide only
+/// lets a joiner or U+FE0F stay after an unusual symbol.
+pub fn is_pictographic(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00A9}'
+            | '\u{00AE}'
+            | '\u{203C}'
+            | '\u{2049}'
+            | '\u{2122}'
+            | '\u{2139}'
+            | '\u{2194}'..='\u{21FF}'
+            | '\u{2300}'..='\u{23FF}'
+            | '\u{24C2}'
+            | '\u{25A0}'..='\u{27BF}'
+            | '\u{2900}'..='\u{297F}'
+            | '\u{2B00}'..='\u{2BFF}'
+            | '\u{3030}'
+            | '\u{303D}'
+            | '\u{3297}'
+            | '\u{3299}'
+            | '\u{1F000}'..='\u{1FFFF}'
+    )
+}
+
 /// A terminal color: the default, one of the 16 named ones, or one of the
 /// 256 indexed ones.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

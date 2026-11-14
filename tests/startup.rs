@@ -673,8 +673,9 @@ fn terminal_hangup_exits_cleanly() {
 }
 
 /// kill -9 cannot be caught: no Drop, no restore. It must still leave
-/// nothing behind that Crystal wrote; from Phase 4 on this covers temp
-/// files during a save. SIGKILL never dumps core.
+/// nothing behind that Crystal wrote (a kill during a save is
+/// `kill_9_during_saves_never_corrupts_the_vault` in tests/vault.rs).
+/// SIGKILL never dumps core.
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn kill_9_leaves_no_new_files() {
@@ -745,6 +746,26 @@ fn exit_signal_restores_terminal(signal: &str) {
     assert!(
         output.contains("\x1b[2J\x1b[?1049l"),
         "{signal}: never left the screen"
+    );
+}
+
+/// Ctrl+Z is an ordinary key, not a suspend (decision 0045): in raw mode
+/// it reaches Crystal as the byte 0x1a, and `--skip-unlock-for-test` ends
+/// on any key. A suspend would leave the process stopped and the test
+/// waiting until its deadline.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn ctrl_z_is_a_key_not_a_suspend() {
+    let home = fresh_home("ctrl-z");
+    make_data_dir(&home);
+    let cmd = format!("'{BIN}' --skip-unlock-for-test diary; echo; echo exit=$?");
+    let (ok, output) = pty_dialog(&cmd, &home, &[("\x1b[?1049h", b"\x1a")]);
+    assert!(ok, "{output:?}");
+    assert!(output.contains("exit=0"), "{output:?}");
+    assert_eq!(
+        output.matches("\x1b[2J\x1b[?1049l").count(),
+        1,
+        "left the screen once, on exit, never for a suspend: {output:?}"
     );
 }
 

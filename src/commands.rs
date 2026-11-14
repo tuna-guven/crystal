@@ -1,11 +1,13 @@
-//! The shell's vault commands (docs/decisions/0033-shell.md), read-only:
-//! `ls`, `tags`, `find`, `search`, `links`, and `view` (which hands the
-//! note to the pager). Each writes its answer into the
+//! The shell's vault commands (docs/decisions/0033-shell.md): `ls`,
+//! `tags`, `find`, `search`, `links`, and the ones that leave the shell:
+//! `view` (the pager), `edit` and `new` (the editor,
+//! docs/decisions/0045-simple-editor.md). Each writes its answer into the
 //! shell's scrollback, which sanitizes it; every line holding note text is
 //! built in a zeroizing buffer of its final size.
 
 use zeroize::Zeroizing;
 
+use crate::model::name::{check_folder, check_segment, unique_key};
 use crate::notes::{Found, Notes, cmp_ci};
 use crate::shell::{ERROR_STYLE, Shell};
 use crate::ui::grid::{Color, Mods, Style};
@@ -24,9 +26,28 @@ const CONTEXT: usize = 30;
 /// Characters of a matching line `search` shows.
 const SNIPPET: usize = 100;
 
+/// What a command hands over to, leaving the shell.
+pub enum Open {
+    View(usize),
+    Edit(usize),
+    /// A note that does not exist yet; its name passed the vault's rules.
+    New {
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+    },
+    /// `mv`: the note and its new name, which passed the vault's rules.
+    Move {
+        note: usize,
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+    },
+    /// `rm`: the note to delete, once the user confirms.
+    Remove(usize),
+}
+
 /// Runs `words` (the first is the command); unknown commands are reported.
-/// Returns the note to show when the command was `view`.
-pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Option<usize> {
+/// Returns where to go when the command was `view`, `edit` or `new`.
+pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Option<Open> {
     let args: Vec<&str> = words.iter().skip(1).map(|w| w.as_str()).collect();
     let rest = joined(&args);
     match words.first().map(|w| w.as_str()) {
@@ -35,7 +56,11 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
         Some("find") => find(notes, &rest, shell),
         Some("search") => search(notes, &rest, shell),
         Some("links") => links(notes, shell),
-        Some("view") => return view(notes, &rest, shell),
+        Some("view") => return view(notes, &rest, shell).map(Open::View),
+        Some("edit") => return view(notes, &rest, shell).map(Open::Edit),
+        Some("new") => return new(notes, &rest, shell),
+        Some("mv") => return mv(notes, &args, shell),
+        Some("rm") => return view(notes, &rest, shell).map(Open::Remove),
         Some(other) => say(
             shell,
             &["unknown command: ", other, " (type help)"],
@@ -46,10 +71,79 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
     None
 }
 
-/// The note `view NAME` names, or why there is none.
+/// `new NAME`: a name that follows the vault's rules (`FOLDER/TITLE` or
+/// `TITLE`) and no note has yet, ignoring case. The note exists once the
+/// editor saves it.
+fn new(notes: &Notes, name: &str, shell: &mut Shell) -> Option<Open> {
+    if name.is_empty() {
+        shell.print("new what? (new NAME, or new FOLDER/NAME)", ERROR_STYLE);
+        return None;
+    }
+    let (folder, title) = free_name(notes, name, None, shell)?;
+    Some(Open::New { folder, title })
+}
+
+/// `mv OLD NEW`: the note OLD names, and a free name NEW (the same note in
+/// another case is fine).
+fn mv(notes: &Notes, args: &[&str], shell: &mut Shell) -> Option<Open> {
+    let [old, new] = args else {
+        shell.print(
+            "mv OLD NEW (quote a name with spaces: mv \"old name\" \"new name\")",
+            ERROR_STYLE,
+        );
+        return None;
+    };
+    let note = view(notes, old, shell)?;
+    if notes.name(note) == *new {
+        shell.print("That is its name already.", ERROR_STYLE);
+        return None;
+    }
+    let (folder, title) = free_name(notes, new, Some(note), shell)?;
+    Some(Open::Move {
+        note,
+        folder,
+        title,
+    })
+}
+
+/// `name` split into folder and title, if it follows the vault's rules and
+/// no note other than `except` has it, ignoring case.
+fn free_name(
+    notes: &Notes,
+    name: &str,
+    except: Option<usize>,
+    shell: &mut Shell,
+) -> Option<(Zeroizing<String>, Zeroizing<String>)> {
+    let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
+    // check_folder takes "" for the top level, but in `/x` the `/` promises
+    // a folder: refuse it rather than make the top-level `x`.
+    let checked = if name.starts_with('/') {
+        check_segment(folder)
+    } else {
+        check_folder(folder)
+    };
+    if let Err(e) = checked.and_then(|()| check_segment(title)) {
+        say(shell, &["Not a valid name: ", &e.to_string()], ERROR_STYLE);
+        return None;
+    }
+    let is_except = except.is_some_and(|note| {
+        let n = notes.note(note);
+        unique_key(folder, title) == unique_key(n.folder.as_str(), n.title.as_str())
+    });
+    if notes.exists(folder, title) && !is_except {
+        shell.print("A note with that name exists already.", ERROR_STYLE);
+        return None;
+    }
+    Some((
+        Zeroizing::new(folder.to_owned()),
+        Zeroizing::new(title.to_owned()),
+    ))
+}
+
+/// The note `view NAME` or `edit NAME` names, or why there is none.
 fn view(notes: &Notes, name: &str, shell: &mut Shell) -> Option<usize> {
     if name.is_empty() {
-        shell.print("view which note? (view NAME)", ERROR_STYLE);
+        shell.print("Which note? (view NAME, edit NAME)", ERROR_STYLE);
         return None;
     }
     match notes.find(name) {
@@ -502,11 +596,105 @@ mod tests {
         assert_eq!(fuzzy("abc", &lowercase_chars("cba")), None);
     }
 
+    /// `edit` finds a note as `view` does; `new` checks the name and that
+    /// no note has it yet (ignoring case).
+    #[test]
+    fn edit_and_new_check_their_names() {
+        let n = sample();
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        assert!(matches!(open("edit roadmap"), Some(Open::Edit(0))));
+        assert!(open("edit nope").is_none());
+        match open("new work/fresh idea") {
+            Some(Open::New { folder, title }) => {
+                assert_eq!((folder.as_str(), title.as_str()), ("work", "fresh idea"));
+            }
+            _ => panic!("new refused a good name"),
+        }
+        assert!(matches!(open("new plain.txt"), Some(Open::New { .. })));
+        assert_eq!(
+            output(&sample(), "new work/projects/ROADMAP"),
+            ["A note with that name exists already."]
+        );
+        assert!(output(&sample(), "new a:b")[0].starts_with("Not a valid name: "));
+        assert!(output(&sample(), "new bad/")[0].starts_with("Not a valid name: "));
+        // A leading `/` is an empty folder, not the top level.
+        for line in ["new /x", "new //x", "mv roadmap /x"] {
+            assert!(
+                output(&sample(), line)[0].starts_with("Not a valid name: "),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            output(&sample(), "new"),
+            ["new what? (new NAME, or new FOLDER/NAME)"]
+        );
+    }
+
+    proptest::proptest! {
+        /// A name `new` accepts is the name typed: folder and title join
+        /// back to it exactly (found by review: `/x` became `x`).
+        #[test]
+        fn new_keeps_the_name_as_typed(name in "[a/ .]{1,12}") {
+            let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+            let words = [Zeroizing::new("new".to_owned()), Zeroizing::new(name.clone())];
+            if let Some(Open::New { folder, title }) = run(&sample(), &words, &mut shell) {
+                let joined = if folder.is_empty() {
+                    title.to_string()
+                } else {
+                    format!("{}/{}", folder.as_str(), title.as_str())
+                };
+                proptest::prop_assert_eq!(joined, name);
+            }
+        }
+    }
+
+    /// `mv` needs two names, a note for the first and a free, valid name
+    /// for the second (the same note in another case is fine); `rm` finds
+    /// its note as `view` does.
+    #[test]
+    fn mv_and_rm_check_their_names() {
+        let n = sample();
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        match open("mv roadmap \"work/plans/Road map\"") {
+            Some(Open::Move {
+                note: 0,
+                folder,
+                title,
+            }) => assert_eq!(
+                (folder.as_str(), title.as_str()),
+                ("work/plans", "Road map")
+            ),
+            _ => panic!("mv refused a good name"),
+        }
+        assert!(matches!(
+            open("mv work/projects/Roadmap work/projects/ROADMAP"),
+            Some(Open::Move { note: 0, .. })
+        ));
+        assert!(matches!(open("rm roadmap"), Some(Open::Remove(0))));
+        assert!(open("rm nope").is_none());
+        assert_eq!(
+            output(&sample(), "mv roadmap ideas"),
+            ["A note with that name exists already."]
+        );
+        assert_eq!(
+            output(&sample(), "mv roadmap work/projects/Roadmap"),
+            ["That is its name already."]
+        );
+        assert!(output(&sample(), "mv roadmap a:b")[0].starts_with("Not a valid name: "));
+        assert!(output(&sample(), "mv roadmap")[0].starts_with("mv OLD NEW"));
+    }
+
     #[test]
     fn view_resolves_names_and_links_lists_broken_ones() {
         let n = sample();
         let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
-        let mut view = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        let mut view =
+            |line: &str| match run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell) {
+                Some(Open::View(note)) => Some(note),
+                _ => None,
+            };
         assert_eq!(view("view roadmap"), Some(0));
         assert_eq!(view("view \"work/meeting 2026-11-07\""), Some(1));
         assert_eq!(view("view ideas"), Some(2), "a full name wins");

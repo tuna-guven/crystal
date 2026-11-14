@@ -94,6 +94,16 @@ directory `~/.local/share/crystal/NAME`. A vault that arrives on a new
 device is opened with `crystal NAME`; the first unlock there pins it and
 says so.
 
+Edit a vault on one device at a time and let it sync before you open it
+elsewhere. Crystal never merges two versions. If it finds that
+`vault.age` changed on disk while you were editing, it refuses to save.
+Your edits then exist only in the open editor and are lost when Crystal
+closes; reopen the vault to see the other version. The check runs just
+before writing, so a file that arrives in that very moment is still
+overwritten: that is why one device at a time matters. If Syncthing made a conflict copy
+(`vault.sync-conflict-….age`), Crystal refuses to open the vault until
+you keep one version and move the other out of the vault directory.
+
 ### Creating a vault
 
 ```sh
@@ -196,7 +206,10 @@ yourself; otherwise someone may have put back an old copy.
 ### Copying
 
 `y` in the pager copies the note into Crystal's own clipboard, which
-never leaves Crystal; the editor will paste from it (Phase 4). Crystal
+never leaves Crystal; in the editor, Ctrl+C and Ctrl+X copy
+the selection into it and Ctrl+V pastes from it. The terminal's own
+Ctrl+Shift+C and Ctrl+Shift+V work with the system clipboard
+([decision 0045](../decisions/0045-simple-editor.md)). Crystal
 never writes to the system clipboard
 ([decision 0041](../decisions/0041-internal-clipboard-only.md)).
 
@@ -278,15 +291,9 @@ Side effects for development:
   "`gdb -p` fails" proves nothing on such a host. Crystal's own test
   (`harden::tests::lock_down_process_applies_every_setting`) reads the
   kernel's dumpable flag instead.
-- Tests that need strace (Phase 4: only ciphertext is written) need the
-  boolean off temporarily. Without `-P` the change does not survive a
-  reboot:
-
-  ```sh
-  run0 setsebool deny_ptrace off
-  # run the strace test
-  run0 setsebool deny_ptrace on
-  ```
+- The strace test (Phase 4: only ciphertext is written) runs in CI only:
+  Crystal is non-dumpable, so strace needs `CAP_SYS_PTRACE` to read what
+  it writes, which CI gives it. There is nothing to run locally.
 
 Check its state with `getsebool deny_ptrace`.
 
