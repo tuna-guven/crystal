@@ -21,22 +21,24 @@ rustix = { version = "1.1.5", features = ["event", "fs", "mm", "pipe", "process"
 signal-hook = "0.4.5"
 # Phase 2 (#4). Exact pins: crypto and the on-disk codec change only by review.
 # Crystal's own age v1 implementation (src/age_v1/, decision 0042) is built
-# on these primitives, at the versions the age crate used.
+# on these primitives (versions: decision 0051).
 # Payload and stanza AEAD. No `getrandom` (rand_core/OsRng): randomness comes
 # from rustix. `alloc` for the Vec-backed in-place buffers, as age enables it.
-chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+# `zeroize`: the cipher state wipes itself on drop, which 0.10 always did
+# and 0.11 makes opt-in.
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
 # Passphrase stanzas. No `simple`/`std`: no password-hash or rand_core.
-scrypt = { version = "=0.11.0", default-features = false }
+scrypt = { version = "=0.12.0", default-features = false }
 # X25519 stanzas. `static_secrets`: identity and ephemeral keys are built
 # from 32 getrandom bytes (StaticSecret::from), so no rand_core RNG.
 # `zeroize`: secrets wipe themselves on drop. `precomputed-tables`: faster
 # public-key derivation, the default age uses.
-x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
 # HKDF-SHA-256 for the header MAC key, the payload key and the stanza keys.
-hkdf = { version = "=0.12.4", default-features = false }
+hkdf = { version = "=0.13.0", default-features = false }
 # HMAC-SHA-256 header MAC, checked in constant time (verify_slice).
-hmac = { version = "=0.12.1", default-features = false }
-sha2 = { version = "=0.10.9", default-features = false }
+hmac = { version = "=0.13.0", default-features = false }
+sha2 = { version = "=0.11.1", default-features = false }
 # Constant-time all-zero check on the X25519 shared secret, as age does.
 subtle = { version = "=2.6.1", default-features = false }
 # Zeroizing buffers and #[derive(ZeroizeOnDrop)] for plaintext.

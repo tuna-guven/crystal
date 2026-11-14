@@ -19,7 +19,7 @@
 //! last chunk, swapped chunks, and an empty last chunk after others all
 //! fail.
 
-use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+use chacha20poly1305::aead::{AeadInOut, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce, Tag};
 use zeroize::Zeroizing;
 
@@ -75,7 +75,7 @@ pub(super) fn encrypt(key: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
         out.extend_from_slice(chunk);
         let nonce = chunk_nonce(u64::try_from(i).ok()?, last);
         let tag = cipher
-            .encrypt_in_place_detached(&nonce, b"", &mut out[start..])
+            .encrypt_inout_detached(&nonce, b"", (&mut out[start..]).into())
             .ok()?;
         out.extend_from_slice(&tag);
     }
@@ -114,9 +114,11 @@ pub(super) fn decrypt(key: &[u8; 32], ciphertext: &[u8]) -> Option<Zeroizing<Vec
         let start = out.len();
         out.extend_from_slice(body);
         let nonce = chunk_nonce(u64::try_from(i).ok()?, i + 1 == chunks);
+        // Always 16 bytes (split off above), so this cannot fail.
+        let tag = <&Tag>::try_from(tag).ok()?;
         // The tag is checked before anything is decrypted.
         cipher
-            .decrypt_in_place_detached(&nonce, b"", &mut out[start..], Tag::from_slice(tag))
+            .decrypt_inout_detached(&nonce, b"", (&mut out[start..]).into(), tag)
             .ok()?;
     }
     Some(out)
@@ -135,7 +137,7 @@ mod tests {
     fn chunk(counter: u64, last: bool, data: &[u8]) -> Vec<u8> {
         let mut buf = data.to_vec();
         let tag = ChaCha20Poly1305::new(&KEY.into())
-            .encrypt_in_place_detached(&chunk_nonce(counter, last), b"", &mut buf)
+            .encrypt_inout_detached(&chunk_nonce(counter, last), b"", buf.as_mut_slice().into())
             .unwrap();
         buf.extend_from_slice(&tag);
         buf

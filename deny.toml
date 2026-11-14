@@ -55,7 +55,7 @@ deny = [
 # Two semver lines of the same crate. Each skip names one exact version, so
 # a third version or a new duplicate still fails the check.
 skip = [
-    { crate = "syn@3.0.9", reason = "serde_derive 1.0.229 and thiserror-impl 2.0.21 (postcard, cobs), build time; curve25519-dalek-derive and zeroize_derive use syn 2" },
+    { crate = "syn@3.0.10", reason = "serde_derive 1.0.229 and thiserror-impl 2.0.21 (postcard, cobs), build time; curve25519-dalek-derive and zeroize_derive use syn 2" },
 ]
 
 [sources]

@@ -8,10 +8,10 @@
 //! `aead::Error`; encryption returns `None` instead of panicking.
 //!
 //! The derived keys are wiped, and so is the AEAD's own copy of its key
-//! (chacha20poly1305 zeroizes on drop). HKDF's internal HMAC state lives
+//! (chacha20poly1305's `zeroize` feature wipes it on drop). HKDF's internal HMAC state lives
 //! on the stack and is not wiped by the hkdf crate, as in age.
 
-use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+use chacha20poly1305::aead::{AeadInOut, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;

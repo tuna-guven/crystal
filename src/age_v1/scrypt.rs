@@ -29,8 +29,9 @@ const SCRYPT_SALT_LABEL: &[u8] = b"age-encryption.org/v1/scrypt";
 const SALT_LEN: usize = 16;
 const ENCRYPTED_FILE_KEY_BYTES: usize = FILE_KEY_BYTES + TAG_LEN;
 
-/// scrypt with r = 8 and p = 1 to 32 bytes, over the labelled salt. None
-/// for a work factor scrypt refuses (0, or 64 and up).
+/// scrypt with r = 8 and p = 1 to 32 bytes (the output's length), over
+/// the labelled salt. None for a work factor scrypt refuses (64 and up;
+/// "0" is refused earlier, by the argument parser).
 fn wrapping_key(
     salt: &[u8; SALT_LEN],
     log_n: u8,
@@ -39,7 +40,7 @@ fn wrapping_key(
     let mut inner_salt = [0; SCRYPT_SALT_LABEL.len() + SALT_LEN];
     inner_salt[..SCRYPT_SALT_LABEL.len()].copy_from_slice(SCRYPT_SALT_LABEL);
     inner_salt[SCRYPT_SALT_LABEL.len()..].copy_from_slice(salt);
-    let params = ::scrypt::Params::new(log_n, 8, 1, 32).ok()?;
+    let params = ::scrypt::Params::new(log_n, 8, 1).ok()?;
     let mut key = Zeroizing::new([0; 32]);
     ::scrypt::scrypt(passphrase, &inner_salt, &params, &mut *key).ok()?;
     Some(key)

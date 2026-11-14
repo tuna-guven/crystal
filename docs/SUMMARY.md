@@ -65,6 +65,7 @@
   - [0048 Lock and auto-lock: 5 minutes, save first, unlock again in place](decisions/0048-lock-and-auto-lock.md)
   - [0049 The shell starts at the top, like a normal shell](decisions/0049-shell-starts-at-the-top.md)
   - [0050 Auto-lock counts the time the computer sleeps](decisions/0050-auto-lock-counts-sleep.md)
+  - [0051 RustCrypto and dalek primitives moved to their current lines](decisions/0051-rustcrypto-upgrade.md)
 
 # Development
 

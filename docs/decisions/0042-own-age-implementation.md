@@ -8,7 +8,9 @@
   [0043](0043-age-checked-against-stored-files.md) (step C3): the
   cross-checks against the `age` crate under Verification are replaced by
   stored files the crate wrote, and the crate is gone, so the note under
-  Randomness about its `getrandom` 0.2 probe no longer applies.
+  Randomness about its `getrandom` 0.2 probe no longer applies. Partly
+  replaced by [0051](0051-rustcrypto-upgrade.md): the pinned versions
+  under "Primitives from RustCrypto and dalek" are now 0051's.
 
 ## Context
 

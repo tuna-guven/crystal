@@ -28,7 +28,7 @@
 //! - no grease stanza is written (optional in the spec; Go age writes
 //!   none). Grease and other unknown stanzas are parsed and skipped.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 use super::FILE_KEY_BYTES;
