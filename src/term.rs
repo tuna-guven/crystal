@@ -653,10 +653,10 @@ impl TerminalGuard {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
         self.show(prompt.as_bytes())?;
         let mut line = PublicLine::default();
-        let mut chunk = [0u8; PUBLIC_CHUNK];
+        let mut chunk = Zeroizing::new([0u8; PUBLIC_CHUNK]);
         let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
         let result = loop {
-            let n = self.next_keys(signals, &mut chunk)?;
+            let n = self.next_keys(signals, &mut chunk[..])?;
             let mut done = None;
             for &byte in &chunk[..n] {
                 match line.feed(byte, &mut echo) {
