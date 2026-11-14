@@ -1271,6 +1271,25 @@ fn fd_path(call: &str) -> Option<&str> {
     Some(&call[start..end])
 }
 
+/// Like `fd_path`, but a missing path fails the test: strace prints the
+/// bare fd number when it cannot read `/proc/PID/fd`, and a check that
+/// skipped such calls would pass without checking anything.
+fn traced_path<'a>(call: &'a str, part: &'a str) -> &'a str {
+    fd_path(part).unwrap_or_else(|| {
+        panic!(
+            "strace printed no path for an fd ({call}): Crystal is non-dumpable, so its \
+             /proc/PID/fd is root's, mode 0500; strace needs CAP_DAC_READ_SEARCH to read it, \
+             as CI gives it"
+        )
+    })
+}
+
+/// The quoted string arguments of a call, decoded from `-xx`'s `\xHH`
+/// (which also turns `"` into `\x22`, so a quote only ever delimits).
+fn quoted(call: &str) -> Vec<Vec<u8>> {
+    call.split('"').skip(1).step_by(2).map(unhex).collect()
+}
+
 /// A note title only the strace test types, to look for on disk.
 const TITLE_CANARY: &str = "title-canary-5e1d0b";
 
@@ -1289,12 +1308,13 @@ const WRITE_FAMILY: &str = "open,openat,creat,write,writev,pwrite64,pwritev,pwri
 /// Each file's bytes are checked whole, so text split across two writes
 /// is still found.
 ///
-/// Crystal is non-dumpable, so strace sees its file paths and written
-/// bytes only with CAP_SYS_PTRACE; without it, it shows addresses. The test
-/// therefore runs in CI only, which gives strace the capability and runs
-/// it with `--ignored`.
+/// Crystal is non-dumpable, so strace sees its written bytes only with
+/// CAP_SYS_PTRACE (without it, it shows addresses) and its fd paths only
+/// with CAP_DAC_READ_SEARCH (without it, bare fd numbers). The test
+/// therefore runs in CI only, which gives strace both capabilities and
+/// runs it with `--ignored`.
 #[test]
-#[ignore = "CI only: needs strace with CAP_SYS_PTRACE (see .github/workflows/ci.yml)"]
+#[ignore = "CI only: needs strace with CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH (see .github/workflows/ci.yml)"]
 fn strace_shows_only_ciphertext_written() {
     use std::collections::BTreeMap;
 
@@ -1352,9 +1372,10 @@ fn strace_shows_only_ciphertext_written() {
                 let Some((_, result)) = call.rsplit_once(" = ") else {
                     continue;
                 };
-                let Some(path) = fd_path(result) else {
+                if result.starts_with('-') {
                     continue; // failed open
-                };
+                }
+                let path = traced_path(call, result);
                 assert!(
                     terminal(path)
                         || temp_in(path, vault, "vault.age")
@@ -1364,7 +1385,7 @@ fn strace_shows_only_ciphertext_written() {
                 );
             }
             "write" | "writev" | "pwrite64" | "pwritev" | "pwritev2" => {
-                let path = fd_path(call).unwrap_or("");
+                let path = traced_path(call, call);
                 if terminal(path) {
                     continue;
                 }
@@ -1382,13 +1403,31 @@ fn strace_shows_only_ciphertext_written() {
                     .or_default()
                     .extend(unhex(&call[quote..]));
             }
-            "renameat2" => assert!(
-                call.contains("\"vault.age\"")
-                    || call.contains("\"VERSION\"")
-                    || call.contains(".gen\""),
-                "renamed: {call}"
-            ),
-            "unlinkat" => assert!(call.contains(".tmp-"), "deleted: {call}"),
+            // A temp file onto its target, in the same directory: VERSION
+            // and vault.age in the vault, a counter in the state directory.
+            "renameat2" => {
+                let dir = traced_path(call, call);
+                let [from, to] = &quoted(call)[..] else {
+                    panic!("renamed: {call}");
+                };
+                let to = String::from_utf8_lossy(to);
+                let allowed = if dir == vault {
+                    to == "vault.age" || to == "VERSION"
+                } else {
+                    dir == state && to.ends_with(".gen")
+                };
+                assert!(
+                    allowed && from.starts_with(format!(".{to}.tmp-").as_bytes()),
+                    "renamed: {call}"
+                );
+            }
+            "unlinkat" => {
+                let names = quoted(call);
+                assert!(
+                    names.len() == 1 && names[0].windows(5).any(|w| w == b".tmp-"),
+                    "deleted: {call}"
+                );
+            }
             // The state directory's walk: each level exists already.
             "mkdirat" => assert!(call.contains("= -1 EEXIST"), "created: {call}"),
             _ => panic!("unexpected write-family call: {call}"),

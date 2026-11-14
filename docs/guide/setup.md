@@ -293,7 +293,8 @@ Side effects for development:
   kernel's dumpable flag instead.
 - The strace test (Phase 4: only ciphertext is written) runs in CI only:
   Crystal is non-dumpable, so strace needs `CAP_SYS_PTRACE` to read what
-  it writes, which CI gives it. There is nothing to run locally.
+  it writes and `CAP_DAC_READ_SEARCH` to name the files it writes to,
+  which CI gives it. There is nothing to run locally.
 
 Check its state with `getsebool deny_ptrace`.
 

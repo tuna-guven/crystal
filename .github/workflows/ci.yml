@@ -36,14 +36,16 @@ jobs:
       # Raise this shell's memlock limit to exactly the floor Crystal
       # requires (harden::MEMLOCK_FLOOR, docs/guide/setup.md), so the test locks
       # memory for real instead of only checking the refusal path.
-      # Crystal is non-dumpable, so strace reads the paths and bytes it
-      # writes only with CAP_SYS_PTRACE. Crystal itself gets no capability
-      # (file capabilities are not passed on across exec).
+      # Crystal is non-dumpable, so strace reads the bytes it writes only
+      # with CAP_SYS_PTRACE, and the paths of its fds (-yy) only with
+      # CAP_DAC_READ_SEARCH: a non-dumpable process's /proc/PID/fd belongs
+      # to root, mode 0500. Crystal itself gets no capability (file
+      # capabilities are not passed on across exec).
       - name: Install strace
         run: |
           sudo apt-get update
           sudo apt-get install --yes strace
-          sudo setcap cap_sys_ptrace+ep "$(readlink -f "$(command -v strace)")"
+          sudo setcap cap_sys_ptrace,cap_dac_read_search+ep "$(readlink -f "$(command -v strace)")"
 
       - name: Test
         run: |
