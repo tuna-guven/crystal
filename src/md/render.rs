@@ -4,7 +4,7 @@
 //! - **Markdown** (every note but `.txt`): pulldown-cmark events, a small
 //!   subset drawn as text with styles: headings, emphasis, strong,
 //!   strikethrough, inline and block code, lists (nested, numbered, task
-//!   items), block quotes, rules, tables with aligned columns, links with their
+//!   items), block quotes, rules, tables boxed with aligned columns, links with their
 //!   address, Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
 //!   dimmed and literal. Nothing is ever opened or followed here.
 //! - **Plain text** (`*.txt`, docs/decisions/0038-plain-text-notes.md):
@@ -308,7 +308,7 @@ struct Table {
     head: usize,
 }
 
-/// Rules under a table's header are slices of this (3 bytes a character).
+/// A table's borders are slices of this (3 bytes a character).
 const DASHES: &str = "────────────────";
 
 impl<'s> Builder<'s> {
@@ -672,55 +672,47 @@ impl<'s> Builder<'s> {
         }
     }
 
-    /// Draws the table read so far: every column as wide as its widest
-    /// cell, cells padded by their column's alignment and parted by `│`,
-    /// and a `─┼─` rule under the header. A table wider than the screen
-    /// is drawn unpadded instead, each row wrapping like a paragraph under
-    /// a full-width rule: padding there would fill screens with blanks.
-    /// Cells keep their runs (styles, `[[links]]`); padding and rules are
+    /// Draws the table read so far, boxed: every column as wide as its
+    /// widest cell, cells padded by their column's alignment with one
+    /// blank on each side, a border around the table and a rule between
+    /// rows (`┌─┬─┐`, `│`, `├─┼─┤`, `└─┴─┘`). A table wider than the
+    /// screen is drawn unpadded and unboxed instead, each row wrapping
+    /// like a paragraph, `│` between cells, under a full-width rule after
+    /// the header: padding there would fill screens with blanks. Cells
+    /// keep their runs (styles, `[[links]]`); padding and borders are
     /// fixed text, so no note text is copied.
     fn draw_table(&mut self) {
         let Some(table) = self.table.take() else {
             return;
         };
         let columns = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        if columns == 0 {
+            return;
+        }
         let mut widths = vec![0; columns];
         for row in &table.rows {
             for (width, cell) in widths.iter_mut().zip(row) {
                 *width = (*width).max(self.cell_width(cell));
             }
         }
-        let total = widths.iter().sum::<usize>() + 3 * columns.saturating_sub(1);
+        // `│ ` before each cell, ` ` after it, and the closing `│`.
+        let total = widths.iter().sum::<usize>() + 3 * columns + 1;
         let screen = match self.prefix_width() {
             w if w >= self.width => self.width,
             w => self.width - w,
         };
-        let aligned = total <= usize::from(screen);
+        if total > usize::from(screen) {
+            self.draw_wrapped_table(table, columns);
+            return;
+        }
+        let rows = table.rows.len();
+        self.border(&widths, "┌─", "─┬─", "─┐");
         for (i, row) in table.rows.into_iter().enumerate() {
-            if i == table.head && i > 0 {
-                if aligned {
-                    for (c, &width) in widths.iter().enumerate() {
-                        if c > 0 {
-                            self.add(Text::Fixed("─┼─"), QUOTE_BAR);
-                        }
-                        self.repeat(DASHES, width, QUOTE_BAR);
-                    }
-                } else {
-                    self.add(Text::Rule, QUOTE_BAR);
-                }
-                self.flush();
-            }
             let mut cells = row.into_iter();
             for (c, &width) in widths.iter().enumerate() {
-                if c > 0 {
-                    self.add(Text::Fixed(" │ "), QUOTE_BAR);
-                }
+                self.add(Text::Fixed(if c == 0 { "│ " } else { " │ " }), QUOTE_BAR);
                 let cell = cells.next().unwrap_or_default();
-                let room = if aligned {
-                    width - self.cell_width(&cell)
-                } else {
-                    0
-                };
+                let room = width - self.cell_width(&cell);
                 let before = match table.aligns.get(c) {
                     Some(Alignment::Right) => room,
                     Some(Alignment::Center) => room / 2,
@@ -728,10 +720,49 @@ impl<'s> Builder<'s> {
                 };
                 self.repeat(SPACES, before, PLAIN);
                 self.content.extend(cell);
-                // No trailing blanks at the end of a row.
-                if c + 1 < columns {
-                    self.repeat(SPACES, room - before, PLAIN);
+                self.repeat(SPACES, room - before, PLAIN);
+            }
+            self.add(Text::Fixed(" │"), QUOTE_BAR);
+            self.flush();
+            if i + 1 < rows {
+                self.border(&widths, "├─", "─┼─", "─┤");
+            }
+        }
+        self.border(&widths, "└─", "─┴─", "─┘");
+    }
+
+    /// One border line of a boxed table: `left`, then each column's
+    /// dashes, `mid` between columns, and `right`.
+    fn border(
+        &mut self,
+        widths: &[usize],
+        left: &'static str,
+        mid: &'static str,
+        right: &'static str,
+    ) {
+        for (c, &width) in widths.iter().enumerate() {
+            self.add(Text::Fixed(if c == 0 { left } else { mid }), QUOTE_BAR);
+            self.repeat(DASHES, width, QUOTE_BAR);
+        }
+        self.add(Text::Fixed(right), QUOTE_BAR);
+        self.flush();
+    }
+
+    /// A table wider than the screen: rows wrap like paragraphs, cells
+    /// parted by `│`, a full-width rule under the header.
+    fn draw_wrapped_table(&mut self, table: Table, columns: usize) {
+        for (i, row) in table.rows.into_iter().enumerate() {
+            if i == table.head && i > 0 {
+                self.add(Text::Rule, QUOTE_BAR);
+                self.flush();
+            }
+            // A short row still gets its `│`s, as in a boxed table.
+            let mut cells = row.into_iter();
+            for c in 0..columns {
+                if c > 0 {
+                    self.add(Text::Fixed(" │ "), QUOTE_BAR);
                 }
+                self.content.extend(cells.next().unwrap_or_default());
             }
             self.flush();
         }
@@ -1004,44 +1035,73 @@ mod tests {
         assert_eq!(md("<b>raw</b>", 40), ["<b>raw</b>"]);
         assert_eq!(
             md("| a | b |\n|---|---|\n| 1 | 2 |", 40),
-            ["a │ b", "──┼──", "1 │ 2"]
+            [
+                "┌───┬───┐",
+                "│ a │ b │",
+                "├───┼───┤",
+                "│ 1 │ 2 │",
+                "└───┴───┘"
+            ]
         );
     }
 
     /// Columns line up whatever the cells' lengths, by display width (a
-    /// wide character, a spelled-out escape), with the header's alignment.
+    /// wide character, a spelled-out escape), with the header's alignment;
+    /// a rule parts every two rows, and the box closes every row.
     #[test]
     fn tables_line_up() {
         let table = "| Name | Qty | Note |\n|:--|--:|:-:|\n| apple | 3 | ok |\n| 日本 | 120 | x |";
         assert_eq!(
             md(table, 60),
             [
-                "Name  │ Qty │ Note",
-                "──────┼─────┼─────",
-                "apple │   3 │  ok",
-                "日本  │ 120 │  x"
+                "┌───────┬─────┬──────┐",
+                "│ Name  │ Qty │ Note │",
+                "├───────┼─────┼──────┤",
+                "│ apple │   3 │  ok  │",
+                "├───────┼─────┼──────┤",
+                "│ 日本  │ 120 │  x   │",
+                "└───────┴─────┴──────┘"
             ]
         );
         assert_eq!(
             md("| a | b |\n|---|---|\n| x\u{1b}y | 2 |", 40),
-            ["a          │ b", "───────────┼──", "x<U+001B>y │ 2"]
+            [
+                "┌────────────┬───┐",
+                "│ a          │ b │",
+                "├────────────┼───┤",
+                "│ x<U+001B>y │ 2 │",
+                "└────────────┴───┘"
+            ]
         );
-        // A short row gets empty cells; the header is bold.
+        // A short row gets empty cells; the header is bold, the border
+        // is not. Line 1 is the header: `│ `, then its first cell.
         let page = render("| a | b |\n|---|---|\n| 1 |", Kind::Markdown, 40);
-        assert!(page.line(0)[0].style.mods.contains(Mods::BOLD));
+        assert!(!page.line(1)[0].style.mods.contains(Mods::BOLD));
+        assert!(page.line(1)[1].style.mods.contains(Mods::BOLD));
         assert_eq!(
             md("| a | b |\n|---|---|\n| 1 |", 40),
-            ["a │ b", "──┼──", "1 │"]
+            [
+                "┌───┬───┐",
+                "│ a │ b │",
+                "├───┼───┤",
+                "│ 1 │   │",
+                "└───┴───┘"
+            ]
         );
     }
 
-    /// A `[[link]]` in a cell is found on its row, and a row wider than
-    /// the screen wraps instead of being cut.
+    /// A `[[link]]` in a cell is found on its row (under the top border
+    /// and the header's rule), and a table one column wider than the
+    /// screen is unboxed, its rows wrapping instead of being cut.
     #[test]
     fn table_links_and_wide_rows() {
         let page = render("| a | b |\n|---|---|\n| [[plan]] | x |", Kind::Markdown, 40);
         assert_eq!(page.link_target(0), "plan");
-        assert_eq!(page.link_line(0), Some(2));
+        assert_eq!(page.link_line(0), Some(3));
+        // `│ a │ b │` is 9 columns: boxed at 9, unboxed at 8.
+        let table = "| a | b |\n|---|---|\n| 1 | 2 |";
+        assert_eq!(md(table, 9)[0], "┌───┬───┐");
+        assert_eq!(md(table, 8), ["a │ b", "────────", "1 │ 2"]);
         let rows = md("| aaaa bbbb | cccc |\n|---|---|\n| 1 | 2 |", 8);
         assert_eq!(rows, ["aaaa", "bbbb │", "cccc", "────────", "1 │ 2"]);
         // A cell longer than the screen pads nothing: no blank lines.
