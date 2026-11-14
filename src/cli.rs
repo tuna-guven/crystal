@@ -326,6 +326,26 @@ mod tests {
         }
     }
 
+    // Release builds: every debug-only test hook is an unknown argument,
+    // given exactly as a debug build accepts it, so only a missing flag
+    // can refuse it. Auto-lock stays fixed at 5 minutes (decision 0048).
+    // CI runs this with `cargo test --release`.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_refuses_the_test_hooks() {
+        assert!(matches!(parse_strs(&["v"]), Ok(Command::Run(_))));
+        for hook in [
+            &["--crash-for-test", "panic", "v"][..],
+            &["--prompt-for-test", "read", "v"],
+            &["--skip-unlock-for-test", "v"],
+            &["--demo-notes-for-test", "v"],
+            &["--lock-after-for-test", "2", "v"],
+            &["--lock-after", "2", "v"],
+        ] {
+            assert_eq!(parse_strs(hook), Err(CliError::UnknownArgument), "{hook:?}");
+        }
+    }
+
     // Command words are reserved: never a vault name, and a command word
     // after the first word is a (refused) name, not a second command.
     #[test]

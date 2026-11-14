@@ -954,6 +954,7 @@ fn esc_at_the_lock_screen_quits() {
 /// `--lock-after-for-test`: with no key in the shell, Crystal locks and
 /// says why, and the passphrase unlocks again.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn auto_lock_after_idle_and_unlock_again() {
     let (home, _) = home_with_vault("auto_lock");
     let mut steps = pass_step(PASS);
@@ -975,6 +976,7 @@ fn auto_lock_after_idle_and_unlock_again() {
 /// key. If keys did not count, the lock would come mid-word, the rest
 /// would land on the lock screen, and `Commands:` would never show.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn keys_restart_the_idle_time() {
     let (home, _) = home_with_vault("auto_lock_keys");
     let mut steps = pass_step(PASS);
@@ -1001,6 +1003,7 @@ fn keys_restart_the_idle_time() {
 /// Auto-lock in the editor saves unsaved edits first, and the lock screen
 /// says so; after unlocking, the note holds them.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn auto_lock_saves_unsaved_edits_first() {
     let (home, _) = home_with_vault("auto_lock_save");
     let mut steps = pass_step(PASS);
@@ -1025,6 +1028,7 @@ fn auto_lock_saves_unsaved_edits_first() {
 /// never saved), Crystal still locks, and the lock screen says the edits
 /// are lost. Esc there quits.
 #[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn auto_lock_says_when_edits_are_lost() {
     let (home, _) = home_with_vault("auto_lock_lost");
     let mut steps = pass_step(PASS);
@@ -1329,7 +1333,11 @@ fn kill_during_saves(home: &Path, delay_ms: u64) {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    let cmd = format!("'{BIN}' diary & echo; echo crystal-pid=$!; wait $!");
+    // The shell prints its own pid, then becomes Crystal (`exec` keeps the
+    // pid): the line always comes before Crystal's prompt. With Crystal as
+    // a background job printing `$!`, the prompt could come first, and the
+    // wait for it, which starts after the pid line, never ended.
+    let cmd = format!("echo; echo crystal-pid=$$; exec '{BIN}' diary");
     let mut child = Command::new("script")
         .args(["-qec", &cmd, "/dev/null"])
         .stdin(Stdio::piped())

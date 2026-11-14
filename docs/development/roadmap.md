@@ -37,7 +37,7 @@ Approved 2026-11-14, after a security review of Phase 5.
 | R4 (done) | Every prompt, the lock screen too, turns bracketed paste off and shows the cursor | A pasted passphrase began with ESC and quit Crystal |
 | R5 (done) | The canary scan types its `search` into the shell and fills the completion names (the canary is also the note's title); testing.md says what the scan cannot see (grid cells, the top of the stack, the loop itself) | It overstated what it covers |
 | R6 (done) | Docs: the `ioctl` row in Syscalls, `TCFLSH` in the sandbox's ioctl allowlist, the miri line in Testing | They did not match the code |
-| R7 | A release-only test that the debug-only flags are refused | Checked only by hand |
+| R7 (done) | A release-only test that the debug-only flags are refused (`cli::tests::release_refuses_the_test_hooks`) | Checked only by hand |
 
 ## Steps M0 to M6 (Phase 5)
 
