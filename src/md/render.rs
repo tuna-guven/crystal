@@ -2,7 +2,9 @@
 //! note's text to wrapped, styled lines for the pager.
 //!
 //! - **Markdown** (every note but `.txt`): pulldown-cmark events, a small
-//!   subset drawn as text with styles: headings, emphasis, strong,
+//!   subset drawn as text with styles: headings (an icon and color per
+//!   level, their sections indented, docs/decisions/0052-viewer-cursor-
+//!   and-folding.md), emphasis, strong,
 //!   strikethrough, inline and block code, lists (nested, numbered, task
 //!   items), block quotes, rules, tables boxed with aligned columns, links with their
 //!   address, Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
@@ -30,6 +32,7 @@ use pulldown_cmark::{
 
 use super::safe::{SafeText, sanitize};
 use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
+#[cfg(test)]
 use crate::ui::layout::Rect;
 use crate::ui::wrap::{Span, wrap_each};
 
@@ -121,6 +124,18 @@ pub struct Page {
     headings: Vec<(Zeroizing<String>, usize)>,
     /// Block ids and their first line.
     blocks: Vec<(Zeroizing<String>, usize)>,
+    /// The sections headings outside quotes and lists open, in order.
+    sections: Vec<Section>,
+}
+
+/// A heading's section: the heading's line, its level (1 to 6), and the
+/// line after its last one, where the next heading of the same or a
+/// higher level starts (or the page ends). Folding hides `line + 1..end`.
+#[derive(Clone, Copy)]
+pub struct Section {
+    pub line: usize,
+    pub level: u8,
+    pub end: usize,
 }
 
 crate::model::assert_not_impl!(Page: std::fmt::Debug, std::fmt::Display, Clone);
@@ -172,6 +187,11 @@ impl Page {
             .map(|(_, line)| *line)
     }
 
+    /// The sections, in page order.
+    pub fn sections(&self) -> &[Section] {
+        &self.sections
+    }
+
     /// The line of the block with this id.
     pub fn block_line(&self, id: &str) -> Option<usize> {
         self.blocks
@@ -180,43 +200,45 @@ impl Page {
             .map(|(_, line)| *line)
     }
 
-    /// Draws the lines from `scroll` down into `area`, with link
-    /// `selected` (if any) reversed.
-    pub fn draw_selected(
+    /// Draws line `index` at (x, y), at most `width` columns, with link
+    /// `selected` (if any) reversed. Returns the columns used.
+    pub fn draw_line(
         &self,
         grid: &mut Grid,
-        area: Rect,
-        scroll: usize,
+        (x, y): (u16, u16),
+        width: u16,
+        index: usize,
         selected: Option<usize>,
-    ) {
+    ) -> u16 {
         let selected = selected.and_then(|s| u32::try_from(s).ok());
-        for (y, index) in (area.y..area.bottom()).zip(scroll..self.line_count()) {
-            let mut used = 0;
-            for run in self.line(index) {
-                let x = area.x.saturating_add(used);
-                let room = area.width - used;
-                let style = if run.link.is_some() && run.link == selected {
-                    run.style.mods(run.style.mods | Mods::REVERSED)
-                } else {
-                    run.style
-                };
-                used += match run.text {
-                    Text::Rule => {
-                        for i in 0..room {
-                            grid.put_str(x + i, y, "─", style, 1);
-                        }
-                        room
+        let mut used = 0;
+        for run in self.line(index) {
+            let x = x.saturating_add(used);
+            let room = width - used;
+            let style = if run.link.is_some() && run.link == selected {
+                run.style.mods(run.style.mods | Mods::REVERSED)
+            } else {
+                run.style
+            };
+            used += match run.text {
+                Text::Rule => {
+                    for i in 0..room {
+                        grid.put_str(x + i, y, "─", style, 1);
                     }
-                    ref text => grid.put_str(x, y, self.text_of(text), style, room),
-                };
-            }
+                    room
+                }
+                ref text => grid.put_str(x, y, self.text_of(text), style, room),
+            };
         }
+        used
     }
 
     /// Draws the lines from `scroll` down into `area`.
     #[cfg(test)]
     pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) {
-        self.draw_selected(grid, area, scroll, None);
+        for (y, index) in (area.y..area.bottom()).zip(scroll..self.line_count()) {
+            self.draw_line(grid, (area.x, y), area.width, index, None);
+        }
     }
 }
 
@@ -246,8 +268,17 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         page_links: links,
         headings,
         blocks,
+        mut sections,
         ..
     } = builder;
+    // A section ends where the next heading of its level or higher starts.
+    for i in 0..sections.len() {
+        let level = sections[i].level;
+        sections[i].end = sections[i + 1..]
+            .iter()
+            .find(|s| s.level <= level)
+            .map_or(line_starts.len(), |s| s.line);
+    }
     Page {
         source,
         extra,
@@ -256,6 +287,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         links,
         headings,
         blocks,
+        sections,
     }
 }
 
@@ -298,6 +330,10 @@ struct Builder<'s> {
     /// The table being read: drawn whole at its end, once every column's
     /// width is known.
     table: Option<Table>,
+    /// Columns every line is indented by for the section it is in, before
+    /// any quote or list prefix.
+    section_indent: u16,
+    sections: Vec<Section>,
 }
 
 /// A table's cells as runs (rows of cells), held until the table ends.
@@ -330,6 +366,8 @@ impl<'s> Builder<'s> {
             headings: Vec::new(),
             blocks: Vec::new(),
             table: None,
+            section_indent: 0,
+            sections: Vec::new(),
         }
     }
 
@@ -481,16 +519,38 @@ impl<'s> Builder<'s> {
             }
             Tag::Heading { level, .. } => {
                 self.start_block();
-                let (marker, color) = match level {
-                    HeadingLevel::H1 => ("# ", Color::Magenta),
-                    HeadingLevel::H2 => ("## ", Color::Blue),
-                    HeadingLevel::H3 => ("### ", Color::Cyan),
-                    HeadingLevel::H4 => ("#### ", Color::Cyan),
-                    HeadingLevel::H5 => ("##### ", Color::Cyan),
-                    HeadingLevel::H6 => ("###### ", Color::Cyan),
+                let (icon, color) = match level {
+                    HeadingLevel::H1 => ("◉ ", Color::Yellow),
+                    HeadingLevel::H2 => ("○ ", Color::Green),
+                    HeadingLevel::H3 => ("● ", Color::Red),
+                    HeadingLevel::H4 => ("✿ ", Color::Blue),
+                    HeadingLevel::H5 => ("◆ ", Color::Magenta),
+                    HeadingLevel::H6 => ("◇ ", Color::Cyan),
                 };
-                self.add(Text::Fixed(marker), DIM);
-                self.push_style(|_| PLAIN.fg(color).mods(Mods::BOLD));
+                let style = PLAIN.fg(color).mods(Mods::BOLD);
+                let level = level as u8;
+                // Only a heading outside quotes and lists opens a section:
+                // it is drawn two columns per level in, and what follows
+                // it two more. The icon is a hanging marker, so a wrapped
+                // heading lines up under its text.
+                if self.containers.is_empty() {
+                    self.section_indent = 2 * u16::from(level - 1);
+                    self.sections.push(Section {
+                        line: self.line_starts.len(),
+                        level,
+                        end: 0,
+                    });
+                }
+                self.containers.push(Container::Item {
+                    marker: Run {
+                        text: Text::Fixed(icon),
+                        style,
+                        link: None,
+                    },
+                    width: 2,
+                    shown: false,
+                });
+                self.push_style(|_| style);
             }
             Tag::BlockQuote(_) => {
                 self.start_block();
@@ -591,12 +651,16 @@ impl<'s> Builder<'s> {
                 self.draw_table();
                 self.blank = true;
             }
-            TagEnd::Heading(_) => {
+            TagEnd::Heading(level) => {
                 self.pop_style();
-                // Content run 0 is the `#` marker.
-                let text = self.content_text(1);
+                let text = self.content_text(0);
                 self.headings.push((text, self.line_starts.len()));
                 self.flush();
+                // The icon's marker.
+                self.containers.pop();
+                if self.containers.is_empty() {
+                    self.section_indent = 2 * u16::from(level as u8);
+                }
                 self.blank = true;
             }
             TagEnd::CodeBlock => {
@@ -800,7 +864,14 @@ impl<'s> Builder<'s> {
     /// indent), and its width. Marks item markers as shown.
     fn prefix(&mut self) -> (Vec<Run>, u16) {
         let mut runs = Vec::new();
-        let mut width: u16 = 0;
+        let mut width = self.section_indent;
+        if width > 0 {
+            runs.push(Run {
+                text: Text::Fixed(&SPACES[..usize::from(width)]),
+                style: PLAIN,
+                link: None,
+            });
+        }
         for container in self.containers.iter_mut().take(MAX_INDENT_LEVELS) {
             match container {
                 Container::Quote => {
@@ -928,15 +999,17 @@ impl<'s> Builder<'s> {
 
     /// The prefix width, without marking markers as shown.
     fn prefix_width(&self) -> u16 {
-        self.containers
-            .iter()
-            .take(MAX_INDENT_LEVELS)
-            .map(|c| match c {
-                Container::Quote => 2,
-                Container::List(_) => 0,
-                Container::Item { width, .. } => *width,
-            })
-            .sum()
+        self.section_indent
+            + self
+                .containers
+                .iter()
+                .take(MAX_INDENT_LEVELS)
+                .map(|c| match c {
+                    Container::Quote => 2,
+                    Container::List(_) => 0,
+                    Container::Item { width, .. } => *width,
+                })
+                .sum::<u16>()
     }
 }
 
@@ -988,7 +1061,7 @@ mod tests {
     fn headings_and_emphasis() {
         assert_eq!(
             md("# Title\n\nSome *it* and **bold**.\n\n## Sub", 30),
-            ["# Title", "", "Some it and bold.", "", "## Sub"]
+            ["◉ Title", "", "  Some it and bold.", "", "  ○ Sub"]
         );
         let page = render("**b** *i* ~~s~~ `c`", Kind::Markdown, 20);
         let styles: Vec<Style> = page.line(0).iter().map(|r| r.style).collect();
@@ -1111,6 +1184,83 @@ mod tests {
         assert!(rows.iter().all(|r| !r.is_empty()), "{rows:?}");
     }
 
+    /// Each level has its icon and color; a heading is indented two
+    /// columns per level below the first, what follows it two more, and a
+    /// wrapped heading lines up under its text. Quotes and lists keep
+    /// their prefixes inside the section's indent; a heading inside them
+    /// gets its icon but moves nothing.
+    #[test]
+    fn headings_indent_their_sections() {
+        let source = "intro\n\n# A\n\na\n\n## B\n\n### C\n\n#### D\n\n##### E\n\n###### F\n\nf\n\n# G\n\n> q\n\n- i\n\n> ## H\n\ng";
+        assert_eq!(
+            md(source, 40),
+            [
+                "intro",
+                "",
+                "◉ A",
+                "",
+                "  a",
+                "",
+                "  ○ B",
+                "",
+                "    ● C",
+                "",
+                "      ✿ D",
+                "",
+                "        ◆ E",
+                "",
+                "          ◇ F",
+                "",
+                "            f",
+                "",
+                "◉ G",
+                "",
+                "  │ q",
+                "",
+                "  • i",
+                "",
+                "  │ ○ H",
+                "",
+                "  g"
+            ]
+        );
+        let page = render("# a\n\n## b", Kind::Markdown, 40);
+        let colors: Vec<Color> = (0..page.line_count())
+            .filter_map(|l| {
+                page.line(l)
+                    .iter()
+                    .map(|r| r.style.fg)
+                    .find(|&c| c != Color::Default)
+            })
+            .collect();
+        assert_eq!(colors, [Color::Yellow, Color::Green]);
+        assert_eq!(
+            md("## long heading text", 12),
+            ["  ○ long", "    heading", "    text"]
+        );
+    }
+
+    /// A section ends where the next heading of its level or higher
+    /// starts, or at the end of the page; headings in quotes open none.
+    #[test]
+    fn sections_end_at_the_next_peer() {
+        let page = render(
+            "# A\n\n## B\n\nb\n\n### C\n\n## D\n\n> # Q\n\n# E\n\ne",
+            Kind::Markdown,
+            40,
+        );
+        let got: Vec<(usize, u8, usize)> = page
+            .sections()
+            .iter()
+            .map(|s| (s.line, s.level, s.end))
+            .collect();
+        // Lines: A 0, B 2, b 4, C 6, D 8, Q 10, E 12, e 14.
+        assert_eq!(
+            got,
+            [(0, 1, 12), (2, 2, 8), (6, 3, 8), (8, 2, 12), (12, 1, 15)]
+        );
+    }
+
     #[test]
     fn links_headings_and_blocks_are_located() {
         let source = "# Top\n\nfirst [[a]] then\n[[b#Part|shown]]\n\n## Part\n\nA block. ^blk-1\n\n- item ^x";
@@ -1128,7 +1278,7 @@ mod tests {
             lines[page.link_line(1).unwrap()].contains("shown"),
             "{lines:?}"
         );
-        assert_eq!(page.heading_line("part"), line_of("## Part"));
+        assert_eq!(page.heading_line("part"), line_of("○ Part"));
         assert_eq!(page.heading_line("TOP"), Some(0));
         assert_eq!(page.heading_line("nope"), None);
         assert_eq!(page.block_line("blk-1"), line_of("A block."));
@@ -1139,9 +1289,8 @@ mod tests {
         );
         // The selected link is drawn reversed; the other is not.
         let mut grid = Grid::new(12, u16::try_from(page.line_count()).unwrap());
-        let area = grid.area();
-        page.draw_selected(&mut grid, area, 0, Some(1));
         let row = u16::try_from(page.link_line(1).unwrap()).unwrap();
+        page.draw_line(&mut grid, (0, row), 12, usize::from(row), Some(1));
         let reversed: Vec<bool> = (0..12)
             .map(|x| {
                 grid.cell(x, row)

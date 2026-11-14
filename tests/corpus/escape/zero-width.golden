@@ -1,25 +1,25 @@
 plain ro<U+200B>a<U+0064><U+200D>map text
 
-# heading ro<U+200B>a<U+0064><U+200D>map
+◉ heading ro<U+200B>a<U+0064><U+200D>map
 
-inline ro<U+200B>a<U+0064><U+200D>map code
+  inline ro<U+200B>a<U+0064><U+200D>map code
 
-ro<U+200B>a<U+0064><U+200D>map
+  ro<U+200B>a<U+0064><U+200D>map
 
-link ro<U+200B>a<U+0064><U+200D>map (https://example.org)
+  link ro<U+200B>a<U+0064><U+200D>map (https://example.org)
 
-text (https://example.org/ro<U+200B>a<U+0064><U+200D>map)
+  text (https://example.org/ro<U+200B>a<U+0064><U+200D>map)
 
-ro<U+200B>a<U+0064><U+200D>map
+  ro<U+200B>a<U+0064><U+200D>map
 
-• item ro<U+200B>a<U+0064><U+200D>map
+  • item ro<U+200B>a<U+0064><U+200D>map
 
-│ quote ro<U+200B>a<U+0064><U+200D>map
+  │ quote ro<U+200B>a<U+0064><U+200D>map
 
-┌─────────────────────────────────────┐
-│ cell ro<U+200B>a<U+0064><U+200D>map │
-├─────────────────────────────────────┤
-│ ro<U+200B>a<U+0064><U+200D>map      │
-└─────────────────────────────────────┘
+  ┌─────────────────────────────────────┐
+  │ cell ro<U+200B>a<U+0064><U+200D>map │
+  ├─────────────────────────────────────┤
+  │ ro<U+200B>a<U+0064><U+200D>map      │
+  └─────────────────────────────────────┘
 
-#tag ro<U+200B>a<U+0064><U+200D>map
+  #tag ro<U+200B>a<U+0064><U+200D>map

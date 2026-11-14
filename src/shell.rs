@@ -43,8 +43,8 @@ Commands:
   tags          every tag, with how many notes have it
   find TEXT     names that hold TEXT's letters in order, best first
   search TEXT   notes whose name or text holds TEXT (ignoring case)
-  view NAME     the note, full screen: Tab and Enter follow [[links]],
-                Backspace goes back, b lists backlinks, q returns here
+  view NAME     the note, full screen: Tab folds a heading, n/N and Enter
+                follow [[links]], Backspace back, b backlinks, q returns here
   edit NAME     the note in the editor: Ctrl+S saves, Ctrl+E shows it
                 rendered, Ctrl+Q closes
   new NAME      a new note (new FOLDER/NAME in a folder), in the editor;

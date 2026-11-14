@@ -1162,7 +1162,7 @@ fn osc52(output: &str) -> Vec<&str> {
 
 /// In the pager: y copies into Crystal's own clipboard, and nothing is
 /// ever sent to the system clipboard (no OSC 52, decision 0041); links are
-/// followed with Tab and Enter.
+/// followed with n and Enter.
 #[test]
 #[cfg_attr(
     not(debug_assertions),
@@ -1174,7 +1174,7 @@ fn pager_copies_inside_and_follows_links() {
         &[
             (SHELL_READY, b"view welcome\r"),
             ("Welcome", b"y"),
-            ("inside", b"Y\t\r"),
+            ("inside", b"Yn\r"),
             ("Keys", b"q"),
             (SHELL_READY, b"quit\r"),
         ],
@@ -1720,11 +1720,11 @@ fn mv_rewrites_links_and_rm_asks_first() {
     let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
     assert!(ok, "{output}");
 
-    // The link followed the note (Tab selects it, Enter follows it to
+    // The link followed the note (n selects it, Enter follows it to
     // work/goals); then index is deleted for good.
     let mut steps = pass_step(PASS);
     steps.push(("unlocked.", b"view index\r".to_vec()));
-    steps.push(("the plan", b"\t\r".to_vec()));
+    steps.push(("the plan", b"n\r".to_vec()));
     steps.push(("work/goals", b"q".to_vec()));
     steps.push((SHELL_READY, b"rm index\r".to_vec()));
     steps.push(("delete.", b"y\r".to_vec()));
