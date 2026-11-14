@@ -117,25 +117,168 @@ fn startup() -> Result<(), Box<dyn Error>> {
 
     // Step 8: unlock. The vault directory is checked before the prompt, so
     // a mistyped name fails at once.
-    let vault_dir = unlock::open_vault_dir(&data_dir, &args.name)?;
+    let mut vault_dir = unlock::open_vault_dir(&data_dir, &args.name)?;
     drop(data_dir);
-    let pass = terminal.read_passphrase(&signals, PROMPT)?;
-    // unlock takes the passphrase and wipes it as soon as identity.age is
-    // open, before vault.age is read.
-    let unlocked = unlock::unlock(vault_dir, &args.name, pass, &state_dir)?;
+    let mut state_dir = state_dir;
+    // Each turn unlocks and runs a session; `lock` ends the session, which
+    // gives back only the two directory handles, and the next turn shows
+    // the lock screen (docs/decisions/0048-lock-and-auto-lock.md).
+    let mut locked: Option<app::LockReason> = None;
+    loop {
+        let unlocked = match locked {
+            // At start, one try (decision 0023): a wrong passphrase exits.
+            // unlock takes the passphrase and wipes it as soon as
+            // identity.age is open, before vault.age is read.
+            None => {
+                let pass = terminal.read_passphrase(&signals, PROMPT)?;
+                unlock::unlock(&vault_dir, &args.name, pass, &state_dir)?
+            }
+            Some(reason) => {
+                let again = unlock_again(
+                    &mut terminal,
+                    &signals,
+                    &vault_dir,
+                    &args.name,
+                    &state_dir,
+                    reason_line(reason),
+                )?;
+                let Some(unlocked) = again else {
+                    return Ok(());
+                };
+                unlocked
+            }
+        };
+        match run_unlocked(
+            &mut terminal,
+            &signals,
+            &args,
+            unlocked,
+            vault_dir,
+            state_dir,
+        )? {
+            Some((session, reason)) => {
+                (vault_dir, state_dir) = session.into_dirs();
+                // Everything from the vault is wiped by now: only then
+                // does a SIGTSTP stop the process (decision 0048).
+                if let app::LockReason::Suspended(_) = reason {
+                    terminal.suspend()?;
+                }
+                locked = Some(reason);
+            }
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The lock screen's cow (cowsay's default cow, GPL like Crystal; decision
+/// 0048). Fixed text: nothing from the vault is shown while locked.
+const COW: [&str; 8] = [
+    r"/ I locked your vault to protect you \",
+    r"\ while you were away.               /",
+    r" ------------------------------------",
+    r"        \   (__)",
+    r"         \  (oo)\_______",
+    r"            (__)\       )\/\",
+    r"                ||----w |",
+    r"                ||     ||",
+];
+
+const LOCKED_BY_COMMAND: &str =
+    "Locked by the lock command; notes, history and clipboard were wiped from memory.";
+const LOCKED_IDLE: &str = "Locked after 5 minutes idle; notes and history were wiped from memory.";
+const LOCKED_IDLE_SAVED: &str = "Locked after 5 minutes idle; your unsaved edits were saved first.";
+const LOCKED_SUSPENDED: &str =
+    "Locked when Crystal was suspended; notes and history were wiped from memory.";
+const LOCKED_SUSPENDED_SAVED: &str =
+    "Locked when Crystal was suspended; your unsaved edits were saved first.";
+const LOCKED_SUSPENDED_LOST: &str =
+    "Locked when suspended. Your edits could NOT be saved: they are lost.";
+const LOCKED_IDLE_LOST: &str =
+    "Locked after 5 minutes idle. Your edits could NOT be saved: they are lost.";
+
+/// The lock screen's line for why Crystal locked.
+fn reason_line(reason: app::LockReason) -> &'static str {
+    match reason {
+        app::LockReason::Command => LOCKED_BY_COMMAND,
+        app::LockReason::Idle(app::Edits::None) => LOCKED_IDLE,
+        app::LockReason::Idle(app::Edits::Saved) => LOCKED_IDLE_SAVED,
+        app::LockReason::Idle(app::Edits::Lost) => LOCKED_IDLE_LOST,
+        app::LockReason::Suspended(app::Edits::None) => LOCKED_SUSPENDED,
+        app::LockReason::Suspended(app::Edits::Saved) => LOCKED_SUSPENDED_SAVED,
+        app::LockReason::Suspended(app::Edits::Lost) => LOCKED_SUSPENDED_LOST,
+    }
+}
+const WRONG_PASSPHRASE: &str = "Wrong passphrase; try again.";
+
+/// The lock screen: the cow, why Crystal locked, a note (a wrong
+/// passphrase) and the prompt. Raw mode: lines end in CR LF.
+fn lock_screen(reason: &str, note: &str) -> String {
+    let mut screen = COW.join("\r\n");
+    for line in ["", "", reason, note, "Passphrase: "] {
+        screen.push_str(line);
+        if !line.starts_with("Passphrase") {
+            screen.push_str("\r\n");
+        }
+    }
+    screen
+}
+
+/// After a lock (decision 0048): asks on the lock screen until the
+/// passphrase opens the vault; a wrong one asks again (each try costs
+/// scrypt's second). `None` when the user leaves (Esc, Ctrl+C, an exit
+/// signal, a closed terminal): Crystal exits, with nothing left to wipe.
+/// Any other failure (the vault changed into something that does not
+/// open) ends Crystal with its error, as at start.
+fn unlock_again(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    vault_dir: &vault::vault_dir::VaultDir,
+    name: &vault::VaultName,
+    state_dir: &vault::StateDir,
+    reason: &str,
+) -> Result<Option<unlock::Unlocked>, Box<dyn Error>> {
+    let mut note = "";
+    loop {
+        let pass = match terminal.read_passphrase(signals, &lock_screen(reason, note)) {
+            Ok(pass) => pass,
+            Err(term::PromptError::Cancelled | term::PromptError::Closed) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        match unlock::unlock(vault_dir, name, pass, state_dir) {
+            Ok(unlocked) => return Ok(Some(unlocked)),
+            Err(unlock::UnlockError::Identity(crypto::CryptoError::WrongPassphrase)) => {
+                note = WRONG_PASSPHRASE;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// An unlocked vault's session: the restore question, the shell and the
+/// app. Returns the session and why it locked, for its directory handles
+/// and the lock screen; `None`
+/// when Crystal exits. The shell (scrollback, history) is dropped here
+/// either way, and with it everything shown (all wiped).
+fn run_unlocked(
+    terminal: &mut term::TerminalGuard,
+    signals: &term::Signals,
+    args: &cli::RunArgs,
+    unlocked: unlock::Unlocked,
+    vault_dir: vault::vault_dir::VaultDir,
+    state_dir: vault::StateDir,
+) -> Result<Option<(session::Session, app::LockReason)>, Box<dyn Error>> {
     // An older vault than this device has seen: restored, or put back by
     // someone else. Only the word `restore` accepts it (decision 0036);
     // anything else drops the notes and changes nothing.
     let restored = if let Some(older) = unlocked.older {
-        confirm_restore(&mut terminal, &signals, older)?;
+        confirm_restore(terminal, signals, older)?;
         unlock::accept_restore(&state_dir, unlocked.contents.vault_id, older)?;
         "\nThe restored vault was accepted: rollback detection starts again from it."
     } else {
         ""
     };
 
-    // The shell (docs/decisions/0033-shell.md). Leaving it drops the notes
-    // and everything shown (all wiped), and the guard clears the screen.
+    // The shell (docs/decisions/0033-shell.md).
     let first = if unlocked.pinned == vault::pin::Pinned::New
         || unlocked.seen == vault::generation::Seen::FirstUse
     {
@@ -156,7 +299,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
     #[cfg(not(debug_assertions))]
     let demo = false;
     let mut session = session::Session::new(
-        unlocked.vault_dir,
+        vault_dir,
         state_dir,
         unlocked.recipient,
         unlocked.stamp,
@@ -169,11 +312,19 @@ fn startup() -> Result<(), Box<dyn Error>> {
         ui::grid::Style::PLAIN,
     );
     shell.print("Type help for the commands.", ui::grid::Style::PLAIN);
-    app::run(&mut terminal, &signals, &mut shell, &mut session, demo)?;
+    #[cfg(debug_assertions)]
+    let idle = args
+        .lock_after_for_test
+        .map_or(app::AUTO_LOCK, std::time::Duration::from_secs);
+    #[cfg(not(debug_assertions))]
+    let idle = app::AUTO_LOCK;
+    let outcome = app::run(terminal, signals, &mut shell, &mut session, demo, idle)?;
     drop(shell);
-    // The notes, the recipient and the vault and state fds.
-    drop(session);
-    Ok(())
+    match outcome {
+        app::Outcome::Lock(reason) => Ok(Some((session, reason))),
+        // The notes, the recipient and the vault and state fds.
+        app::Outcome::Quit => Ok(None),
+    }
 }
 
 const PROMPT: &str = "Passphrase: ";
@@ -368,4 +519,44 @@ fn crash_for_test(kind: cli::CrashKind) {
 fn recurse_forever(depth: u64) -> u64 {
     let frame = std::hint::black_box([depth; 64]);
     recurse_forever(frame[0] + 1) + frame[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lock screen is written to the terminal as is, not through the
+    /// grid: only printable ASCII and CR LF, no line wider than 80
+    /// columns, the cow first and the prompt last.
+    #[test]
+    fn lock_screen_is_plain_fixed_text() {
+        let reasons = [
+            app::LockReason::Command,
+            app::LockReason::Idle(app::Edits::None),
+            app::LockReason::Idle(app::Edits::Saved),
+            app::LockReason::Idle(app::Edits::Lost),
+            app::LockReason::Suspended(app::Edits::None),
+            app::LockReason::Suspended(app::Edits::Saved),
+            app::LockReason::Suspended(app::Edits::Lost),
+        ];
+        for (reason, note) in reasons
+            .into_iter()
+            .flat_map(|r| [(r, ""), (r, WRONG_PASSPHRASE)])
+        {
+            let line = reason_line(reason);
+            let screen = lock_screen(line, note);
+            assert!(
+                screen
+                    .bytes()
+                    .all(|b| (0x20..0x7f).contains(&b) || b == b'\r' || b == b'\n'),
+                "{screen:?}"
+            );
+            assert!(screen.split("\r\n").all(|line| line.len() <= 80));
+            assert!(!screen.replace("\r\n", "").contains(['\r', '\n']));
+            assert!(screen.starts_with(COW[0]));
+            assert!(screen.ends_with("\r\nPassphrase: "));
+            assert!(screen.contains(line));
+            assert_eq!(screen.contains(WRONG_PASSPHRASE), !note.is_empty());
+        }
+    }
 }

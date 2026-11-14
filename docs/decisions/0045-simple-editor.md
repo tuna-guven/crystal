@@ -7,6 +7,8 @@
   selection into the clipboard automatically. Drops the per-note merge of
   sync conflicts that [0001](0001-single-vault-blob.md) and
   [0023](0023-unlock.md) planned: a conflict is refused, never merged.
+  The lock key left for Phase 5 is settled by
+  [0048](0048-lock-and-auto-lock.md): none in the editor.
 
 ## Context
 

@@ -62,6 +62,8 @@
   - [0045 A simple modeless editor with common Ctrl keys](decisions/0045-simple-editor.md)
   - [0046 Invisible characters inside a visible grapheme are spelled out](decisions/0046-invisible-characters-spelled-out.md)
   - [0047 A changed paste is reported; pastes stay plain text](decisions/0047-paste-report.md)
+  - [0048 Lock and auto-lock: 5 minutes, save first, unlock again in place](decisions/0048-lock-and-auto-lock.md)
+  - [0049 The shell starts at the top, like a normal shell](decisions/0049-shell-starts-at-the-top.md)
 
 # Development
 

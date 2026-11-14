@@ -6,10 +6,13 @@
 //! opens the pager until `q`; `edit` and `new` open the editor until
 //! Ctrl+Q. In the editor, Ctrl+S saves through the session and Ctrl+E
 //! shows the text rendered, unsaved changes included, until Ctrl+E, `q`
-//! or Esc. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal;
-//! Crystal's own clipboard is wiped on the way out.
+//! or Esc. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal,
+//! and locks on `lock` or after `AUTO_LOCK` without a key or paste
+//! (docs/decisions/0048-lock-and-auto-lock.md); Crystal's own clipboard is
+//! wiped on the way out.
 
 use std::error::Error;
+use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
@@ -28,6 +31,9 @@ use crate::ui::grid::Style;
 use crate::ui::screen::Screen;
 
 const COPIED: &str = "Copied inside Crystal; it never leaves it.";
+
+/// Auto-lock after this long without a key or paste, fixed (decision 0048).
+pub const AUTO_LOCK: Duration = Duration::from_secs(5 * 60);
 
 /// What has the screen.
 enum Mode {
@@ -56,7 +62,41 @@ struct Editing {
     preview: Option<Pager>,
 }
 
-/// Runs the session until the user leaves. `demo`: the debug-only
+/// Why a session ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// `quit`, an exit signal or a closed terminal: Crystal exits.
+    Quit,
+    /// The caller wipes the session and asks for the passphrase again
+    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    Lock(LockReason),
+}
+
+/// Why Crystal locked, for the lock screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockReason {
+    /// The `lock` command.
+    Command,
+    /// No key or paste for `AUTO_LOCK`, and what became of unsaved edits.
+    Idle(Edits),
+    /// SIGTSTP: the caller stops the process after the lock.
+    Suspended(Edits),
+}
+
+/// Unsaved edits when auto-lock fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edits {
+    /// The editor was closed, or had nothing unsaved.
+    None,
+    /// Saved first, as Ctrl+S would.
+    Saved,
+    /// The save was refused or failed (or demo notes): they are gone.
+    Lost,
+}
+
+/// Runs the session until the user leaves or locks. Crystal's clipboard
+/// is wiped either way, and the pager and editor, which live in this
+/// call, are dropped (wiped) when it returns. `demo`: the debug-only
 /// `--demo-notes-for-test` notes are in memory, so nothing may be saved.
 pub fn run(
     terminal: &mut TerminalGuard,
@@ -64,9 +104,18 @@ pub fn run(
     shell: &mut Shell,
     session: &mut Session,
     demo: bool,
-) -> Result<(), Box<dyn Error>> {
+    idle: Duration,
+) -> Result<Outcome, Box<dyn Error>> {
     let mut clipboard = Clipboard::default();
-    let result = run_loop(terminal, signals, shell, session, demo, &mut clipboard);
+    let result = run_loop(
+        terminal,
+        signals,
+        shell,
+        session,
+        demo,
+        idle,
+        &mut clipboard,
+    );
     clipboard.wipe();
     result
 }
@@ -77,8 +126,9 @@ fn run_loop(
     shell: &mut Shell,
     session: &mut Session,
     demo: bool,
+    idle: Duration,
     clipboard: &mut Clipboard,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Outcome, Box<dyn Error>> {
     let mut screen = Screen::new(terminal.size()?);
     let mut decoder = shell::keys::Decoder::new();
     let mut input = Zeroizing::new([0u8; 256]);
@@ -87,6 +137,11 @@ fn run_loop(
     // `rm` asked "Delete … for good?": the note, until the next line.
     // `keys.drain(..)` drops the keys left when the loop breaks.
     let mut confirm_rm: Option<usize> = None;
+    // The last key or paste, on the monotonic clock: a changed system
+    // time cannot delay or skip auto-lock. A resize does not count.
+    let mut last_input = Instant::now();
+    // A SIGTSTP sent during the passphrase prompt was not acted on there.
+    signals.forget_suspend();
     loop {
         screen.frame(terminal.output(), |grid| {
             let notes = session.notes();
@@ -105,11 +160,23 @@ fn run_loop(
                 },
             }
         })?;
-        match terminal.wait(signals, &mut input[..], None)? {
-            Event::Exit => return Ok(()),
-            Event::Redraw | Event::Resumed => screen.redraw_all(terminal.size()?),
+        let left = idle.saturating_sub(last_input.elapsed());
+        match terminal.wait(signals, &mut input[..], Some(left))? {
+            Event::Exit => return Ok(Outcome::Quit),
+            Event::Redraw => screen.redraw_all(terminal.size()?),
+            // SIGTSTP: lock first, so the stopped process holds no notes;
+            // the caller stops it (decision 0048).
+            Event::Suspend => {
+                let edits = save_before_lock(&mut mode, session, shell, demo);
+                return Ok(Outcome::Lock(LockReason::Suspended(edits)));
+            }
+            Event::Timeout if last_input.elapsed() >= idle => {
+                let edits = save_before_lock(&mut mode, session, shell, demo);
+                return Ok(Outcome::Lock(LockReason::Idle(edits)));
+            }
             Event::Timeout => {}
             Event::Keys(n) => {
+                last_input = Instant::now();
                 decoder.feed(&input[..n], &mut keys);
                 for key in keys.drain(..) {
                     match &mut mode {
@@ -124,7 +191,10 @@ fn run_loop(
                                         shell.print("Not deleted.", Style::PLAIN);
                                     }
                                 }
-                                shell::Action::Quit => return Ok(()),
+                                shell::Action::Quit => return Ok(Outcome::Quit),
+                                shell::Action::Lock => {
+                                    return Ok(Outcome::Lock(LockReason::Command));
+                                }
                                 shell::Action::Command(words) => {
                                     // The line after `rm`'s question: only `y`
                                     // deletes. `n` or `no` just answers; any
@@ -241,6 +311,29 @@ fn run_loop(
                 }
             }
         }
+    }
+}
+
+/// Auto-lock and suspend: an editor with unsaved changes (its preview too) is saved
+/// first, exactly as Ctrl+S would; if it is still unsaved afterwards, the
+/// save was refused or failed and the edits are lost with the lock.
+fn save_before_lock(
+    mode: &mut Mode,
+    session: &mut Session,
+    shell: &mut Shell,
+    demo: bool,
+) -> Edits {
+    let Mode::Edit(e) = mode else {
+        return Edits::None;
+    };
+    if !e.editor.is_dirty() {
+        return Edits::None;
+    }
+    save(session, e, shell, demo);
+    if e.editor.is_dirty() {
+        Edits::Lost
+    } else {
+        Edits::Saved
     }
 }
 

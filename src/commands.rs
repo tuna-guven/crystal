@@ -476,7 +476,9 @@ mod tests {
         assert!(viewed.is_none() || line.starts_with("view"));
         let mut grid = Grid::new(80, 40);
         shell.draw(&mut grid);
-        (0..39)
+        // The output rows: the prompt follows them (decision 0049), so it
+        // is left out by its text, not by its row.
+        (0..40)
             .map(|y| {
                 (0..80)
                     .map(|x| grid.cell(x, y).unwrap().symbol())
@@ -484,7 +486,7 @@ mod tests {
                     .trim_end()
                     .to_owned()
             })
-            .filter(|row| !row.is_empty())
+            .filter(|row| !row.is_empty() && row != "crystal:diary>")
             .collect()
     }
 

@@ -71,10 +71,10 @@ impl fmt::Display for UnlockError {
 
 impl std::error::Error for UnlockError {}
 
-/// An unlocked vault. The vault and state fds stay open for the session
-/// (the Landlock rule fds in Phase 6); nothing else does.
+/// An unlocked vault. The caller keeps the vault and state fds open for
+/// the session (the Landlock rule fds in Phase 6), and across a lock;
+/// nothing else stays open.
 pub struct Unlocked {
-    pub vault_dir: VaultDir,
     pub contents: VaultContents,
     /// For saving; the identity itself is wiped before `unlock` returns.
     pub recipient: VaultRecipient,
@@ -133,7 +133,7 @@ pub fn open_vault_dir(data: &DataDir, name: &VaultName) -> Result<VaultDir, Unlo
 /// comes back with `older` set and the counter unchanged, for the user to
 /// accept or not.
 pub fn unlock(
-    vault_dir: VaultDir,
+    vault_dir: &VaultDir,
     name: &VaultName,
     pass: Passphrase,
     state: &StateDir,
@@ -171,7 +171,6 @@ pub fn unlock(
         Err(older) => (Seen::Known, Some(older)),
     };
     Ok(Unlocked {
-        vault_dir,
         contents,
         recipient,
         stamp,
@@ -258,7 +257,7 @@ mod tests {
 
         fn unlock(&self, n: &str, pw: &str) -> Result<Unlocked, UnlockError> {
             let dir = open_vault_dir(&self.data, &name(n))?;
-            unlock(dir, &name(n), pass(pw), &self.state)
+            unlock(&dir, &name(n), pass(pw), &self.state)
         }
 
         /// Unlocking `n` with "pw" is refused; the message names no path

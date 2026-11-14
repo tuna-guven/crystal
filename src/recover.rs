@@ -241,7 +241,7 @@ mod tests {
 
         fn unlocks(&self, n: &str, pw: &str) -> bool {
             let dir = unlock::open_vault_dir(&self.data, &name(n)).unwrap();
-            unlock::unlock(dir, &name(n), pass(pw), &self.state).is_ok()
+            unlock::unlock(&dir, &name(n), pass(pw), &self.state).is_ok()
         }
 
         /// The whole `recover` flow with a new passphrase.

@@ -49,12 +49,13 @@ impl Scrollback {
         self.entries.len()
     }
 
-    /// Draws the newest lines at the bottom of `area`, `scroll` lines up
-    /// from the end. Returns the scroll actually used: never past the
-    /// oldest line.
-    pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) -> usize {
+    /// Draws the newest lines that fit in `area`, `scroll` lines up from
+    /// the end, from its top row down (docs/decisions/0049-shell-starts-at-the-top.md).
+    /// Returns the scroll actually used (never past the oldest line) and
+    /// the rows drawn, so the prompt can follow them.
+    pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) -> (usize, u16) {
         if area.is_empty() {
-            return 0;
+            return (0, 0);
         }
         let wanted = usize::from(area.height) + scroll;
         // The last `wanted` wrapped lines, newest entry first, each
@@ -81,14 +82,14 @@ impl Scrollback {
         let end = all.len() - scroll;
         let start = end.saturating_sub(usize::from(area.height));
         let shown = &all[start..end];
-        // Bottom-aligned: fewer lines than rows start lower down.
-        let top = area.bottom() - u16::try_from(shown.len()).unwrap_or(area.height);
-        for (row, (index, line)) in (top..).zip(shown) {
+        for (row, (index, line)) in (area.y..).zip(shown) {
             let (text, style) = &self.entries[*index];
             let spans: Vec<Span<'_>> = text.spans(*style);
             draw_line(grid, area.x, row, area.width, line, &spans);
         }
-        scroll
+        // At most `area.height` lines are shown.
+        let drawn = u16::try_from(shown.len()).unwrap_or(area.height);
+        (scroll, drawn)
     }
 }
 
@@ -99,7 +100,7 @@ mod tests {
     fn rows(back: &Scrollback, width: u16, height: u16, scroll: usize) -> (Vec<String>, usize) {
         let mut grid = Grid::new(width, height);
         let area = grid.area();
-        let used = back.draw(&mut grid, area, scroll);
+        let (used, _) = back.draw(&mut grid, area, scroll);
         let rows = (0..height)
             .map(|y| {
                 (0..width)
@@ -113,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn newest_at_the_bottom_and_scrolling() {
+    fn newest_lines_and_scrolling() {
         let mut back = Scrollback::new();
         for line in ["one", "two", "three four five"] {
             back.push(line, Style::PLAIN);
@@ -125,10 +126,17 @@ mod tests {
             rows(&back, 10, 3, 9),
             (vec!["one".into(), "two".into(), "three four".into()], 1)
         );
-        // Few lines sit at the bottom.
+        // Few lines start at the top, and the rows drawn are counted
+        // (a wrapped entry counts each of its rows).
         let mut short = Scrollback::new();
         short.push("only", Style::PLAIN);
-        assert_eq!(rows(&short, 10, 3, 0).0, ["", "", "only"]);
+        assert_eq!(rows(&short, 10, 3, 0).0, ["only", "", ""]);
+        let mut grid = Grid::new(10, 3);
+        let area = grid.area();
+        assert_eq!(short.draw(&mut grid, area, 0), (0, 1));
+        short.push("three four five", Style::PLAIN);
+        assert_eq!(short.draw(&mut grid, area, 0), (0, 3));
+        assert_eq!(Scrollback::new().draw(&mut grid, area, 0), (0, 0));
     }
 
     #[test]

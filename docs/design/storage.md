@@ -27,7 +27,7 @@ Vaults live in one fixed place, `~/.local/share/crystal/NAME`, and are opened by
 - *`crystal check-code NAME`:* asks for the recovery code and the passphrase, and checks that `identity.backup.age` and `identity.age` hold the same identity. It writes nothing.
 - *`crystal rm NAME`:* asks for the name again, says that only a backup can bring the vault back, then removes `VERSION`, `identity.age`, `identity.backup.age`, `vault.age`, `vault.sync-conflict-*.age`, leftover atomic-writer temp files, the directory, and the vault's `.pin` and `.gen`. Any other file stays, and so does the directory, and the message says so. There is no trash ([decision 0032](../decisions/0032-fixed-locations.md)).
 - *SELinux:* the policy labels `~/.local/share/crystal` statically; every vault is covered ([Sandboxing](sandboxing.md)).
-- *Settings:* `~/.config/crystal` will hold a small plain-text settings file (auto-lock time). Crystal reads it and never writes it, and it holds nothing that loosens security. It is added when the first setting needs it (Phase 5).
+- *Settings:* none yet. The auto-lock time is fixed at 5 minutes and colors follow the terminal's theme ([0048](../decisions/0048-lock-and-auto-lock.md)). Where settings go (a read-only `~/.config/crystal` as in [0032](../decisions/0032-fixed-locations.md), or inside `vault.age`) is decided when the first one is needed; none may loosen security.
 
 ## Key design
 

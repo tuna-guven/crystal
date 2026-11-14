@@ -161,10 +161,11 @@ Crystal did not make are left alone, and so is the directory then.
 ### Opening a vault
 
 `crystal NAME` asks for the passphrase once and unlocks the vault into the
-Crystal shell ([decision 0033](../decisions/0033-shell.md)): a prompt at
-the bottom of the screen, output above it. Nothing you see there stays in
-the terminal's scrollback. The shell knows (`lock` comes with auto-lock in
-Phase 5):
+Crystal shell ([decision 0033](../decisions/0033-shell.md)): like a
+terminal, it starts at the top, and the prompt follows the output down
+the screen ([decision 0049](../decisions/0049-shell-starts-at-the-top.md));
+`clear` or Ctrl+L brings it back to the top. Nothing you see there stays in
+the terminal's scrollback. The shell knows:
 
 | Command | Does |
 | --- | --- |
@@ -174,6 +175,7 @@ Phase 5):
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
 | `view NAME` | The note, full screen. j/k and the arrows scroll, Space and PgDn/PgUp by a screen, g/G to the ends; Tab and Shift+Tab select `[[links]]`, Enter follows one (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; q returns to the shell. A bare title works when only one note has it |
 | `links` | Every `[[link]]` that leads nowhere, and why |
+| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions/0048-lock-and-auto-lock.md)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
 Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the

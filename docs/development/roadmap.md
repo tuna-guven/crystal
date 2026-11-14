@@ -11,16 +11,34 @@
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
 | 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new`, `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
-| 5 to 8 | Not started; Phase 7 dropped (decision 0036) |
+| 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
+| 6 to 8 | Not started; Phase 7 dropped (decision 0036) |
 
 What runs today: `crystal init NAME` creates a vault in
 `~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
 with the recovery code, `crystal check-code NAME` checks the code,
 `crystal rm NAME` deletes a vault, and `crystal NAME` unlocks the vault
 into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
-`view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear` and `quit`.
+`view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear`, `lock` and
+`quit`. Crystal locks by itself after 5 minutes without a key, and when
+suspended.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
+
+## Steps M0 to M6 (Phase 5)
+
+Approved 2026-11-14. Each step ends in a commit with passing checks and is
+approved before it starts.
+
+| Step | What | Why |
+| --- | --- | --- |
+| M0 (done) | Decisions 0048 (lock and auto-lock) and 0049 (shell at the top), this plan, the chapters | Fix the behavior before code |
+| M1 (done) | The shell starts at the top: the prompt follows the output until the screen is full; `clear` returns it to the top. The setup guide | Decision 0049 |
+| M2 (done) | The zeroizing allocator in `crates/zalloc` (zero on free and realloc), installed by `sys`; the only `unsafe` code | Freed copies of note text must not outlive a lock |
+| M3 (done) | `lock`: the session ends and everything from the vault is wiped (notes, indexes, recipient, shell output and history, clipboard); the cow lock screen asks for the passphrase again in the same process (a wrong one asks again, Esc or Ctrl+C quits, an older vault asks for `restore`). Unsaved edits are saved first once auto-lock can lock an open editor (M4) | Decision 0048 |
+| M4 (done) | Auto-lock after 5 minutes without a key or paste, in the shell, pager and editor | Decision 0048 |
+| M5 (done) | `SIGTSTP` locks, then suspends; ignored at the passphrase prompts and questions | A stopped Crystal holds no notes |
+| M6 (done) | Acceptance: the canary scan finds no note text in memory after lock; status and book updated | Ends Phase 5 |
 
 ## Steps P0 to P5 (the paste report, before Phase 5)
 
@@ -95,8 +113,8 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: the escape-injection corpus renders as inert text; the renderer and sanitizer property tests run clean for a million cases each; no note text reaches the terminal's scrollback, stdout or disk. The shell's `lock` command moves to Phase 5, with auto-lock.
 5. **Phase 4: Editor** (done; the strace check runs in CI). A simple modeless editor on the grid ([decision 0045](../decisions/0045-simple-editor.md)): arrows, Home/End, PgUp/PgDn, selection with Shift, Ctrl+C/X/V with Crystal's own clipboard (the system clipboard is the terminal's Ctrl+Shift+C/V), Ctrl+Z/Y undo and redo, Ctrl+S save, Ctrl+E to the viewer and back, Ctrl+Q close; about 850 lines. Then `edit`, `new`, `mv` (rewriting links), `rm` (confirmed, final), save (writing `VERSION` before the first format-2 `vault.age`, decision 0034), Syncthing conflicts detected, never merged: a conflict copy is refused at unlock and a save over a changed `vault.age` is refused (decision 0045). Steps E0 to E7 above.
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
-6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock and the shell's `lock` command, lock on signals, settings in `~/.config/crystal` (read-only plain text; decision 0032).
-   - Accept: the canary scan finds no plaintext after lock.
+6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock after 5 minutes and the shell's `lock` command, lock on suspend (decision 0048), the shell starting at the top (decision 0049). No settings and no vault format change. Steps M0 to M6 above.
+   - Accept (passed 2026-11-14): the canary scan finds no plaintext after lock.
 7. **Phase 6: Sandbox.** Coverage-guided fuzzing of the renderer, sanitizer and vault decoder in a separate `fuzz/` crate (`cargo-fuzz`; the dependency approved then), run for an hour clean. Landlock and seccomp in log mode, collect syscalls, then switch to kill. SELinux policy module and optional bubblewrap launcher. Debug-only `--sandbox-selftest CHECK` and `--sandbox-status` ([Sandboxing](../design/sandboxing.md)).
    - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied.
 8. ~~**Phase 7: Backups.**~~ Dropped (decision 0036): backups are left to restic, borg or any file-level tool; Crystal only accepts a restored, older vault after the word `restore` (step L3), and `crystal check-code NAME` checks the recovery code (step L1).

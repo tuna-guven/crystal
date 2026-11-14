@@ -54,6 +54,7 @@ Commands:
   links         every [[link]] that leads nowhere
   help          this list
   clear         clear the screen (Ctrl+L)
+  lock          wipe the notes from memory and ask for the passphrase again
   quit          lock the vault and leave (also exit, or Ctrl+D on an empty line)
 Names with spaces go in quotes: search \"two words\".
 Keys: Tab completes commands and names; arrows, Home and End move; Ctrl+U, Ctrl+K and Ctrl+W delete; Up and Down
@@ -63,6 +64,9 @@ recall commands; PgUp and PgDn scroll; Ctrl+C clears the line.";
 pub enum Action {
     Nothing,
     Quit,
+    /// `lock`: the caller wipes the session and asks for the passphrase
+    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    Lock,
     /// A command for the caller: its words (the first is the command).
     Command(Vec<Zeroizing<String>>),
 }
@@ -280,19 +284,24 @@ impl Shell {
                 Action::Nothing
             }
             Some("quit" | "exit") => Action::Quit,
+            Some("lock") => Action::Lock,
             Some(_) => Action::Command(words),
         }
     }
 
-    /// Output above, the prompt on the bottom row.
+    /// The output from the top row, the prompt right below it.
     pub fn draw(&mut self, grid: &mut Grid) {
         let (output, prompt_row) = grid.area().split_bottom(1);
         self.page = usize::from(output.height).saturating_sub(1).max(1);
-        self.scroll = self.output.draw(grid, output, self.scroll);
+        let (scroll, drawn) = self.output.draw(grid, output, self.scroll);
+        self.scroll = scroll;
         if prompt_row.is_empty() {
             return;
         }
-        let y = prompt_row.y;
+        // Right below the output, as in a terminal: the top row in a
+        // fresh or cleared shell, the bottom row once the output fills the
+        // screen (docs/decisions/0049-shell-starts-at-the-top.md).
+        let y = output.y + drawn;
         let width = prompt_row.width;
         let used = grid.put_str(0, y, &self.prompt, PROMPT_STYLE, width);
         // The text before the cursor, scrolled so the cursor stays visible.
@@ -358,13 +367,22 @@ mod tests {
     #[test]
     fn prompt_and_echo() {
         let mut s = shell();
-        assert_eq!(screen(&mut s, 30, 2), ["", "crystal:diary>"]);
+        // A fresh shell starts at the top (decision 0049).
+        assert_eq!(screen(&mut s, 30, 2), ["crystal:diary>", ""]);
         type_text(&mut s, "help");
-        assert_eq!(screen(&mut s, 30, 2)[1], "crystal:diary> help");
+        assert_eq!(screen(&mut s, 30, 2)[0], "crystal:diary> help");
         assert!(matches!(s.key(Key::Enter), Action::Nothing));
-        let rows = screen(&mut s, 80, 30);
-        assert!(rows.iter().any(|r| r == "crystal:diary> help"), "{rows:?}");
+        let rows = screen(&mut s, 80, 60);
+        assert_eq!(rows[0], "crystal:diary> help", "the echo, on top");
         assert!(rows.iter().any(|r| r.starts_with("Commands:")), "{rows:?}");
+        // The prompt follows the output: right below it, with only empty
+        // rows after it.
+        let prompt = rows.iter().rposition(|r| !r.is_empty()).unwrap();
+        assert_eq!(rows[prompt], "crystal:diary>");
+        assert!(
+            prompt < rows.len() - 1,
+            "not pushed to the bottom: {rows:?}"
+        );
     }
 
     #[test]
@@ -378,6 +396,7 @@ mod tests {
             _ => panic!("not a command"),
         }
         assert!(matches!(type_text(&mut s, "quit\r"), Action::Quit));
+        assert!(matches!(type_text(&mut s, "lock\r"), Action::Lock));
         assert!(matches!(type_text(&mut s, "exit\r"), Action::Quit));
         assert!(matches!(s.key(Key::Ctrl('d')), Action::Quit));
         assert!(matches!(type_text(&mut s, "x"), Action::Nothing));
@@ -397,7 +416,7 @@ mod tests {
                 .any(|r| r == "a quote is not closed")
         );
         type_text(&mut s, "clear\r");
-        assert_eq!(screen(&mut s, 40, 3), ["", "", "crystal:diary>"]);
+        assert_eq!(screen(&mut s, 40, 3), ["crystal:diary>", "", ""]);
     }
 
     #[test]
@@ -440,8 +459,11 @@ mod tests {
         assert_eq!(s.line.as_str(), "ab");
         s.key(Key::Ctrl('c'));
         assert!(s.line.is_empty());
+        // A full screen keeps the prompt on the bottom row; Ctrl+L clears
+        // the output and the prompt returns to the top.
+        assert_eq!(screen(&mut s, 20, 4)[3], "crystal:diary>");
         s.key(Key::Ctrl('l'));
-        assert_eq!(screen(&mut s, 20, 2)[0], "");
+        assert_eq!(screen(&mut s, 20, 2), ["crystal:diary>", ""]);
     }
 
     // A long line scrolls sideways so the cursor stays on screen.

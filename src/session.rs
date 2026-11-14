@@ -176,6 +176,17 @@ impl Session {
         &self.notes
     }
 
+    /// Lock (docs/decisions/0048-lock-and-auto-lock.md): ends the session
+    /// and keeps only the vault and state directory handles, which are
+    /// not secret, to unlock again. The notes, their indexes and the
+    /// recipient are dropped here, and each wipes itself.
+    pub fn into_dirs(self) -> (VaultDir, StateDir) {
+        let Self {
+            vault_dir, state, ..
+        } = self;
+        (vault_dir, state)
+    }
+
     /// Applies `change` and saves the vault. On `Err`, unless
     /// `is_saved()`, nothing changed on disk or in memory.
     pub fn save(&mut self, change: Change) -> Result<(), SaveError> {
@@ -433,9 +444,9 @@ mod tests {
         let data = DataDir::open(Some(home.as_os_str())).unwrap();
         let state = StateDir::open_or_create(Some(home.as_os_str())).unwrap();
         let dir = unlock::open_vault_dir(&data, &name()).unwrap();
-        let u = unlock::unlock(dir, &name(), pass(), &state).unwrap();
+        let u = unlock::unlock(&dir, &name(), pass(), &state).unwrap();
         let notes = Notes::new(u.contents);
-        Session::new(u.vault_dir, state, u.recipient, u.stamp, notes)
+        Session::new(dir, state, u.recipient, u.stamp, notes)
     }
 
     fn vault(home: &Path) -> PathBuf {
@@ -764,5 +775,194 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- Phase 5 acceptance: no note text in memory after lock ----
+
+    /// The canary, XOR-masked at compile time: the plain text exists only
+    /// where the code under test puts it, never in the search itself.
+    const MASK: u8 = 0x5a;
+    const CANARY_MASKED: [u8; 23] = {
+        let plain = *b"crystal-canary-7d41e9b3";
+        let mut masked = [0; 23];
+        let mut i = 0;
+        while i < plain.len() {
+            masked[i] = plain[i] ^ MASK;
+            i += 1;
+        }
+        masked
+    };
+
+    fn canary() -> Zeroizing<String> {
+        let mut text = Zeroizing::new(String::with_capacity(CANARY_MASKED.len()));
+        for b in CANARY_MASKED {
+            text.push(char::from(b ^ MASK));
+        }
+        text
+    }
+
+    /// Where in this process's writable memory (heap, anonymous mappings,
+    /// stacks, the binary's data) `masked` (XORed with `MASK`) is, read through
+    /// /proc/self/mem: a page that went away in the meantime is an error
+    /// to skip, never a crash. Read-only mappings (the code, constants)
+    /// are skipped: nothing can be written there.
+    fn in_memory(masked: &[u8]) -> Option<String> {
+        use std::os::unix::fs::FileExt;
+        let maps = fs::read_to_string("/proc/self/maps").unwrap();
+        let mem = fs::File::open("/proc/self/mem").expect(
+            "cannot open /proc/self/mem: this process is non-dumpable (run through \
+             no_note_text_in_memory_after_lock, which starts a fresh one)",
+        );
+        let needle = masked.len();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut found = None;
+        'regions: for line in maps.lines() {
+            let mut fields = line.split_whitespace();
+            let (Some(range), Some(perms)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            if !perms.starts_with("rw") || line.contains("[vvar") || line.contains("[vsyscall]") {
+                continue;
+            }
+            let (start, end) = range.split_once('-').unwrap();
+            let (start, end) = (
+                u64::from_str_radix(start, 16).unwrap(),
+                u64::from_str_radix(end, 16).unwrap(),
+            );
+            let mut at = start;
+            while at < end {
+                let n = usize::try_from(end - at)
+                    .unwrap_or(usize::MAX)
+                    .min(buf.len());
+                if mem.read_exact_at(&mut buf[..n], at).is_err() {
+                    break;
+                }
+                let hit = buf[..n]
+                    .windows(needle)
+                    .position(|w| w.iter().zip(masked).all(|(&b, &m)| b ^ MASK == m));
+                if let Some(offset) = hit {
+                    found = Some(format!("{line} (+{:#x})", at - start + offset as u64));
+                    break 'regions;
+                }
+                if n <= needle {
+                    break;
+                }
+                // Overlap the next read, so a canary across two reads is found.
+                at += (n - (needle - 1)) as u64;
+            }
+        }
+        zeroize::Zeroize::zeroize(&mut buf);
+        found
+    }
+
+    /// The real lock path in this process: a vault with a note holding
+    /// the canary (in its text, a heading, a tag and a link), saved; the
+    /// shell's `search` output; the pager's rendering; the editor, typed
+    /// into, and Crystal's clipboard filled from it. Then what `lock` does
+    /// (decision 0048): the editor, pager and screens dropped, the
+    /// clipboard wiped, the shell dropped, the session ended with only its
+    /// directory handles kept. Afterwards no writable byte of the process
+    /// holds the canary, nor the vault key's text form. Run by `no_note_text_in_memory_after_lock` in a
+    /// fresh, dumpable process: Crystal itself is non-dumpable, so even
+    /// it cannot open its own /proc/self/mem.
+    #[test]
+    #[ignore = "run by no_note_text_in_memory_after_lock, in a fresh process"]
+    fn canary_child_lock_leaves_no_note_text() {
+        use crate::commands;
+        use crate::editor::Editor;
+        use crate::editor::view::View;
+        use crate::pager::Pager;
+        use crate::shell::Shell;
+        use crate::shell::keys::Key;
+        use crate::ui::clipboard::Clipboard;
+        use crate::ui::grid::Grid;
+
+        assert!(fs::File::open("/proc/self/mem").is_ok(), "not dumpable");
+        let home = home("canary");
+        let mut session = open(&home);
+        let dirs = {
+            let canary = canary();
+            let mut body = Zeroizing::new(String::new());
+            for part in [
+                "# Plan ",
+                &canary,
+                "\n\nText ",
+                &canary,
+                " #t",
+                &canary,
+                " [[",
+                &canary,
+                "]]\n",
+            ] {
+                body.push_str(part);
+            }
+            session.save(new_note("plan", &body)).unwrap();
+
+            let mut shell = Shell::new(&name());
+            let words = [Zeroizing::new("search".to_owned()), canary.clone()];
+            commands::run(session.notes(), &words, &mut shell);
+            let mut grid = Grid::new(80, 24);
+            shell.draw(&mut grid);
+
+            let mut pager = Pager::open(0);
+            pager.draw(&mut grid, session.notes(), None);
+
+            let mut clipboard = Clipboard::default();
+            let mut editor = Editor::new(&body).unwrap();
+            let mut view = View::default();
+            for c in canary.chars() {
+                editor.key(Key::Char(c), &mut clipboard);
+            }
+            editor.key(Key::Ctrl('a'), &mut clipboard);
+            editor.key(Key::Ctrl('c'), &mut clipboard);
+            view.draw(&mut grid, &mut editor, "plan");
+            assert!(
+                in_memory(&CANARY_MASKED).is_some(),
+                "the scan finds a live canary"
+            );
+
+            // What lock does.
+            drop((editor, view, pager, grid));
+            clipboard.wipe();
+            drop(clipboard);
+            drop(shell);
+            drop(words);
+            session.into_dirs()
+        };
+        if let Some(at) = in_memory(&CANARY_MASKED) {
+            panic!("note text left in memory after lock: {at}");
+        }
+        // The vault key's text form (`AGE-SECRET-KEY-1…`, docs/design/leakage.md):
+        // unlock parsed it from identity.age and wiped it. The test opens
+        // identity.age itself and keeps only a masked copy to look for.
+        let masked_key: Vec<u8> = {
+            let sealed = fs::read(vault(&home).join("identity.age")).unwrap();
+            let key = crate::crypto::decrypt_with_passphrase(&sealed, &pass()).unwrap();
+            assert!(key.starts_with(b"AGE-SECRET-KEY-1"));
+            key.iter().map(|b| b ^ MASK).collect()
+        };
+        if let Some(at) = in_memory(&masked_key) {
+            panic!("the vault key's text left in memory: {at}");
+        }
+        drop(dirs);
+    }
+
+    /// Phase 5 acceptance (docs/development/testing.md, "Canary scan"):
+    /// runs `canary_child_lock_leaves_no_note_text` in a fresh process of
+    /// this test binary, alone: dumpable (no hardening test runs there),
+    /// so it can read its own /proc/self/mem.
+    #[test]
+    fn no_note_text_in_memory_after_lock() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "session::tests::canary_child_lock_leaves_no_note_text",
+            ])
+            .args(["--ignored", "--test-threads=1", "--nocapture"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
     }
 }

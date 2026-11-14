@@ -4,7 +4,9 @@
 - **Status:** Accepted. Replaces the planned multi-pane viewer (fuzzy
   finder and backlinks panes) of the roadmap's Phase 3. The `copy` command
   and system-clipboard copying are replaced by
-  [0041](0041-internal-clipboard-only.md).
+  [0041](0041-internal-clipboard-only.md). The prompt's place on the
+  bottom row is replaced by [0049](0049-shell-starts-at-the-top.md);
+  `lock` is settled by [0048](0048-lock-and-auto-lock.md).
 
 ## Context
 

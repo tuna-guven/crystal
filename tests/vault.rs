@@ -867,6 +867,163 @@ fn shell_help_unknown_and_quit() {
     );
 }
 
+/// `lock` (decision 0048) ends the session and asks for the passphrase
+/// again in the same process. After unlocking, a new shell starts: what
+/// the old one showed (`help`) is gone, and the notes are back.
+#[test]
+fn lock_asks_again_and_starts_a_new_shell() {
+    let (home, _) = home_with_vault("lock");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"help\r".to_vec()));
+    steps.push(("Commands:", b"lock\r".to_vec()));
+    steps.push((PROMPT, format!("{PASS}\r").into_bytes()));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let relocked = output.rfind(PROMPT).unwrap();
+    assert!(relocked > output.find("Commands:").unwrap(), "asked again");
+    let after = &output[relocked..];
+    assert!(after.contains("notes"), "{after}");
+    assert!(after.contains("unlocked."), "{after}");
+    assert!(
+        !after.contains("Commands:"),
+        "the old shell's output: {after}"
+    );
+    assert!(!after_leaving(&output).contains("Commands:"));
+}
+
+/// The lock screen (decision 0048) shows the cow; a wrong passphrase
+/// there asks again instead of exiting, and the right one unlocks.
+#[test]
+fn lock_screen_asks_again_after_a_wrong_passphrase() {
+    let (home, _) = home_with_vault("lock_wrong");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"lock\r".to_vec()));
+    steps.push(("(oo)", b"wrong passphrase here\r".to_vec()));
+    steps.push((
+        "Wrong passphrase; try again.",
+        format!("{PASS}\r").into_bytes(),
+    ));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(output.contains("I locked your vault to protect you"));
+    assert!(
+        !after_leaving(&output).contains("(oo)"),
+        "the cow stays off the main screen"
+    );
+}
+
+/// Esc at the lock screen quits Crystal cleanly: exit status 0, the
+/// terminal restored, nothing left on the main screen.
+#[test]
+fn esc_at_the_lock_screen_quits() {
+    let (home, _) = home_with_vault("lock_esc");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"lock\r".to_vec()));
+    steps.push(("Passphrase: ", b"\x1b".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(output.contains("\x1b[?1049l"), "left the alternate screen");
+    assert!(!after_leaving(&output).contains("locked"), "{output}");
+}
+
+/// Auto-lock (decision 0048), shortened to 2 seconds by the debug-only
+/// `--lock-after-for-test`: with no key in the shell, Crystal locks and
+/// says why, and the passphrase unlocks again.
+#[test]
+fn auto_lock_after_idle_and_unlock_again() {
+    let (home, _) = home_with_vault("auto_lock");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, Vec::new()));
+    steps.push((
+        "5 minutes idle; notes and history were wiped",
+        format!("{PASS}\r").into_bytes(),
+    ));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let cmd = format!("'{BIN}' --lock-after-for-test 2 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+    assert!(output.contains("(oo)"), "the lock screen: {output}");
+}
+
+/// Auto-lock in the editor saves unsaved edits first, and the lock screen
+/// says so; after unlocking, the note holds them.
+#[test]
+fn auto_lock_saves_unsaved_edits_first() {
+    let (home, _) = home_with_vault("auto_lock_save");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"draft-line".to_vec()));
+    steps.push((
+        "your unsaved edits were saved first",
+        format!("{PASS}\r").into_bytes(),
+    ));
+    steps.push(("unlocked.", b"view plan\r".to_vec()));
+    steps.push(("previous", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let cmd = format!("'{BIN}' --lock-after-for-test 2 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+    // The frame writer may skip an unchanged cell, so not the last letter.
+    let locked = output.find("saved first").unwrap();
+    assert!(output[locked..].contains("draft-lin"), "{output}");
+}
+
+/// When the save before auto-lock cannot happen (debug-only demo notes are
+/// never saved), Crystal still locks, and the lock screen says the edits
+/// are lost. Esc there quits.
+#[test]
+fn auto_lock_says_when_edits_are_lost() {
+    let (home, _) = home_with_vault("auto_lock_lost");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit welcome\r".to_vec()));
+    steps.push(("Ctrl+S save", b"x".to_vec()));
+    steps.push(("Your edits could NOT be saved", b"\x1b".to_vec()));
+    let cmd = format!("'{BIN}' --demo-notes-for-test --lock-after-for-test 2 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// SIGTSTP from outside (decision 0048) locks first, then stops: while
+/// stopped the process is in state T and has left the alternate screen;
+/// after SIGCONT it shows the lock screen, and the passphrase unlocks.
+/// Crystal runs as the shell's background job: `script` stops itself when
+/// its own child stops, so that child must stay the shell. A shell
+/// without job control keeps Crystal in its process group, so it still
+/// reads the terminal, and `wait` returns only when Crystal exits.
+#[test]
+fn suspend_locks_first_then_stops() {
+    let (home, _) = home_with_vault("suspend_lock");
+    let cmd = format!(
+        "'{BIN}' diary & p=$!; ( sleep 6; kill -TSTP $p; sleep 1; \
+         echo state=$(cut -d' ' -f3 /proc/$p/stat); kill -CONT $p ) & wait $p"
+    );
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, Vec::new()));
+    steps.push((
+        "Locked when Crystal was suspended",
+        format!("{PASS}\r").into_bytes(),
+    ));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+    let stopped = output.find("state=T").expect("not stopped");
+    let left = output[..stopped]
+        .rfind("\x1b[?1049l")
+        .expect("alternate screen not left");
+    let shell = output.find(SHELL_READY).unwrap();
+    assert!(shell < left, "left after the shell ran");
+    let lock_screen = output.find("Locked when Crystal was suspended").unwrap();
+    assert!(
+        stopped < lock_screen,
+        "the lock screen comes after resuming"
+    );
+}
+
 #[test]
 fn shell_ctrl_d_quits() {
     let (home, _) = home_with_vault("shell_ctrl_d");
@@ -1031,12 +1188,20 @@ fn new_note_is_saved_and_opens_again() {
         assert!(!found, "{file} holds the note's text");
     }
 
+    // The frame writer skips cells that did not change, so a text can
+    // arrive with gaps (here the canary's last `c` sat on the shell's
+    // "commands."): wait for the pager's status line, the end of its
+    // frame, and look for the text without its last character.
     let mut steps = pass_step(PASS);
     steps.push(("unlocked.", b"view work/plan\r".to_vec()));
-    steps.push((CANARY, b"q".to_vec()));
+    steps.push(("previous", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
     assert!(ok, "{output}");
+    assert!(
+        output.contains(&format!("hello {}", &CANARY[..CANARY.len() - 1])),
+        "{output}"
+    );
 }
 
 /// `edit` changes a saved note; Ctrl+E shows the unsaved text rendered and

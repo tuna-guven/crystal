@@ -4,13 +4,13 @@ Crystal is a single static Rust binary that opens an age-encrypted Markdown
 vault in a full-screen shell, decrypts notes only into locked memory,
 and never writes plaintext to disk.
 
-> **Status: in development, not ready for real notes.** Phases 0 to 3
+> **Status: in development, not ready for real notes.** Phases 0 to 5
 > (skeleton, hardening, terminal guard, crypto and vault format, the
-> Crystal shell and viewer) and Crystal's own age code are done. Phase 4,
-> the editor, is built: notes can be created, edited, renamed and deleted;
-> its last acceptance check (strace) runs in CI. Before real notes go in
-> come the post-quantum recipient, memory hygiene and auto-lock (Phase 5)
-> and the sandbox (Phase 6). See [Roadmap and status](development/roadmap.md).
+> Crystal shell and viewer, the editor, memory hygiene with lock and
+> auto-lock) and Crystal's own age code are done. Before real notes go in
+> comes the sandbox (Phase 6). The vault recipient stays X25519 until the
+> Rust age implementations have a hybrid post-quantum recipient
+> ([decision 0003](decisions/0003-no-post-quantum-yet.md)). See [Roadmap and status](development/roadmap.md).
 
 ## How to read this book
 

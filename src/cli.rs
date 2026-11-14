@@ -66,6 +66,10 @@ pub struct RunArgs {
     /// session refuses every save. Not in release builds.
     #[cfg(debug_assertions)]
     pub demo_notes_for_test: bool,
+    /// Debug builds only: auto-lock after this many seconds instead of 5
+    /// minutes, so a pty test sees it (docs/decisions/0048-lock-and-auto-lock.md).
+    #[cfg(debug_assertions)]
+    pub lock_after_for_test: Option<u64>,
 }
 
 /// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
@@ -143,6 +147,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut skip_unlock_for_test = false;
     #[cfg(debug_assertions)]
     let mut demo_notes_for_test = false;
+    #[cfg(debug_assertions)]
+    let mut lock_after_for_test = None;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
@@ -170,6 +176,13 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             Arg::Long("skip-unlock-for-test") => skip_unlock_for_test = true,
             #[cfg(debug_assertions)]
             Arg::Long("demo-notes-for-test") => demo_notes_for_test = true,
+            #[cfg(debug_assertions)]
+            Arg::Long("lock-after-for-test") => {
+                let value = parser.value().ok();
+                let seconds = value.as_deref().and_then(OsStr::to_str);
+                let seconds = seconds.and_then(|s| s.parse().ok());
+                lock_after_for_test = Some(seconds.ok_or(CliError::UnknownArgument)?);
+            }
             // The first word may be a command; vault names cannot be one
             // (VaultName reserves them), so this is never ambiguous.
             Arg::Value(value) if name.is_none() && mode == Mode::Run => match value.as_bytes() {
@@ -190,7 +203,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     if (crash_for_test.is_some()
         || prompt_for_test.is_some()
         || skip_unlock_for_test
-        || demo_notes_for_test)
+        || demo_notes_for_test
+        || lock_after_for_test.is_some())
         && mode != Mode::Run
     {
         return Err(CliError::UnknownArgument);
@@ -209,6 +223,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             skip_unlock_for_test,
             #[cfg(debug_assertions)]
             demo_notes_for_test,
+            #[cfg(debug_assertions)]
+            lock_after_for_test,
         }),
         Mode::Init => Command::Init { name },
         Mode::Recover => Command::Recover { name },
@@ -240,6 +256,8 @@ mod tests {
             skip_unlock_for_test: false,
             #[cfg(debug_assertions)]
             demo_notes_for_test: false,
+            #[cfg(debug_assertions)]
+            lock_after_for_test: None,
         })
     }
 
@@ -288,6 +306,24 @@ mod tests {
             parse_strs(&["recover", "v", "/d"]),
             Err(CliError::ExtraArgument)
         );
+    }
+
+    // The auto-lock test hook (debug builds): seconds, with `crystal NAME`
+    // only.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn lock_after_for_test() {
+        let Ok(Command::Run(args)) = parse_strs(&["--lock-after-for-test", "2", "v"]) else {
+            panic!("not run");
+        };
+        assert_eq!(args.lock_after_for_test, Some(2));
+        for bad in [
+            &["--lock-after-for-test", "x", "v"][..],
+            &["--lock-after-for-test", "-1", "v"],
+            &["init", "v", "--lock-after-for-test", "2"],
+        ] {
+            assert_eq!(parse_strs(bad), Err(CliError::UnknownArgument), "{bad:?}");
+        }
     }
 
     // Command words are reserved: never a vault name, and a command word

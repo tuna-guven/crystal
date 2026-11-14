@@ -154,11 +154,12 @@ impl TerminalGuard {
             .map_err(|e| TermError::Write(e.kind()))
     }
 
-    /// SIGTSTP: restore the terminal, stop, and re-engage once resumed.
-    /// Ctrl+Z is a key, not a suspend (docs/decisions/0045-simple-editor.md).
-    /// Phase 5: lock first (zeroize notes, forget the identity) and ask for
-    /// the passphrase again after resume.
-    fn suspend(&mut self) -> Result<(), TermError> {
+    /// After `Event::Suspend`: restore the terminal, stop, and re-engage
+    /// once resumed. Ctrl+Z is a key, not a suspend
+    /// (docs/decisions/0045-simple-editor.md). An unlocked session locks
+    /// before calling this, so a stopped Crystal holds no notes
+    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    pub fn suspend(&mut self) -> Result<(), TermError> {
         restore_terminal();
         // SIGSTOP cannot be caught. kill() on ourselves returns only after
         // a SIGCONT (fg or bg) has resumed the process.
@@ -275,6 +276,17 @@ impl Signals {
 
 /// Empties a signal pipe, so a burst of one signal is handled once. The
 /// read end is non-blocking, so this stops at "would block".
+impl Signals {
+    /// Drops a SIGTSTP that came while nothing watched for it: the
+    /// passphrase prompts and questions do not, since there is nothing to
+    /// lock there (and at the `restore` question, stopping would keep the
+    /// just-decrypted vault in a stopped process). Called when a session
+    /// starts, so it does not lock at once.
+    pub fn forget_suspend(&self) {
+        drain(&self.suspend);
+    }
+}
+
 fn drain(pipe: &OwnedFd) {
     let mut byte = [0u8; 16];
     while matches!(rustix::io::read(pipe, &mut byte), Ok(n) if n > 0) {}
@@ -299,9 +311,9 @@ pub enum Event {
     Keys(usize),
     /// The window changed size: read the size again and redraw everything.
     Redraw,
-    /// Crystal was suspended and is running again: as `Redraw` (Phase 5
-    /// asks for the passphrase again here).
-    Resumed,
+    /// SIGTSTP from outside: the caller locks, then calls `suspend`, which
+    /// stops the process until SIGCONT (docs/decisions/0048-lock-and-auto-lock.md).
+    Suspend,
     /// An exit signal, or the terminal was closed (hangup).
     Exit,
     /// The timeout passed with nothing else happening.
@@ -316,11 +328,10 @@ impl TerminalGuard {
     /// Waits for keys, a resize, a suspend or an exit signal. Exit wins
     /// over suspend, suspend over resize, resize over keys. Suspend
     /// (SIGTSTP; raw mode makes Ctrl+Z an ordinary key, the editor's undo)
-    /// is handled here and reported as `Redraw`, since resuming re-enters a
-    /// cleared alternate screen. Phase 5: lock before suspending.
+    /// is only reported: the caller locks, then calls `suspend`.
     ///
     /// `timeout` bounds the wait (`None`: wait for an event); auto-lock
-    /// (Phase 5) uses it.
+    /// uses it.
     pub fn wait(
         &mut self,
         signals: &Signals,
@@ -350,8 +361,7 @@ impl TerminalGuard {
             }
             if suspend {
                 drain(&signals.suspend);
-                self.suspend()?;
-                return Ok(Event::Resumed);
+                return Ok(Event::Suspend);
             }
             if resize {
                 drain(&signals.resize);
@@ -397,7 +407,9 @@ impl TerminalGuard {
         let mut keys = Zeroizing::new([0u8; 64]);
         loop {
             match self.wait(signals, &mut keys[..], None)? {
-                Event::Redraw | Event::Resumed | Event::Timeout => {}
+                // Nothing is unlocked here: stop at once.
+                Event::Suspend => self.suspend()?,
+                Event::Redraw | Event::Timeout => {}
                 Event::Keys(_) | Event::Exit => return Ok(()),
             }
         }
@@ -538,7 +550,7 @@ impl TerminalGuard {
     pub fn read_passphrase(
         &mut self,
         signals: &Signals,
-        prompt: &'static str,
+        prompt: &str,
     ) -> Result<Passphrase, PromptError> {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
         self.show(prompt.as_bytes())?;

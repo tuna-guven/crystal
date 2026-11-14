@@ -155,6 +155,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "x25519-dalek",
+ "zalloc",
  "zeroize",
 ]
 
