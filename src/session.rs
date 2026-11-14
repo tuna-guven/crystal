@@ -855,16 +855,20 @@ mod tests {
         found
     }
 
-    /// The real lock path in this process: a vault with a note holding
-    /// the canary (in its text, a heading, a tag and a link), saved; the
-    /// shell's `search` output; the pager's rendering; the editor, typed
-    /// into, and Crystal's clipboard filled from it. Then what `lock` does
-    /// (decision 0048): the editor, pager and screens dropped, the
-    /// clipboard wiped, the shell dropped, the session ended with only its
-    /// directory handles kept. Afterwards no writable byte of the process
-    /// holds the canary, nor the vault key's text form. Run by `no_note_text_in_memory_after_lock` in a
-    /// fresh, dumpable process: Crystal itself is non-dumpable, so even
-    /// it cannot open its own /proc/self/mem.
+    /// Crystal's parts, used as a session uses them, in this process: a
+    /// vault with a note holding the canary (in its title, its text, a
+    /// heading, a tag and a link), saved; the shell's completion names,
+    /// `search CANARY` typed into the shell (line, history, output); the
+    /// pager's rendering; the editor, typed into, and Crystal's clipboard
+    /// filled from it. Then what `lock` does (decision 0048), step by step
+    /// as `app::run` and `main.rs` do it: the editor, pager and grid
+    /// dropped, the clipboard wiped, the shell dropped, the session ended
+    /// with only its directory handles kept. Afterwards no writable byte
+    /// of the process holds the canary, nor the vault key's text form.
+    /// Run by `no_note_text_in_memory_after_lock` in a fresh, dumpable
+    /// process: Crystal itself is non-dumpable, so even it cannot open its
+    /// own /proc/self/mem. What the scan cannot see is in
+    /// docs/development/testing.md ("Canary scan").
     #[test]
     #[ignore = "run by no_note_text_in_memory_after_lock, in a fresh process"]
     fn canary_child_lock_leaves_no_note_text() {
@@ -896,11 +900,24 @@ mod tests {
             ] {
                 body.push_str(part);
             }
-            session.save(new_note("plan", &body)).unwrap();
+            // The title too, so the name index and the shell's completion
+            // names hold the canary.
+            session.save(new_note(&canary, &body)).unwrap();
 
+            // The shell as in main.rs: the names for completion, then
+            // `search CANARY` typed key by key, so the line editor, the
+            // history and the command's words hold it; Up recalls it into
+            // the line again.
             let mut shell = Shell::new(&name());
-            let words = [Zeroizing::new("search".to_owned()), canary.clone()];
+            shell.set_names(crate::app::names(session.notes()));
+            for c in "search ".chars().chain(canary.chars()) {
+                shell.key(Key::Char(c));
+            }
+            let crate::shell::Action::Command(words) = shell.key(Key::Enter) else {
+                panic!("search was not a command");
+            };
             commands::run(session.notes(), &words, &mut shell);
+            shell.key(Key::Up);
             let mut grid = Grid::new(80, 24);
             shell.draw(&mut grid);
 
