@@ -4,7 +4,7 @@
 //! - **Markdown** (every note but `.txt`): pulldown-cmark events, a small
 //!   subset drawn as text with styles: headings, emphasis, strong,
 //!   strikethrough, inline and block code, lists (nested, numbered, task
-//!   items), block quotes, rules, simple tables, links shown with their
+//!   items), block quotes, rules, tables with aligned columns, links with their
 //!   address, Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
 //!   dimmed and literal. Nothing is ever opened or followed here.
 //! - **Plain text** (`*.txt`, docs/decisions/0038-plain-text-notes.md):
@@ -24,7 +24,9 @@ use std::ops::Range;
 
 use zeroize::Zeroizing;
 
-use pulldown_cmark::{CowStr, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, CowStr, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
+};
 
 use super::safe::{SafeText, sanitize};
 use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
@@ -293,7 +295,21 @@ struct Builder<'s> {
     page_links: Vec<PageLink>,
     headings: Vec<(Zeroizing<String>, usize)>,
     blocks: Vec<(Zeroizing<String>, usize)>,
+    /// The table being read: drawn whole at its end, once every column's
+    /// width is known.
+    table: Option<Table>,
 }
+
+/// A table's cells as runs (rows of cells), held until the table ends.
+struct Table {
+    aligns: Vec<Alignment>,
+    rows: Vec<Vec<Vec<Run>>>,
+    /// How many rows are the header (0 or 1).
+    head: usize,
+}
+
+/// Rules under a table's header are slices of this (3 bytes a character).
+const DASHES: &str = "────────────────";
 
 impl<'s> Builder<'s> {
     fn new(source: &'s SafeText, width: u16) -> Self {
@@ -313,6 +329,7 @@ impl<'s> Builder<'s> {
             page_links: Vec::new(),
             headings: Vec::new(),
             blocks: Vec::new(),
+            table: None,
         }
     }
 
@@ -453,7 +470,15 @@ impl<'s> Builder<'s> {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph | Tag::HtmlBlock | Tag::TableHead | Tag::TableRow => self.start_block(),
+            Tag::Paragraph | Tag::HtmlBlock => self.start_block(),
+            Tag::TableHead | Tag::TableRow => {
+                if matches!(tag, Tag::TableHead) {
+                    self.push_style(|s| s.mods(s.mods | Mods::BOLD));
+                }
+                if let Some(t) = self.table.as_mut() {
+                    t.rows.push(Vec::new());
+                }
+            }
             Tag::Heading { level, .. } => {
                 self.start_block();
                 let (marker, color) = match level {
@@ -507,12 +532,15 @@ impl<'s> Builder<'s> {
                     shown: false,
                 });
             }
-            Tag::Table(_) => self.start_block(),
-            Tag::TableCell => {
-                if !self.content.is_empty() {
-                    self.add(Text::Fixed(" │ "), QUOTE_BAR);
-                }
+            Tag::Table(aligns) => {
+                self.start_block();
+                self.table = Some(Table {
+                    aligns,
+                    rows: Vec::new(),
+                    head: 0,
+                });
             }
+            Tag::TableCell => {}
             Tag::Emphasis => self.push_style(|s| s.mods(s.mods | Mods::ITALIC)),
             Tag::Strong => self.push_style(|s| s.mods(s.mods | Mods::BOLD)),
             Tag::Strikethrough => self.push_style(|s| s.mods(s.mods | Mods::CROSSED_OUT)),
@@ -555,8 +583,12 @@ impl<'s> Builder<'s> {
                 self.flush();
                 self.blank = true;
             }
-            TagEnd::HtmlBlock | TagEnd::Table => {
+            TagEnd::HtmlBlock => {
                 self.flush();
+                self.blank = true;
+            }
+            TagEnd::Table => {
+                self.draw_table();
                 self.blank = true;
             }
             TagEnd::Heading(_) => {
@@ -597,8 +629,19 @@ impl<'s> Builder<'s> {
                 self.flush();
                 self.containers.pop();
             }
-            TagEnd::TableHead | TagEnd::TableRow => self.flush(),
-            TagEnd::TableCell => {}
+            TagEnd::TableHead => {
+                self.pop_style();
+                if let Some(t) = self.table.as_mut() {
+                    t.head = t.rows.len();
+                }
+            }
+            TagEnd::TableRow => {}
+            TagEnd::TableCell => {
+                let cell = std::mem::take(&mut self.content);
+                if let Some(row) = self.table.as_mut().and_then(|t| t.rows.last_mut()) {
+                    row.push(cell);
+                }
+            }
             TagEnd::Emphasis
             | TagEnd::Strong
             | TagEnd::Strikethrough
@@ -626,6 +669,89 @@ impl<'s> Builder<'s> {
                 self.flush();
                 self.blank = true;
             }
+        }
+    }
+
+    /// Draws the table read so far: every column as wide as its widest
+    /// cell, cells padded by their column's alignment and parted by `│`,
+    /// and a `─┼─` rule under the header. A table wider than the screen
+    /// is drawn unpadded instead, each row wrapping like a paragraph under
+    /// a full-width rule: padding there would fill screens with blanks.
+    /// Cells keep their runs (styles, `[[links]]`); padding and rules are
+    /// fixed text, so no note text is copied.
+    fn draw_table(&mut self) {
+        let Some(table) = self.table.take() else {
+            return;
+        };
+        let columns = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        let mut widths = vec![0; columns];
+        for row in &table.rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(self.cell_width(cell));
+            }
+        }
+        let total = widths.iter().sum::<usize>() + 3 * columns.saturating_sub(1);
+        let screen = match self.prefix_width() {
+            w if w >= self.width => self.width,
+            w => self.width - w,
+        };
+        let aligned = total <= usize::from(screen);
+        for (i, row) in table.rows.into_iter().enumerate() {
+            if i == table.head && i > 0 {
+                if aligned {
+                    for (c, &width) in widths.iter().enumerate() {
+                        if c > 0 {
+                            self.add(Text::Fixed("─┼─"), QUOTE_BAR);
+                        }
+                        self.repeat(DASHES, width, QUOTE_BAR);
+                    }
+                } else {
+                    self.add(Text::Rule, QUOTE_BAR);
+                }
+                self.flush();
+            }
+            let mut cells = row.into_iter();
+            for (c, &width) in widths.iter().enumerate() {
+                if c > 0 {
+                    self.add(Text::Fixed(" │ "), QUOTE_BAR);
+                }
+                let cell = cells.next().unwrap_or_default();
+                let room = if aligned {
+                    width - self.cell_width(&cell)
+                } else {
+                    0
+                };
+                let before = match table.aligns.get(c) {
+                    Some(Alignment::Right) => room,
+                    Some(Alignment::Center) => room / 2,
+                    _ => 0,
+                };
+                self.repeat(SPACES, before, PLAIN);
+                self.content.extend(cell);
+                // No trailing blanks at the end of a row.
+                if c + 1 < columns {
+                    self.repeat(SPACES, room - before, PLAIN);
+                }
+            }
+            self.flush();
+        }
+    }
+
+    /// The columns `cell` takes on screen.
+    fn cell_width(&self, cell: &[Run]) -> usize {
+        cell.iter()
+            .map(|run| display_width(self.text_of(&run.text)))
+            .sum()
+    }
+
+    /// `count` characters of `fill` (one-character-wide, all the same).
+    fn repeat(&mut self, fill: &'static str, mut count: usize, style: Style) {
+        let char_len = fill.len() / fill.chars().count();
+        let most = fill.chars().count();
+        while count > 0 {
+            let n = count.min(most);
+            self.add(Text::Fixed(&fill[..n * char_len]), style);
+            count -= n;
         }
     }
 
@@ -878,8 +1004,51 @@ mod tests {
         assert_eq!(md("<b>raw</b>", 40), ["<b>raw</b>"]);
         assert_eq!(
             md("| a | b |\n|---|---|\n| 1 | 2 |", 40),
-            ["a │ b", "1 │ 2"]
+            ["a │ b", "──┼──", "1 │ 2"]
         );
+    }
+
+    /// Columns line up whatever the cells' lengths, by display width (a
+    /// wide character, a spelled-out escape), with the header's alignment.
+    #[test]
+    fn tables_line_up() {
+        let table = "| Name | Qty | Note |\n|:--|--:|:-:|\n| apple | 3 | ok |\n| 日本 | 120 | x |";
+        assert_eq!(
+            md(table, 60),
+            [
+                "Name  │ Qty │ Note",
+                "──────┼─────┼─────",
+                "apple │   3 │  ok",
+                "日本  │ 120 │  x"
+            ]
+        );
+        assert_eq!(
+            md("| a | b |\n|---|---|\n| x\u{1b}y | 2 |", 40),
+            ["a          │ b", "───────────┼──", "x<U+001B>y │ 2"]
+        );
+        // A short row gets empty cells; the header is bold.
+        let page = render("| a | b |\n|---|---|\n| 1 |", Kind::Markdown, 40);
+        assert!(page.line(0)[0].style.mods.contains(Mods::BOLD));
+        assert_eq!(
+            md("| a | b |\n|---|---|\n| 1 |", 40),
+            ["a │ b", "──┼──", "1 │"]
+        );
+    }
+
+    /// A `[[link]]` in a cell is found on its row, and a row wider than
+    /// the screen wraps instead of being cut.
+    #[test]
+    fn table_links_and_wide_rows() {
+        let page = render("| a | b |\n|---|---|\n| [[plan]] | x |", Kind::Markdown, 40);
+        assert_eq!(page.link_target(0), "plan");
+        assert_eq!(page.link_line(0), Some(2));
+        let rows = md("| aaaa bbbb | cccc |\n|---|---|\n| 1 | 2 |", 8);
+        assert_eq!(rows, ["aaaa", "bbbb │", "cccc", "────────", "1 │ 2"]);
+        // A cell longer than the screen pads nothing: no blank lines.
+        let long = format!("| {} | b |\n|---|---|\n| 1 | 2 |", "x".repeat(100));
+        let rows = md(&long, 40);
+        assert_eq!(rows[rows.len() - 2..], ["─".repeat(40), "1 │ 2".to_owned()]);
+        assert!(rows.iter().all(|r| !r.is_empty()), "{rows:?}");
     }
 
     #[test]
