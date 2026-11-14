@@ -1265,16 +1265,18 @@ fn unhex(quoted: &str) -> Vec<u8> {
 }
 
 /// The path `strace -yy` printed for the first fd argument, `name(N</path>`.
-fn fd_path(call: &str) -> Option<&str> {
+/// `-xx` prints the path as `\xHH` too, so it holds no `<` or `>` of its
+/// own; a device adds its numbers after it (`3</dev/tty<char 5:0>>`).
+fn fd_path(call: &str) -> Option<String> {
     let start = call.find('<')? + 1;
-    let end = start + call[start..].find('>')?;
-    Some(&call[start..end])
+    let end = start + call[start..].find(['<', '>'])?;
+    String::from_utf8(unhex(&call[start..end])).ok()
 }
 
 /// Like `fd_path`, but a missing path fails the test: strace prints the
 /// bare fd number when it cannot read `/proc/PID/fd`, and a check that
 /// skipped such calls would pass without checking anything.
-fn traced_path<'a>(call: &'a str, part: &'a str) -> &'a str {
+fn traced_path(call: &str, part: &str) -> String {
     fd_path(part).unwrap_or_else(|| {
         panic!(
             "strace printed no path for an fd ({call}): Crystal is non-dumpable, so its \
@@ -1344,7 +1346,8 @@ fn strace_shows_only_ciphertext_written() {
             .and_then(|rest| rest.strip_prefix("/."))
             .is_some_and(|file| file.starts_with(name) && file[name.len()..].starts_with(".tmp-"))
     };
-    let terminal = |path: &str| path.starts_with("/dev/pts/");
+    // Crystal opens /dev/tty (startup step 5); the pty behind it is /dev/pts.
+    let terminal = |path: &str| path == "/dev/tty" || path.starts_with("/dev/pts/");
     // What was written to each file, in order.
     let mut written: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let log = std::fs::read_to_string(&trace).unwrap();
@@ -1376,6 +1379,7 @@ fn strace_shows_only_ciphertext_written() {
                     continue; // failed open
                 }
                 let path = traced_path(call, result);
+                let path = path.as_str();
                 assert!(
                     terminal(path)
                         || temp_in(path, vault, "vault.age")
@@ -1386,7 +1390,7 @@ fn strace_shows_only_ciphertext_written() {
             }
             "write" | "writev" | "pwrite64" | "pwritev" | "pwritev2" => {
                 let path = traced_path(call, call);
-                if terminal(path) {
+                if terminal(&path) {
                     continue;
                 }
                 assert_eq!(name, "write", "only write() reaches a file: {call}");
@@ -1399,7 +1403,7 @@ fn strace_shows_only_ciphertext_written() {
                     );
                 };
                 written
-                    .entry(path.to_owned())
+                    .entry(path)
                     .or_default()
                     .extend(unhex(&call[quote..]));
             }
