@@ -25,6 +25,20 @@ suspended.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
 
+## Steps R1 to R7 (Phase 5 review fixes)
+
+Approved 2026-11-14, after a security review of Phase 5.
+
+| Step | What | Why |
+| --- | --- | --- |
+| R1 (done) | Auto-lock's idle time is the longer of the monotonic and wall clocks; each wait at most 5 s (decision 0050) | The monotonic clock stops while the computer sleeps |
+| R2 (done) | `suspend_locks_first_then_stops` checks that the save happened before the stop | It passed when Crystal stopped first and locked after resuming |
+| R3 (done) | A test that a key resets the idle timer | No test failed without the reset |
+| R4 (done) | Every prompt, the lock screen too, turns bracketed paste off and shows the cursor | A pasted passphrase began with ESC and quit Crystal |
+| R5 | The canary scan types its `search` into the shell and fills the completion names; testing.md says what the scan cannot see (grid cells, the top of the stack) | It overstated what it covers |
+| R6 | Docs: the `ioctl` row in Syscalls, `TCFLSH` in the sandbox's ioctl allowlist, the miri line in Testing | They did not match the code |
+| R7 | A release-only test that the debug-only flags are refused | Checked only by hand |
+
 ## Steps M0 to M6 (Phase 5)
 
 Approved 2026-11-14. Each step ends in a commit with passing checks and is

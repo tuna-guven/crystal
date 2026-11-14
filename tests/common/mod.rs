@@ -102,6 +102,10 @@ pub fn pty_dialog(cmd: &str, home: &Path, steps: &[(&str, &[u8])]) -> (bool, Str
                 text(&output)
             );
         }
+        if *keys == PAUSE_ONE_SECOND {
+            std::thread::sleep(Duration::from_secs(1));
+            continue;
+        }
         let marker = [
             TYPE_RECOVERY_CODE,
             TYPE_RECOVERY_CODE_WITH_TYPO,
@@ -150,6 +154,10 @@ pub const CODE_PROMPT: &str = "Recovery code (written down at crystal init): ";
 /// As the keys of a dialog step: type the last recovery code shown so far,
 /// then Enter.
 pub const TYPE_RECOVERY_CODE: &[u8] = b"\0type the recovery code shown\0";
+
+/// As the keys of a dialog step: type nothing, wait one second. For
+/// timing tests such as auto-lock; the output is still collected.
+pub const PAUSE_ONE_SECOND: &[u8] = b"\0pause one second\0";
 
 /// As `TYPE_RECOVERY_CODE`, with the first symbol changed: a typo the
 /// check symbol must catch.

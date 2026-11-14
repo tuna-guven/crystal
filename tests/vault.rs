@@ -917,6 +917,25 @@ fn lock_screen_asks_again_after_a_wrong_passphrase() {
     );
 }
 
+/// The lock screen turns off the bracketed paste and the hidden cursor the
+/// shell turned on: a passphrase pasted there arrives as plain keys, not
+/// wrapped in `ESC [ 200 ~` (whose ESC would quit Crystal). A whole
+/// passphrase arriving in one read, as a paste does, unlocks.
+#[test]
+fn lock_screen_turns_off_paste_mode_and_shows_the_cursor() {
+    let (home, _) = home_with_vault("lock_paste");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"lock\r".to_vec()));
+    steps.push(("(oo)", format!("{PASS}\r").into_bytes()));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let before = &output[..output.find("(oo)").unwrap()];
+    let last = |s: &str| before.rfind(s).expect(s);
+    assert!(last("\x1b[?2004l") > last("\x1b[?2004h"), "paste mode on");
+    assert!(last("\x1b[?25h") > last("\x1b[?25l"), "cursor hidden");
+}
+
 /// Esc at the lock screen quits Crystal cleanly: exit status 0, the
 /// terminal restored, nothing left on the main screen.
 #[test]
@@ -948,6 +967,35 @@ fn auto_lock_after_idle_and_unlock_again() {
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
     assert!(output.contains("(oo)"), "the lock screen: {output}");
+}
+
+/// Each key restarts the idle time (decision 0048): with auto-lock after
+/// 3 seconds, `help` typed one key per second (about 4 seconds in all)
+/// runs in the shell, and the lock comes only 3 seconds after the last
+/// key. If keys did not count, the lock would come mid-word, the rest
+/// would land on the lock screen, and `Commands:` would never show.
+#[test]
+fn keys_restart_the_idle_time() {
+    let (home, _) = home_with_vault("auto_lock_keys");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"h".to_vec()));
+    for key in [b"e", b"l", b"p", b"\r"] {
+        steps.push(("", PAUSE_ONE_SECOND.to_vec()));
+        steps.push(("", key.to_vec()));
+    }
+    steps.push(("Commands:", Vec::new()));
+    steps.push((
+        "5 minutes idle; notes and history were wiped",
+        b"\x1b".to_vec(),
+    ));
+    let cmd = format!("'{BIN}' --lock-after-for-test 3 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+    let help = output.find("Commands:").unwrap();
+    assert!(
+        !output[..help].contains("(oo)"),
+        "locked mid-word: {output}"
+    );
 }
 
 /// Auto-lock in the editor saves unsaved edits first, and the lock screen
@@ -989,8 +1037,10 @@ fn auto_lock_says_when_edits_are_lost() {
 }
 
 /// SIGTSTP from outside (decision 0048) locks first, then stops: while
-/// stopped the process is in state T and has left the alternate screen;
-/// after SIGCONT it shows the lock screen, and the passphrase unlocks.
+/// stopped the process is in state T, has left the alternate screen, and
+/// has already saved the editor's unsaved text (`vault.age` changed),
+/// which only a lock before the stop does; after SIGCONT it shows the lock
+/// screen, and the passphrase unlocks.
 /// Crystal runs as the shell's background job: `script` stops itself when
 /// its own child stops, so that child must stay the shell. A shell
 /// without job control keeps Crystal in its process group, so it still
@@ -999,13 +1049,18 @@ fn auto_lock_says_when_edits_are_lost() {
 fn suspend_locks_first_then_stops() {
     let (home, _) = home_with_vault("suspend_lock");
     let cmd = format!(
-        "'{BIN}' diary & p=$!; ( sleep 6; kill -TSTP $p; sleep 1; \
-         echo state=$(cut -d' ' -f3 /proc/$p/stat); kill -CONT $p ) & wait $p"
+        "v=.local/share/crystal/diary/vault.age; before=$(sha256sum < $v); \
+         '{BIN}' diary & p=$!; ( sleep 6; kill -TSTP $p; sleep 1; \
+         echo state=$(cut -d' ' -f3 /proc/$p/stat); \
+         [ \"$(sha256sum < $v)\" != \"$before\" ] && echo saved=yes || echo saved=no; \
+         kill -CONT $p ) & wait $p"
     );
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, Vec::new()));
+    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    // Unsaved text in the editor when SIGTSTP comes.
+    steps.push(("Ctrl+S save", b"draft-line".to_vec()));
     steps.push((
-        "Locked when Crystal was suspended",
+        "Locked when Crystal was suspended; your unsaved edits were saved first.",
         format!("{PASS}\r").into_bytes(),
     ));
     steps.push(("unlocked.", b"quit\r".to_vec()));
@@ -1017,6 +1072,10 @@ fn suspend_locks_first_then_stops() {
         .expect("alternate screen not left");
     let shell = output.find(SHELL_READY).unwrap();
     assert!(shell < left, "left after the shell ran");
+    assert!(
+        output[stopped..].starts_with("state=T\r\nsaved=yes"),
+        "not saved before the stop: {output}"
+    );
     let lock_screen = output.find("Locked when Crystal was suspended").unwrap();
     assert!(
         stopped < lock_screen,

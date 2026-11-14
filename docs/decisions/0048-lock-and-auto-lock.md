@@ -3,7 +3,9 @@
 - **Date:** 2026-11-14 (Phase 5)
 - **Status:** Accepted. Settles what [0033](0033-shell.md) left for
   Phase 5 (`lock`, and suspend locking) and the lock key
-  [0045](0045-simple-editor.md) left open.
+  [0045](0045-simple-editor.md) left open. How the idle time is measured
+  ("on the monotonic clock") is replaced by
+  [0050](0050-auto-lock-counts-sleep.md): sleep counts.
 
 ## Context
 

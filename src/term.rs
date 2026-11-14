@@ -421,8 +421,12 @@ impl TerminalGuard {
 /// (growing would copy the passphrase and free the old buffer unwiped).
 pub const MAX_PASSPHRASE: usize = 1024;
 
-/// Clear the alternate screen, cursor to top left.
-const CLEAR_SCREEN: &[u8] = b"\x1b[2J\x1b[H";
+/// Before a prompt: bracketed paste off and the cursor shown, then clear
+/// the alternate screen, cursor to top left. The shell's frames turn
+/// paste on and hide the cursor (`ui::screen`); at a prompt after a lock,
+/// a paste would arrive wrapped in `ESC [ 200 ~`, and ESC cancels
+/// (decision 0048). The shell's next full redraw turns both back.
+const CLEAR_SCREEN: &[u8] = b"\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
 
 const CTRL_C: u8 = 0x03;
 const BACKSPACE: u8 = 0x08;
@@ -580,7 +584,8 @@ impl TerminalGuard {
         }
     }
 
-    /// Clears the alternate screen and writes `text` at the top left.
+    /// Clears the alternate screen (paste mode off, cursor shown) and
+    /// writes `text` at the top left.
     fn show(&mut self, text: &[u8]) -> Result<(), PromptError> {
         let write = |tty: &mut File, bytes| tty.write_all(bytes);
         write(&mut self.tty, CLEAR_SCREEN)
