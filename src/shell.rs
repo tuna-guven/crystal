@@ -173,10 +173,14 @@ impl Shell {
                 let mut buf = [0u8; 4];
                 self.line.insert(c.encode_utf8(&mut buf));
             }
-            Key::Paste { text, cut } => {
+            Key::Paste { text, cut, cleaned } => {
                 let fits = self.line.insert(&keys::one_line(&text));
                 if cut || !fits {
                     self.print(PASTE_CUT, ERROR_STYLE);
+                // As in the editor (docs/decisions/0047-paste-report.md):
+                // only when text went in and differs from what was copied.
+                } else if cleaned && !text.is_empty() {
+                    self.print(crate::editor::PASTE_CLEANED, Style::PLAIN);
                 }
             }
             Key::Enter => return self.submit(),
@@ -502,13 +506,29 @@ mod tests {
     #[test]
     fn hostile_paste_is_inert() {
         let mut s = shell();
+        let before = s.output_len();
         let mut decoder = keys::Decoder::new();
         let mut keys = Vec::new();
         decoder.feed(b"\x1b[200~quit\r\nview \x1b[2J\x1b[201~", &mut keys);
-        for key in keys {
+        for key in keys.drain(..) {
             assert!(matches!(s.key(key), Action::Nothing), "a paste never runs");
         }
         assert_eq!(s.line.as_str(), "quit view [2J");
+        // The ESC was dropped, so the shell says the paste was sanitized
+        // (decision 0047), once.
+        assert_eq!(s.output_len(), before + 1);
+        let shown = screen(&mut s, 60, 10);
+        assert!(
+            shown.iter().any(|l| l == crate::editor::PASTE_CLEANED),
+            "{shown:?}"
+        );
+        // A clean paste says nothing.
+        s.key(Key::Ctrl('u'));
+        decoder.feed(b"\x1b[200~ls\r\x1b[201~", &mut keys);
+        for key in keys.drain(..) {
+            s.key(key);
+        }
+        assert_eq!(s.output_len(), before + 1);
     }
 
     /// A paste that does not fit the line is cut, and the shell says so;
@@ -520,6 +540,7 @@ mod tests {
         let paste = |text: String, cut| Key::Paste {
             text: Zeroizing::new(text),
             cut,
+            cleaned: false,
         };
         s.key(paste("short".into(), false));
         assert_eq!(s.output_len(), before);
@@ -529,5 +550,13 @@ mod tests {
         s.key(Key::Ctrl('u'));
         s.key(paste("y".into(), true));
         assert_eq!(s.output_len(), before + 2, "cut by the decoder");
+        // Cut and cleaned: only the cut is said.
+        s.key(Key::Ctrl('u'));
+        s.key(Key::Paste {
+            text: Zeroizing::new("z".into()),
+            cut: true,
+            cleaned: true,
+        });
+        assert_eq!(s.output_len(), before + 3);
     }
 }

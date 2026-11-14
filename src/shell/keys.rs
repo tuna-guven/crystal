@@ -52,10 +52,15 @@ pub enum Key {
     /// Ctrl and a letter, as the letter (`Ctrl('c')`).
     Ctrl(char),
     /// Pasted text, in zeroizing memory; `cut` when it was longer than
-    /// `MAX_PASTE` and the rest was dropped.
+    /// `MAX_PASTE` and the rest was dropped; `cleaned` when the cleaning
+    /// dropped a control or BiDi character or replaced broken bytes, so
+    /// the text differs from what was copied
+    /// (docs/decisions/0047-paste-report.md). Line breaks turned into `\n`
+    /// do not count: they are expected.
     Paste {
         text: Zeroizing<String>,
         cut: bool,
+        cleaned: bool,
     },
 }
 
@@ -161,10 +166,8 @@ impl Decoder {
                     } else {
                         paste.len() - PASTE_END.len()
                     };
-                    out.push(Key::Paste {
-                        text: pasted_text(&paste[..len]),
-                        cut,
-                    });
+                    let (text, cleaned) = pasted_text(&paste[..len]);
+                    out.push(Key::Paste { text, cut, cleaned });
                     paste.zeroize();
                 }
                 continue;
@@ -215,31 +218,36 @@ fn shift_in(window: &mut [u8; PASTE_END.len()], byte: u8) -> bool {
 /// characters dropped. The editor inserts it as it is; the shell's prompt
 /// flattens it with `one_line`. A first pass measures the text, so the
 /// zeroizing buffer is allocated once at its exact size; `utf8_chunks`
-/// reads the bytes in place, so no unwiped copy is made.
-fn pasted_text(bytes: &[u8]) -> Zeroizing<String> {
+/// reads the bytes in place, so no unwiped copy is made. Also returns
+/// whether the cleaning changed anything, for the paste report.
+fn pasted_text(bytes: &[u8]) -> (Zeroizing<String>, bool) {
     let mut len = 0;
-    clean_paste(bytes, |c| len += c.len_utf8());
+    let cleaned = clean_paste(bytes, |c| len += c.len_utf8());
     let mut text = Zeroizing::new(String::with_capacity(len));
     clean_paste(bytes, |c| text.push(c));
-    text
+    (text, cleaned)
 }
 
-/// Calls `emit` with each character `pasted_text` keeps.
-fn clean_paste(bytes: &[u8], mut emit: impl FnMut(char)) {
+/// Calls `emit` with each character `pasted_text` keeps; true when it
+/// dropped or replaced something.
+fn clean_paste(bytes: &[u8], mut emit: impl FnMut(char)) -> bool {
+    let mut cleaned = false;
     let mut after_cr = false;
     for chunk in bytes.utf8_chunks() {
         let invalid = (!chunk.invalid().is_empty()).then_some('\u{fffd}');
+        cleaned |= invalid.is_some();
         for c in chunk.valid().chars().chain(invalid) {
             let cr = std::mem::replace(&mut after_cr, c == '\r');
             match c {
                 '\r' => emit('\n'),
                 '\n' if cr => {}
                 '\n' | '\t' => emit(c),
-                c if crate::ui::grid::is_forbidden(c) => {}
+                c if crate::ui::grid::is_forbidden(c) => cleaned = true,
                 c => emit(c),
             }
         }
     }
+    cleaned
 }
 
 /// A paste for the shell's one-line prompt: line breaks and tabs become
@@ -451,6 +459,34 @@ mod tests {
         let pasted = text(&got[0]).unwrap();
         assert_eq!(pasted, "a\nb\nc\nd\te\u{fffd}z");
         assert_eq!(one_line(&pasted).as_str(), "a b c d e\u{fffd}z");
+        // The broken byte makes it a cleaned paste.
+        assert!(cleaned(&got[0]));
+    }
+
+    fn cleaned(key: &Key) -> bool {
+        match key {
+            Key::Paste { cleaned, .. } => *cleaned,
+            other => panic!("not a paste: {other:?}"),
+        }
+    }
+
+    // Each kind of cleaning alone marks a paste as cleaned: a C0 control,
+    // ESC (what follows it is kept as text), a C1 control, a BiDi override
+    // and broken bytes. Line breaks, tabs and other text do not.
+    #[test]
+    fn cleaned_pastes_are_marked() {
+        let got = keys(&[
+            b"\x1b[200~a\x07b\x1b[2Jc\xe2\x80\xaed\xc2\x9b",
+            b"x\xff\xfee\xc3f\x1b[201~",
+        ]);
+        assert_eq!(text(&got[0]).unwrap(), "ab[2Jcdx\u{fffd}\u{fffd}e\u{fffd}f");
+        assert!(cleaned(&got[0]));
+        for one in [&b"\x07"[..], b"\x1b", b"\xc2\x9b", b"\xe2\x80\xae", b"\xff"] {
+            let got = keys(&[b"\x1b[200~a", one, b"b\x1b[201~"]);
+            assert!(cleaned(&got[0]), "{one:?}");
+        }
+        let clean = keys(&[b"\x1b[200~plain\ttext\r\n\xc3\xa9\x1b[201~"]);
+        assert!(!cleaned(&clean[0]));
     }
 
     #[test]
@@ -458,7 +494,7 @@ mod tests {
         let exact = vec![b'a'; MAX_PASTE];
         let got = keys(&[b"\x1b[200~", &exact, b"\x1b[201~"]);
         assert!(
-            matches!(&got[..], [Key::Paste { text, cut: false }] if text.len() == MAX_PASTE),
+            matches!(&got[..], [Key::Paste { text, cut: false, .. }] if text.len() == MAX_PASTE),
             "{got:?}"
         );
         // Longer by less than the end marker (which then straddles the
@@ -470,7 +506,7 @@ mod tests {
             assert!(
                 matches!(
                     &got[..],
-                    [Key::Paste { text, cut: true }, Key::Char('z')] if text.len() == MAX_PASTE
+                    [Key::Paste { text, cut: true, .. }, Key::Char('z')] if text.len() == MAX_PASTE
                 ),
                 "{extra}: {got:?}"
             );
@@ -478,6 +514,19 @@ mod tests {
     }
 
     proptest::proptest! {
+        // Text with nothing to clean (no control or BiDi character but `\n`
+        // and `\t`, valid UTF-8) arrives unchanged and is not marked.
+        #[test]
+        fn clean_pastes_report_nothing(input in proptest::prelude::any::<String>()) {
+            let clean: String = input
+                .chars()
+                .filter(|&c| matches!(c, '\n' | '\t') || !crate::ui::grid::is_forbidden(c))
+                .collect();
+            let got = keys(&[b"\x1b[200~", clean.as_bytes(), b"\x1b[201~"]);
+            proptest::prop_assert_eq!(text(&got[0]).unwrap(), clean);
+            proptest::prop_assert!(!cleaned(&got[0]));
+        }
+
         // Any bytes, split into reads anywhere: no panic, and a paste never
         // carries a control or BiDi character other than `\n` and `\t`.
         #[test]

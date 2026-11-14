@@ -213,6 +213,14 @@ Ctrl+Shift+C and Ctrl+Shift+V work with the system clipboard
 never writes to the system clipboard
 ([decision 0041](../decisions/0041-internal-clipboard-only.md)).
 
+Text pasted with Ctrl+Shift+V is untrusted and arrives as plain text:
+control characters and BiDi overrides are removed and broken bytes
+replaced, and invisible characters are shown as `<U+XXXX>`. When anything
+was removed or replaced, the editor and the shell say "Untrusted input sanitized and
+pasted safely."; Ctrl+Z undoes the paste. Formatting (HTML) is never
+kept; convert it to Markdown before copying if you need it
+([decision 0047](../decisions/0047-paste-report.md)).
+
 To copy into another program, select the text with the mouse and use the
 terminal's copy key (Ctrl+Shift+C in Ptyxis). That copies what is shown,
 with hidden characters spelled out as `<U+XXXX>`. What you copy this way

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status (2026-11-12)
+## Status (2026-11-14)
 
 | Phase | State |
 | --- | --- |
@@ -9,7 +9,8 @@
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
-| 4 Editor | Done (E0 to E7), apart from one acceptance check: the editor (decision 0045), `edit`, `new`, `mv` with link rewriting, `rm`, saving. kill -9 during saves passes; the strace check runs in CI only and counts once CI has passed it |
+| 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new`, `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
+| P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 to 8 | Not started; Phase 7 dropped (decision 0036) |
 
 What runs today: `crystal init NAME` creates a vault in
@@ -20,6 +21,20 @@ into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
 `view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear` and `quit`.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
+
+## Steps P0 to P5 (the paste report, before Phase 5)
+
+Approved 2026-11-14. Each step ends in a commit with passing checks and is
+approved before it starts.
+
+| Step | What | Why |
+| --- | --- | --- |
+| P0 (done) | Decision 0047 (a changed paste is reported, no question before pasting, no HTML conversion), this plan | Fix what is built, and what is not and why, before code |
+| P1 (done) | `shell::keys`: the paste cleaning tells whether it dropped a control or BiDi character or replaced broken bytes; `Key::Paste` carries it as `cleaned` next to `cut` | The report needs the fact from the one place that cleans |
+| P2 (done) | Editor: after a cleaned paste, the status line says "Untrusted input sanitized and pasted safely." until the next key; a clean paste shows nothing (counts dropped by the user, 2026-11-14). The setup guide says so | What the user sees |
+| P3 (done) | Shell: the same line in its output (not when the paste was cut: the cut is said instead) | The shell takes pastes too |
+| P4 | Dropped: ask before a changed paste (decision 0047, Alternatives) | |
+| P5 (done) | Check whether Ptyxis removes ESC from pasted text, so a pasted `ESC [ 201 ~` cannot end a paste early; record the result in the threat model. Result: Ptyxis 50.1 (VTE 0.84.1) pastes ESC as `␛`, so it cannot | The one paste risk only the terminal can close |
 
 ## Steps E0 to E7 (Phase 4, the editor)
 

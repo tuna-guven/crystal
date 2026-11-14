@@ -41,6 +41,8 @@ const DEFAULT_PAGE: usize = 20;
 
 const FULL: &str = "The note is at its size limit (8 MiB).";
 const PASTE_TOO_LARGE: &str = "Not pasted: it is larger than a note can hold (8 MiB).";
+/// After a paste the cleaning changed (docs/decisions/0047-paste-report.md).
+pub const PASTE_CLEANED: &str = "Untrusted input sanitized and pasted safely.";
 const UNSAVED: &str = "Unsaved changes: Ctrl+S saves, Ctrl+Q again discards them.";
 
 /// One note being edited. No Debug: it holds note text.
@@ -131,7 +133,7 @@ impl Editor {
             Key::Tab => self.replace_selection("\t"),
             Key::Backspace => self.delete(false),
             Key::Delete => self.delete(true),
-            Key::Paste { text, cut } => {
+            Key::Paste { text, cut, cleaned } => {
                 // Longer than a note can hold: the decoder kept only its
                 // start, which would look like the whole. Nothing is pasted.
                 if cut {
@@ -141,6 +143,11 @@ impl Editor {
                 } else if !text.is_empty() {
                     self.replace_selection(&text);
                     self.buffer.commit();
+                    // Said only when the text went in (not when the note
+                    // was full) and differs from what was copied.
+                    if cleaned && self.notice.is_none() {
+                        self.notice = Some(PASTE_CLEANED);
+                    }
                 }
             }
             Key::Left | Key::ShiftLeft => {
@@ -511,6 +518,7 @@ mod tests {
         let paste = |text: &str, cut| Key::Paste {
             text: Zeroizing::new(text.into()),
             cut,
+            cleaned: false,
         };
         // A paste the decoder had to cut is refused whole.
         ed.key(paste("start of a huge paste", true), &mut clip);
@@ -524,6 +532,7 @@ mod tests {
         let empty = Key::Paste {
             text: Zeroizing::new(String::new()),
             cut: false,
+            cleaned: false,
         };
         ed.key(empty, &mut clip);
         assert_eq!(ed.text(), "a\n\tb");
@@ -534,6 +543,32 @@ mod tests {
         assert_eq!(ed.text().len(), full.len());
         assert_eq!(ed.notice(), Some(FULL));
         assert!(!ed.is_dirty());
+    }
+
+    /// A cleaned paste goes in and says so until the next key; a clean
+    /// one says nothing; a cleaned paste into a full note says only that
+    /// the note is full; Ctrl+Z takes the paste back whole.
+    #[test]
+    fn cleaned_pastes_say_so() {
+        let paste = |text: &str, cleaned| Key::Paste {
+            text: Zeroizing::new(text.into()),
+            cut: false,
+            cleaned,
+        };
+        let (mut ed, mut clip) = editor("x");
+        ed.key(paste("plain", false), &mut clip);
+        assert_eq!(ed.notice(), None);
+        ed.key(paste("ab", true), &mut clip);
+        assert_eq!(ed.text(), "plainabx");
+        assert_eq!(ed.notice(), Some(PASTE_CLEANED));
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), "plainx");
+        assert_eq!(ed.notice(), None);
+
+        let full = "a".repeat(crate::vault::codec::MAX_BODY_BYTES);
+        let (mut ed, mut clip) = editor(&full);
+        ed.key(paste("b", true), &mut clip);
+        assert_eq!(ed.notice(), Some(FULL));
     }
 
     fn any_key() -> impl Strategy<Value = Key> {

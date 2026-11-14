@@ -61,6 +61,7 @@
   - [0044 The vault's recipient stays private: age does not authenticate the writer](decisions/0044-vault-recipient-private.md)
   - [0045 A simple modeless editor with common Ctrl keys](decisions/0045-simple-editor.md)
   - [0046 Invisible characters inside a visible grapheme are spelled out](decisions/0046-invisible-characters-spelled-out.md)
+  - [0047 A changed paste is reported; pastes stay plain text](decisions/0047-paste-report.md)
 
 # Development
 
