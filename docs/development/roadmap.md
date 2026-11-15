@@ -37,6 +37,9 @@ the prompt; the user kept only the command (decision 0058).
 | A3 (done) | Decision 0058 (cuts 0032), 0023 and 0033, setup guide, backups, sandboxing launcher (`"$bin" unlock "$@" "$name"`); all checks | Book rule in CLAUDE.md |
 | W1 (done) | The cow's balloon gets its top border; `crystal unlock` asks under the cow saying "Welcome to Crystal!" | User's request, in place of the dropped art |
 | W2 (done) | The welcome and lock screens are centered once when the prompt opens (no redraw on resize; top left when too small); `init`, `recover`, `check-code` unchanged; decision 0058 and setup guide | User's request; about 25 lines, no box |
+| C1 (done) | The `Passphrase:` line on the middle row, the cow just above it | User's request |
+| C2 (done) | Every passphrase prompt is drawn again on a resize (the resize pipe in `next_keys`), keeping the keys typed; `read_public_line` ignores it | User's request; about 40 lines, no new syscall |
+| C3 (done) | Pty test `resize_redraws_the_prompt_and_keeps_the_keys`; decision 0058, setup guide, startup step 6 (left stale by A3), syscalls.md rows | Book rule in CLAUDE.md |
 
 ## Steps L1 to L4 (viewer line-number fixes)
 

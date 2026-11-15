@@ -558,11 +558,31 @@ impl TerminalGuard {
         signals: &Signals,
         prompt: &str,
     ) -> Result<Passphrase, PromptError> {
+        self.read_passphrase_sized(signals, &|_| prompt.to_owned())
+    }
+
+    /// As `read_passphrase`, with a screen drawn for the window's size
+    /// (columns, rows) by `screen`: once when the prompt opens and again
+    /// after each resize (decision 0058). The screen is fixed text; keys
+    /// typed so far are kept, since none are shown.
+    pub fn read_passphrase_sized(
+        &mut self,
+        signals: &Signals,
+        screen: &dyn Fn((u16, u16)) -> String,
+    ) -> Result<Passphrase, PromptError> {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
-        self.show(prompt.as_bytes())?;
-        let result = self.read_line(signals);
+        self.show(screen(self.size_or_fallback()).as_bytes())?;
+        let result = self
+            .read_line_raw(signals, LineEditor::new(), Some(screen))
+            .and_then(LineEditor::finish);
         self.show(b"")?;
         result
+    }
+
+    /// `size`, or 80 by 24 if the terminal cannot tell: a prompt still
+    /// opens, laid out for the usual size.
+    fn size_or_fallback(&self) -> (u16, u16) {
+        self.size().unwrap_or(FALLBACK_SIZE)
     }
 
     /// For `crystal init`: asks twice and accepts only matching entries, compared
@@ -595,29 +615,39 @@ impl TerminalGuard {
             .map_err(|e| PromptError::Write(e.kind()))
     }
 
-    /// Waits for keys or an exit signal and reads up to `chunk.len()` keys
-    /// into `chunk`. An exit signal cancels; a closed terminal is `Closed`.
-    fn next_keys(&mut self, signals: &Signals, chunk: &mut [u8]) -> Result<usize, PromptError> {
+    /// Waits for keys, a resize or an exit signal and reads up to
+    /// `chunk.len()` keys into `chunk`. `None` is a resize. An exit signal
+    /// cancels; a closed terminal is `Closed`.
+    fn next_keys(
+        &mut self,
+        signals: &Signals,
+        chunk: &mut [u8],
+    ) -> Result<Option<usize>, PromptError> {
         loop {
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
                 PollFd::new(&signals.exit, PollFlags::IN),
+                PollFd::new(&signals.resize, PollFlags::IN),
             ];
             match poll(&mut fds, None) {
                 Ok(_) => {}
                 Err(Errno::INTR) => continue,
                 Err(errno) => return Err(PromptError::Poll(errno)),
             }
-            let [key, exit] = fds.map(|fd| !fd.revents().is_empty());
+            let [key, exit, resize] = fds.map(|fd| !fd.revents().is_empty());
             if exit {
                 return Err(PromptError::Cancelled);
+            }
+            if resize {
+                drain(&signals.resize);
+                return Ok(None);
             }
             if !key {
                 continue;
             }
             return match self.tty.read(chunk) {
                 Ok(0) => Err(PromptError::Closed),
-                Ok(n) => Ok(n),
+                Ok(n) => Ok(Some(n)),
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 // A hung-up terminal reads as EIO.
                 Err(e) if e.raw_os_error() == Some(Errno::IO.raw_os_error()) => {
@@ -628,22 +658,24 @@ impl TerminalGuard {
         }
     }
 
-    /// Reads keys until Enter or a cancel. Each read lands in a small
-    /// stack buffer that is wiped on drop; bytes after Enter in the same
-    /// read are discarded with it.
-    fn read_line(&mut self, signals: &Signals) -> Result<Passphrase, PromptError> {
-        self.read_line_raw(signals, LineEditor::new())?.finish()
-    }
-
-    /// The keys up to Enter into `line`, not yet checked.
+    /// The keys up to Enter into `line`, not yet checked. Each read lands
+    /// in a small stack buffer that is wiped on drop; bytes after Enter in
+    /// the same read are discarded with it. After a resize, `screen` (if
+    /// any) is drawn again at the new size.
     fn read_line_raw(
         &mut self,
         signals: &Signals,
         mut line: LineEditor,
+        screen: Option<&dyn Fn((u16, u16)) -> String>,
     ) -> Result<LineEditor, PromptError> {
         let mut chunk = Zeroizing::new([0u8; 64]);
         loop {
-            let n = self.next_keys(signals, &mut chunk[..])?;
+            let Some(n) = self.next_keys(signals, &mut chunk[..])? else {
+                if let Some(screen) = screen {
+                    self.show(screen(self.size_or_fallback()).as_bytes())?;
+                }
+                continue;
+            };
             for &byte in &chunk[..n] {
                 match line.feed(byte) {
                     Feed::More => {}
@@ -675,7 +707,11 @@ impl TerminalGuard {
         let mut chunk = Zeroizing::new([0u8; PUBLIC_CHUNK]);
         let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
         let result = loop {
-            let n = self.next_keys(signals, &mut chunk[..])?;
+            // A resize leaves the public line as it is: what was typed is
+            // on the screen and stays there.
+            let Some(n) = self.next_keys(signals, &mut chunk[..])? else {
+                continue;
+            };
             let mut done = None;
             for &byte in &chunk[..n] {
                 match line.feed(byte, &mut echo) {

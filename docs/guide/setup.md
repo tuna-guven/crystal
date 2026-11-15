@@ -160,8 +160,8 @@ Crystal did not make are left alone, and so is the directory then.
 
 ### Opening a vault
 
-`crystal unlock NAME` asks for the passphrase once, centered in the window
-under a cow that welcomes you ([decision 0058](../decisions.md#0058)),
+`crystal unlock NAME` asks for the passphrase once, in the middle of the
+window (also after a resize) under a cow that welcomes you ([decision 0058](../decisions.md#0058)),
 and unlocks the vault into the Crystal shell ([decision 0033](../decisions.md#0033)): like a
 terminal, it starts at the top, and the prompt follows the output down
 the screen ([decision 0049](../decisions.md#0049));

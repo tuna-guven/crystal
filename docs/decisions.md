@@ -619,12 +619,14 @@ command always comes first, so `crystal unlock unlock` is unambiguous;
 the reserved words of [0032](#0032) stay as they are. The debug-only
 test options go with `unlock` only. The passphrase is asked under the
 lock screen's cowsay cow ([0048](#0048)), saying "Welcome to Crystal!",
-and both cow screens, at unlock and when locked, are centered in the
-window: the cow as one block, each line below it on its own. The size is
-read once when the prompt opens (again after a wrong passphrase); a
-resize while it is open does not redraw it, and a terminal too small for
-it shows it at the top left. Only these two screens are centered; `init`,
-`recover` and `check-code` keep their instructions at the top left. A
+and on both cow screens, at unlock and when locked, the `Passphrase:`
+line sits on the middle row, centered, with the cow just above it as one
+block and each line below the cow centered on its own; a terminal too
+small for it shows it at the top left. Every passphrase prompt is drawn
+again when the window is resized (SIGWINCH, already caught for the
+shell): keys typed so far are kept, and since only fixed text is drawn,
+a redraw shows nothing of the passphrase, not even its length. A prompt
+that echoes, such as the recovery code's, is not redrawn. `init`,
+`recover` and `check-code` keep their text at the top left. A
 passphrase box and a large braille drawing beside the prompt were
-dropped: about 200 lines of layout and resize handling, with no security
-benefit.
+dropped: about 200 lines of layout, with no security benefit.

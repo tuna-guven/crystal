@@ -130,8 +130,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
             // unlock takes the passphrase and wipes it as soon as
             // identity.age is open, before vault.age is read.
             None => {
-                let screen = welcome_screen(terminal.size()?);
-                let pass = terminal.read_passphrase(&signals, &screen)?;
+                let pass = terminal.read_passphrase_sized(&signals, &welcome_screen)?;
                 unlock::unlock(&vault_dir, &args.name, pass, &state_dir)?
             }
             Some(reason) => {
@@ -198,10 +197,11 @@ const WELCOME_BALLOON: [&str; 3] = [
 ];
 
 /// A cow screen (decision 0058): `balloon` over the cow, a blank line,
-/// then `lines`, the prompt last, the whole centered once in a terminal
-/// of `size` (columns, rows). The cow moves as one block, so its drawing
-/// holds; each line below is centered on its own. Where it does not fit,
-/// the padding is zero and it starts at the top left, as before. Raw
+/// then `lines`, the prompt last, in a terminal of `size` (columns,
+/// rows). The prompt sits on the middle row, the rest just above it; the
+/// cow moves as one block, so its drawing holds, and each line below it
+/// is centered on its own. Where it does not fit, the padding is zero and
+/// it starts at the top left, as before. Drawn again on each resize. Raw
 /// mode: lines end in CR LF, none after the prompt.
 fn cow_screen(balloon: &[&str], lines: &[&str], (cols, rows): (u16, u16)) -> String {
     let cols = usize::from(cols);
@@ -210,7 +210,8 @@ fn cow_screen(balloon: &[&str], lines: &[&str], (cols, rows): (u16, u16)) -> Str
     let height = balloon.len() + COW.len() + 1 + lines.len();
     let pad = |width: usize| " ".repeat(cols.saturating_sub(width) / 2);
 
-    let mut screen = "\r\n".repeat(usize::from(rows).saturating_sub(height) / 2);
+    let top = (usize::from(rows) / 2).saturating_sub(height - 1);
+    let mut screen = "\r\n".repeat(top);
     let art_pad = pad(art_width);
     for line in art() {
         screen.push_str(&art_pad);
@@ -281,10 +282,8 @@ fn unlock_again(
 ) -> Result<Option<unlock::Unlocked>, Box<dyn Error>> {
     let mut note = "";
     loop {
-        // The size is read for each try, so a wrong passphrase redraws
-        // the screen centered in the window as it is now.
-        let screen = lock_screen(reason, note, terminal.size()?);
-        let pass = match terminal.read_passphrase(signals, &screen) {
+        let screen = |size| lock_screen(reason, note, size);
+        let pass = match terminal.read_passphrase_sized(signals, &screen) {
             Ok(pass) => pass,
             Err(term::PromptError::Cancelled | term::PromptError::Closed) => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -641,34 +640,34 @@ mod tests {
         assert!(small.ends_with("||\r\n\r\nPassphrase: "));
     }
 
-    // Centered once: as many blank rows above as below (the odd one
-    // below), the cow shifted as one block by half the spare columns,
-    // and the prompt centered on its own line.
+    // The prompt on the middle row (row 20 of 0 to 39), centered on its
+    // own; the cow just above it, shifted as one block by half the spare
+    // columns.
     #[test]
     fn cow_screen_is_centered() {
         // 100 by 40; the cow is 28 columns at its widest, the welcome
         // screen 10 rows, the lock screen 13.
         let welcome = super::welcome_screen((100, 40));
         let rows: Vec<&str> = welcome.split("\r\n").collect();
-        assert_eq!(rows.len(), 15 + 10);
-        assert!(rows[..15].iter().all(|row| row.is_empty()));
+        assert_eq!(rows.len(), 21);
+        assert!(rows[..11].iter().all(|row| row.is_empty()));
         assert_eq!(
-            rows[15],
+            rows[11],
             format!("{}{}", " ".repeat(36), WELCOME_BALLOON[0])
         );
-        assert_eq!(rows[18], format!("{}{}", " ".repeat(36), COW[0]));
-        assert_eq!(rows[23], "");
-        assert_eq!(rows[24], format!("{}{PROMPT}", " ".repeat(44)));
+        assert_eq!(rows[14], format!("{}{}", " ".repeat(36), COW[0]));
+        assert_eq!(rows[19], "");
+        assert_eq!(rows[20], format!("{}{PROMPT}", " ".repeat(44)));
 
         // The lock balloon is 38 wide; a blank note stays an empty row.
         let lock = lock_screen(LOCKED_BY_COMMAND, "", (100, 40));
         let rows: Vec<&str> = lock.split("\r\n").collect();
-        assert_eq!(rows.len(), 13 + 13);
-        assert_eq!(rows[13], format!("{}{}", " ".repeat(31), LOCKED_BALLOON[0]));
-        assert_eq!(rows[22], "");
-        assert_eq!(rows[23], format!("{}{LOCKED_BY_COMMAND}", " ".repeat(10)));
-        assert_eq!(rows[24], "");
-        assert_eq!(rows[25], format!("{}{PROMPT}", " ".repeat(44)));
+        assert_eq!(rows.len(), 21);
+        assert_eq!(rows[8], format!("{}{}", " ".repeat(31), LOCKED_BALLOON[0]));
+        assert_eq!(rows[17], "");
+        assert_eq!(rows[18], format!("{}{LOCKED_BY_COMMAND}", " ".repeat(10)));
+        assert_eq!(rows[19], "");
+        assert_eq!(rows[20], format!("{}{PROMPT}", " ".repeat(44)));
     }
 
     // Each balloon is closed: top and bottom borders as wide as the
