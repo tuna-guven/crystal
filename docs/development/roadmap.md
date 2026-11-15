@@ -17,13 +17,26 @@
 What runs today: `crystal init NAME` creates a vault in
 `~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
 with the recovery code, `crystal check-code NAME` checks the code,
-`crystal rm NAME` deletes a vault, and `crystal NAME` unlocks the vault
+`crystal rm NAME` deletes a vault, and `crystal unlock NAME` unlocks the vault
 into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
 `view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear`, `lock` and
 `quit`. Crystal locks by itself after 5 minutes without a key, and when
 suspended.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
+
+## Steps A1 to A3 (`crystal unlock NAME`)
+
+Proposed 2026-11-15 together with a centered passphrase box and art beside
+the prompt; the user kept only the command (decision 0058).
+
+| Step | What | Why |
+| --- | --- | --- |
+| A1 (done) | `crystal unlock NAME` opens a vault; a bare `crystal NAME` and an empty command line are refused without echoing the word; `unlock` is not reserved | User's request: every action is a named command |
+| A2 (done) | Pty tests start Crystal with `unlock`; `rejects_bare_vault_name` | Tests follow the command |
+| A3 (done) | Decision 0058 (cuts 0032), 0023 and 0033, setup guide, backups, sandboxing launcher (`"$bin" unlock "$@" "$name"`); all checks | Book rule in CLAUDE.md |
+| W1 (done) | The cow's balloon gets its top border; `crystal unlock` asks under the cow saying "Welcome to Crystal!" | User's request, in place of the dropped art |
+| W2 (done) | The welcome and lock screens are centered once when the prompt opens (no redraw on resize; top left when too small); `init`, `recover`, `check-code` unchanged; decision 0058 and setup guide | User's request; about 25 lines, no box |
 
 ## Steps L1 to L4 (viewer line-number fixes)
 

@@ -48,8 +48,9 @@ impl fmt::Debug for VaultName {
 impl VaultName {
     pub const MAX_LEN: usize = 64;
     /// The command words (`crystal init`, `rm`, `recover`, `check-code`,
-    /// `help`): a vault with one of these names could not be opened as
-    /// `crystal NAME`.
+    /// `help`), kept from when a bare `crystal NAME` opened a vault
+    /// (decision 0032); `unlock` came later and is not reserved
+    /// (decision 0058).
     pub const RESERVED: [&str; 5] = ["init", "rm", "recover", "check-code", "help"];
 
     pub fn new(name: OsString) -> Option<Self> {

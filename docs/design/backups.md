@@ -24,7 +24,7 @@ Do not back up `~/.local/state/crystal`: its pin and rollback counters belong to
 ## Restoring
 
 1. Restore `~/.local/share/crystal/NAME` with your tool (into an empty place, or over the current vault).
-2. Run `crystal NAME`. If the restored vault is older than the newest version this device has seen, Crystal stops and explains that it is older: restored from a backup, or put back by someone else. Type `restore` to accept it, and only if you restored it yourself. The rollback counter then starts again from the restored version ([Storage, Rollback](storage.md#rollback)).
+2. Run `crystal unlock NAME`. If the restored vault is older than the newest version this device has seen, Crystal stops and explains that it is older: restored from a backup, or put back by someone else. Type `restore` to accept it, and only if you restored it yourself. The rollback counter then starts again from the restored version ([Storage, Rollback](storage.md#rollback)).
 3. On a new device, there is no counter yet: the first unlock accepts the vault and pins it.
 
 If the passphrase is lost too, `crystal recover NAME` with the recovery code sets a new one. `crystal check-code NAME` checks the code on paper against the vault without changing anything; run it once after `crystal init`.

@@ -56,7 +56,7 @@ impl fmt::Display for HardenError {
                 "{count} open file descriptor(s) inherited from the program that \
                  started Crystal, lowest {lowest}; they would stay usable inside \
                  the sandbox. Start Crystal from a plain shell, or close them \
-                 (for example: crystal NAME {lowest}>&-)"
+                 (for example: crystal unlock NAME {lowest}>&-)"
             ),
         }
     }

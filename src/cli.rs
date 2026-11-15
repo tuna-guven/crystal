@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use crate::vault::VaultName;
 
 pub const USAGE: &str = "\
-usage: crystal NAME               open the vault NAME
+usage: crystal unlock NAME        open the vault NAME
        crystal init NAME          create a vault
        crystal recover NAME       set a new passphrase with the recovery code
        crystal check-code NAME    check the recovery code; changes nothing
@@ -23,7 +23,7 @@ Vaults live in ~/.local/share/crystal.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    /// `crystal NAME`: open a vault.
+    /// `unlock NAME`: open a vault.
     Run(RunArgs),
     /// `init NAME`: create a vault.
     Init {
@@ -100,6 +100,7 @@ pub enum CrashKind {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliError {
     UnknownArgument,
+    MissingCommand,
     MissingVault,
     ExtraArgument,
     BadVaultName,
@@ -109,6 +110,9 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg = match self {
             Self::UnknownArgument => "unknown argument",
+            Self::MissingCommand => {
+                "the first word must be a command: unlock, init, recover, check-code, rm or help"
+            }
             Self::MissingVault => "missing vault name",
             Self::ExtraArgument => "too many arguments",
             Self::BadVaultName => {
@@ -122,22 +126,23 @@ impl fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
-/// Which command the first word selected; plain `crystal NAME` is `Run`.
+/// Which command the first word selected. There is no default: a bare
+/// `crystal NAME` is refused (decision 0058).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    Run,
+    Unlock,
     Init,
     Recover,
     CheckCode,
     Rm,
 }
 
-/// Parses the arguments after the program name: an optional command word,
-/// then exactly one vault name. lexopt's own errors are discarded because
+/// Parses the arguments after the program name: a command word, then
+/// exactly one vault name. lexopt's own errors are discarded because
 /// they quote the argument.
 pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliError> {
     let mut parser = Parser::from_args(args);
-    let mut mode = Mode::Run;
+    let mut mode = None;
     let mut name = None;
     #[cfg(debug_assertions)]
     let mut crash_for_test = None;
@@ -183,15 +188,16 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                 let seconds = seconds.and_then(|s| s.parse().ok());
                 lock_after_for_test = Some(seconds.ok_or(CliError::UnknownArgument)?);
             }
-            // The first word may be a command; vault names cannot be one
-            // (VaultName reserves them), so this is never ambiguous.
-            Arg::Value(value) if name.is_none() && mode == Mode::Run => match value.as_bytes() {
-                b"init" => mode = Mode::Init,
-                b"recover" => mode = Mode::Recover,
-                b"check-code" => mode = Mode::CheckCode,
-                b"rm" => mode = Mode::Rm,
+            // The first word is always the command; anything else there,
+            // such as a bare vault name, is refused without echoing it.
+            Arg::Value(value) if mode.is_none() => match value.as_bytes() {
+                b"unlock" => mode = Some(Mode::Unlock),
+                b"init" => mode = Some(Mode::Init),
+                b"recover" => mode = Some(Mode::Recover),
+                b"check-code" => mode = Some(Mode::CheckCode),
+                b"rm" => mode = Some(Mode::Rm),
                 b"help" => return Ok(Command::Help),
-                _ => name = Some(value),
+                _ => return Err(CliError::MissingCommand),
             },
             Arg::Value(value) if name.is_none() => name = Some(value),
             Arg::Value(_) => return Err(CliError::ExtraArgument),
@@ -199,13 +205,15 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
         }
     }
 
+    let mode = mode.ok_or(CliError::MissingCommand)?;
+
     #[cfg(debug_assertions)]
     if (crash_for_test.is_some()
         || prompt_for_test.is_some()
         || skip_unlock_for_test
         || demo_notes_for_test
         || lock_after_for_test.is_some())
-        && mode != Mode::Run
+        && mode != Mode::Unlock
     {
         return Err(CliError::UnknownArgument);
     }
@@ -213,7 +221,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let name = name.ok_or(CliError::MissingVault)?;
     let name = VaultName::new(name).ok_or(CliError::BadVaultName)?;
     Ok(match mode {
-        Mode::Run => Command::Run(RunArgs {
+        Mode::Unlock => Command::Run(RunArgs {
             name,
             #[cfg(debug_assertions)]
             crash_for_test,
@@ -263,7 +271,7 @@ mod tests {
 
     #[test]
     fn commands() {
-        assert_eq!(parse_strs(&["v"]), Ok(run("v")));
+        assert_eq!(parse_strs(&["unlock", "v"]), Ok(run("v")));
         assert_eq!(
             parse_strs(&["init", "v"]),
             Ok(Command::Init { name: name("v") })
@@ -290,11 +298,13 @@ mod tests {
         assert_eq!(parse_strs(&["init", "v", "-h"]), Ok(Command::Help));
     }
 
-    // Removed commands and options are refused, not silently accepted.
+    // Removed commands and options are refused, not silently accepted;
+    // that includes the bare `crystal NAME` (decision 0058).
     #[test]
     fn removed_commands_and_options_are_refused() {
-        assert_eq!(parse_strs(&["add", "v"]), Err(CliError::ExtraArgument));
-        assert_eq!(parse_strs(&["remove", "v"]), Err(CliError::ExtraArgument));
+        assert_eq!(parse_strs(&["v"]), Err(CliError::MissingCommand));
+        assert_eq!(parse_strs(&["add", "v"]), Err(CliError::MissingCommand));
+        assert_eq!(parse_strs(&["remove", "v"]), Err(CliError::MissingCommand));
         for args in [
             &["--init", "v"][..],
             &["init", "v", "--at", "/d"],
@@ -308,18 +318,19 @@ mod tests {
         );
     }
 
-    // The auto-lock test hook (debug builds): seconds, with `crystal NAME`
-    // only.
+    // The auto-lock test hook (debug builds): seconds, with `crystal
+    // unlock NAME` only.
     #[cfg(debug_assertions)]
     #[test]
     fn lock_after_for_test() {
-        let Ok(Command::Run(args)) = parse_strs(&["--lock-after-for-test", "2", "v"]) else {
+        let Ok(Command::Run(args)) = parse_strs(&["--lock-after-for-test", "2", "unlock", "v"])
+        else {
             panic!("not run");
         };
         assert_eq!(args.lock_after_for_test, Some(2));
         for bad in [
-            &["--lock-after-for-test", "x", "v"][..],
-            &["--lock-after-for-test", "-1", "v"],
+            &["--lock-after-for-test", "x", "unlock", "v"][..],
+            &["--lock-after-for-test", "-1", "unlock", "v"],
             &["init", "v", "--lock-after-for-test", "2"],
         ] {
             assert_eq!(parse_strs(bad), Err(CliError::UnknownArgument), "{bad:?}");
@@ -333,14 +344,14 @@ mod tests {
     #[cfg(not(debug_assertions))]
     #[test]
     fn release_refuses_the_test_hooks() {
-        assert!(matches!(parse_strs(&["v"]), Ok(Command::Run(_))));
+        assert!(matches!(parse_strs(&["unlock", "v"]), Ok(Command::Run(_))));
         for hook in [
-            &["--crash-for-test", "panic", "v"][..],
-            &["--prompt-for-test", "read", "v"],
-            &["--skip-unlock-for-test", "v"],
-            &["--demo-notes-for-test", "v"],
-            &["--lock-after-for-test", "2", "v"],
-            &["--lock-after", "2", "v"],
+            &["--crash-for-test", "panic", "unlock", "v"][..],
+            &["--prompt-for-test", "read", "unlock", "v"],
+            &["--skip-unlock-for-test", "unlock", "v"],
+            &["--demo-notes-for-test", "unlock", "v"],
+            &["--lock-after-for-test", "2", "unlock", "v"],
+            &["--lock-after", "2", "unlock", "v"],
         ] {
             assert_eq!(parse_strs(hook), Err(CliError::UnknownArgument), "{hook:?}");
         }
@@ -358,22 +369,32 @@ mod tests {
             parse_strs(&["rm", "check-code"]),
             Err(CliError::BadVaultName)
         );
-        assert_eq!(parse_strs(&["v", "init"]), Err(CliError::ExtraArgument));
-        // Names that only start with a command word are fine; `add` and
-        // `remove` are ordinary names now.
-        assert_eq!(parse_strs(&["init2"]), Ok(run("init2")));
-        assert_eq!(parse_strs(&["Init"]), Ok(run("Init")));
-        assert_eq!(parse_strs(&["remove"]), Ok(run("remove")));
+        assert_eq!(parse_strs(&["v", "init"]), Err(CliError::MissingCommand));
+        assert_eq!(
+            parse_strs(&["unlock", "v", "init"]),
+            Err(CliError::ExtraArgument)
+        );
+        // Names that only start with a command word are fine; `add`,
+        // `remove` and `unlock` are ordinary names.
+        assert_eq!(parse_strs(&["unlock", "init2"]), Ok(run("init2")));
+        assert_eq!(parse_strs(&["unlock", "Init"]), Ok(run("Init")));
+        assert_eq!(parse_strs(&["unlock", "remove"]), Ok(run("remove")));
+        assert_eq!(parse_strs(&["unlock", "unlock"]), Ok(run("unlock")));
     }
 
     #[test]
     fn vault_name_is_required_unique_and_valid() {
-        assert_eq!(parse_strs(&[]), Err(CliError::MissingVault));
+        assert_eq!(parse_strs(&[]), Err(CliError::MissingCommand));
+        assert_eq!(parse_strs(&["unlock"]), Err(CliError::MissingVault));
         assert_eq!(parse_strs(&["init"]), Err(CliError::MissingVault));
         assert_eq!(parse_strs(&["rm"]), Err(CliError::MissingVault));
-        assert_eq!(parse_strs(&["a", "b"]), Err(CliError::ExtraArgument));
+        assert_eq!(parse_strs(&["a", "b"]), Err(CliError::MissingCommand));
+        assert_eq!(
+            parse_strs(&["unlock", "a", "b"]),
+            Err(CliError::ExtraArgument)
+        );
         assert_eq!(parse_strs(&["rm", "a", "b"]), Err(CliError::ExtraArgument));
-        assert_eq!(parse_strs(&["../x"]), Err(CliError::BadVaultName));
+        assert_eq!(parse_strs(&["unlock", "../x"]), Err(CliError::BadVaultName));
         assert_eq!(parse_strs(&["init", "a/b"]), Err(CliError::BadVaultName));
     }
 
@@ -389,7 +410,8 @@ mod tests {
     // A mistyped secret must never be echoed back to the terminal.
     #[test]
     fn errors_never_echo_arguments() {
-        let attempts: [&[&str]; 8] = [
+        let attempts: [&[&str]; 9] = [
+            &["hunter2"],
             &["--passphrase=hunter2", "v"],
             &["--passphrase", "hunter2", "v"],
             &["init=hunter2", "v"],
@@ -411,7 +433,7 @@ mod tests {
     #[test]
     fn parsed_args_never_show_names() {
         for args in [
-            &["hunter2"][..],
+            &["unlock", "hunter2"][..],
             &["init", "hunter2"],
             &["rm", "hunter2"],
             &["check-code", "hunter2"],

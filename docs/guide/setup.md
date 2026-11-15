@@ -65,18 +65,18 @@ checks files opened after it is applied), and Crystal cannot close a
 descriptor it does not own without `unsafe` code. Plain terminal shells do
 not leak descriptors; IDE terminals, some launchers and wrapper scripts
 sometimes do. Start Crystal from a plain shell, or close the descriptor in
-the command: `crystal diary 5>&-`. List what is open with
+the command: `crystal unlock diary 5>&-`. List what is open with
 `ls -l /proc/$$/fd` in the same shell.
 
 ## Vaults
 
-Vaults are opened by name: `crystal diary`. Names are 1 to 64 characters
+Vaults are opened by name: `crystal unlock diary`. Names are 1 to 64 characters
 from `A-Z a-z 0-9 - _`, starting with a letter or digit. Every vault lives
 in `~/.local/share/crystal/NAME`; there is no option to put it elsewhere
 and no config file ([On-disk layout](../design/storage.md#on-disk-layout)).
 
 ```text
-crystal NAME                 open the vault NAME (the Crystal shell)
+crystal unlock NAME          open the vault NAME (the Crystal shell)
 crystal init NAME            create a vault
 crystal recover NAME         set a new passphrase with the recovery code
 crystal check-code NAME      check the recovery code on paper; changes nothing
@@ -91,7 +91,7 @@ every start and never fixes a mode itself.
 
 To sync a vault between devices (Syncthing, for example), sync its
 directory `~/.local/share/crystal/NAME`. A vault that arrives on a new
-device is opened with `crystal NAME`; the first unlock there pins it and
+device is opened with `crystal unlock NAME`; the first unlock there pins it and
 says so.
 
 Edit a vault on one device at a time and let it sync before you open it
@@ -160,8 +160,9 @@ Crystal did not make are left alone, and so is the directory then.
 
 ### Opening a vault
 
-`crystal NAME` asks for the passphrase once and unlocks the vault into the
-Crystal shell ([decision 0033](../decisions.md#0033)): like a
+`crystal unlock NAME` asks for the passphrase once, centered in the window
+under a cow that welcomes you ([decision 0058](../decisions.md#0058)),
+and unlocks the vault into the Crystal shell ([decision 0033](../decisions.md#0033)): like a
 terminal, it starts at the top, and the prompt follows the output down
 the screen ([decision 0049](../decisions.md#0049));
 `clear` or Ctrl+L brings it back to the top. Nothing you see there stays in
@@ -175,7 +176,7 @@ the terminal's scrollback. The shell knows:
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
 | `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A line break in the note stays one. Tables are boxed; in a narrow window their cells wrap inside the box. A bold orange `>` on the left marks the cursor's line; the viewer shows no line numbers, but j/k, the arrows and the mouse wheel move the cursor from one line of the note to the next as the editor numbers them (lines with text only: not blank lines, code fences or a table's `|---|` line), stopping at the last one, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. Web and mail links (`[text](https://…)`, `<https://…>`, `mailto:`) are clickable: Ctrl+click in Ptyxis opens them, and their address is not shown; other links show their address and are not clickable. A link's text can name another site than the one it opens: in a note you did not write, read the target in the editor before clicking ([decision 0054](../decisions.md#0054)). n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; y copies the cursor's line and Y the whole note into Crystal's clipboard; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions.md#0052), [decision 0053](../decisions.md#0053), [decision 0055](../decisions.md#0055), [decision 0057](../decisions.md#0057)) |
 | `links` | Every `[[link]]` that leads nowhere, and why |
-| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
+| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt, centered). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
 Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the

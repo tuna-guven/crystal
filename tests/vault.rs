@@ -45,7 +45,7 @@ fn unlock_ok(home: &Path, name: &str, pass: &str) -> String {
     let prompt = format!("crystal:{name}> ");
     let mut steps = pass_step(pass);
     steps.push((prompt.as_str(), b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' {name}"), home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock {name}"), home, &steps);
     assert!(ok, "{output}");
     visible(&output)
 }
@@ -53,7 +53,7 @@ fn unlock_ok(home: &Path, name: &str, pass: &str) -> String {
 /// Tries to unlock `diary` with `PASS`; it must be refused with a message
 /// containing `expected`, and never show HOME's path or the passphrase.
 fn assert_refused(home: &Path, expected: &str) {
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), home, &pass_step(PASS));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), home, &pass_step(PASS));
     assert!(!ok, "unlocked: {output}");
     assert!(output.contains(expected), "want {expected:?}: {output}");
     assert!(!output.contains("notes unlocked"), "{output}");
@@ -62,7 +62,7 @@ fn assert_refused(home: &Path, expected: &str) {
 
 /// Refused before any prompt, with a message containing `expected`.
 fn assert_refused_before_prompt(home: &Path, expected: &str) {
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), home, &[]);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), home, &[]);
     assert!(!ok, "unlocked: {output}");
     assert!(!output.contains(PROMPT), "prompted: {output}");
     assert!(output.contains(expected), "want {expected:?}: {output}");
@@ -132,7 +132,7 @@ fn init_then_unlock() {
 fn refuses_wrong_passphrase() {
     let (home, _) = home_with_vault("wrong_pass");
     let (ok, output) = dialog(
-        &format!("'{BIN}' diary"),
+        &format!("'{BIN}' unlock diary"),
         &home,
         &pass_step("not-the-passphrase"),
     );
@@ -176,7 +176,7 @@ fn older_vault_needs_restore() {
 
     let mut steps = pass_step(PASS);
     steps.push((question, b"yes\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(
         !ok && output.contains("not restored; nothing was changed"),
         "{output}"
@@ -195,7 +195,7 @@ fn older_vault_needs_restore() {
     let mut steps = pass_step(PASS);
     steps.push((question, b"restore\r".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(
         ok && visible(&output).contains("The restored vault was accepted"),
         "{output}"
@@ -235,7 +235,7 @@ fn refuses_sync_conflict() {
 #[test]
 fn refuses_unknown_name_before_prompting() {
     let (home, _) = home_with_vault("unknown_name");
-    let (ok, output) = dialog(&format!("'{BIN}' work"), &home, &[]);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock work"), &home, &[]);
     assert!(
         !ok && output.contains("there is no vault with that name"),
         "{output}"
@@ -293,7 +293,7 @@ fn refuses_work_factor_beyond_locked_memory() {
     assert_eq!(scrypt_log_n(&identity), 19);
 
     let (ok, output) = dialog(
-        &format!("prlimit --memlock=536870912:536870912 '{BIN}' diary"),
+        &format!("prlimit --memlock=536870912:536870912 '{BIN}' unlock diary"),
         &home,
         &pass_step(PASS),
     );
@@ -630,7 +630,7 @@ fn vaults_have_their_own_passphrases() {
     init(&home, "work", other);
     unlock_ok(&home, "work", other);
     unlock_ok(&home, "diary", PASS);
-    let (ok, output) = dialog(&format!("'{BIN}' work"), &home, &pass_step(PASS));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock work"), &home, &pass_step(PASS));
     assert!(
         !ok && output.contains("does not open with this passphrase"),
         "{output}"
@@ -673,7 +673,7 @@ fn recover_after_forgetting_the_passphrase() {
     assert!(ok, "{output}");
     assert!(!output.contains(NEW_PASS), "{output}");
     unlock_ok(&home, "diary", NEW_PASS);
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &pass_step(PASS));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &pass_step(PASS));
     assert!(
         !ok && output.contains("does not open with this passphrase"),
         "{output}"
@@ -813,7 +813,7 @@ fn rm_keeps_the_other_vaults() {
     assert!(state_files(&home).contains(&"other.pin".to_owned()));
     assert!(!state_files(&home).contains(&"diary.pin".to_owned()));
     unlock_ok(&home, "other", PASS);
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &[]);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &[]);
     assert!(
         !ok && output.contains("there is no vault with that name"),
         "{output}"
@@ -853,7 +853,7 @@ fn shell_help_unknown_and_quit() {
     steps.push((SHELL_READY, b"help\r".to_vec()));
     steps.push(("Commands:", b"frobnicate now\r".to_vec()));
     steps.push(("unknown command: frobnicate", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(output.contains("crystal:diary>"), "{output}");
     let after = after_leaving(&output);
@@ -881,7 +881,7 @@ fn lock_asks_again_and_starts_a_new_shell() {
     steps.push(("Commands:", b"lock\r".to_vec()));
     steps.push((PROMPT, format!("{PASS}\r").into_bytes()));
     steps.push(("unlocked.", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     let relocked = output.rfind(PROMPT).unwrap();
     assert!(relocked > output.find("Commands:").unwrap(), "asked again");
@@ -908,7 +908,7 @@ fn lock_screen_asks_again_after_a_wrong_passphrase() {
         format!("{PASS}\r").into_bytes(),
     ));
     steps.push(("unlocked.", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(output.contains("I locked your vault to protect you"));
     assert!(
@@ -916,6 +916,10 @@ fn lock_screen_asks_again_after_a_wrong_passphrase() {
         "the cow stays off the main screen"
     );
 }
+
+/// The lock screen's balloon; the welcome screen shows the same cow
+/// (decision 0058), so `(oo)` no longer tells them apart.
+const LOCKED: &str = "I locked your vault";
 
 /// The lock screen turns off the bracketed paste and the hidden cursor the
 /// shell turned on: a passphrase pasted there arrives as plain keys, not
@@ -926,11 +930,11 @@ fn lock_screen_turns_off_paste_mode_and_shows_the_cursor() {
     let (home, _) = home_with_vault("lock_paste");
     let mut steps = pass_step(PASS);
     steps.push((SHELL_READY, b"lock\r".to_vec()));
-    steps.push(("(oo)", format!("{PASS}\r").into_bytes()));
+    steps.push((LOCKED, format!("{PASS}\r").into_bytes()));
     steps.push(("unlocked.", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
-    let before = &output[..output.find("(oo)").unwrap()];
+    let before = &output[..output.find(LOCKED).unwrap()];
     let last = |s: &str| before.rfind(s).expect(s);
     assert!(last("\x1b[?2004l") > last("\x1b[?2004h"), "paste mode on");
     assert!(last("\x1b[?25h") > last("\x1b[?25l"), "cursor hidden");
@@ -944,7 +948,7 @@ fn esc_at_the_lock_screen_quits() {
     let mut steps = pass_step(PASS);
     steps.push((SHELL_READY, b"lock\r".to_vec()));
     steps.push(("Passphrase: ", b"\x1b".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(output.contains("\x1b[?1049l"), "left the alternate screen");
     assert!(!after_leaving(&output).contains("locked"), "{output}");
@@ -964,7 +968,7 @@ fn auto_lock_after_idle_and_unlock_again() {
         format!("{PASS}\r").into_bytes(),
     ));
     steps.push(("unlocked.", b"quit\r".to_vec()));
-    let cmd = format!("'{BIN}' --lock-after-for-test 2 diary");
+    let cmd = format!("'{BIN}' unlock --lock-after-for-test 2 diary");
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
     assert!(output.contains("(oo)"), "the lock screen: {output}");
@@ -990,12 +994,12 @@ fn keys_restart_the_idle_time() {
         "5 minutes idle; notes and history were wiped",
         b"\x1b".to_vec(),
     ));
-    let cmd = format!("'{BIN}' --lock-after-for-test 3 diary");
+    let cmd = format!("'{BIN}' unlock --lock-after-for-test 3 diary");
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
     let help = output.find("Commands:").unwrap();
     assert!(
-        !output[..help].contains("(oo)"),
+        !output[..help].contains(LOCKED),
         "locked mid-word: {output}"
     );
 }
@@ -1016,7 +1020,7 @@ fn auto_lock_saves_unsaved_edits_first() {
     steps.push(("unlocked.", b"view plan\r".to_vec()));
     steps.push(("previous", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let cmd = format!("'{BIN}' --lock-after-for-test 2 diary");
+    let cmd = format!("'{BIN}' unlock --lock-after-for-test 2 diary");
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
     // The frame writer skips a cell already showing the same letter (here
@@ -1036,7 +1040,7 @@ fn auto_lock_says_when_edits_are_lost() {
     steps.push((SHELL_READY, b"edit welcome\r".to_vec()));
     steps.push(("Ctrl+S save", b"x".to_vec()));
     steps.push(("Your edits could NOT be saved", b"\x1b".to_vec()));
-    let cmd = format!("'{BIN}' --demo-notes-for-test --lock-after-for-test 2 diary");
+    let cmd = format!("'{BIN}' unlock --demo-notes-for-test --lock-after-for-test 2 diary");
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
 }
@@ -1055,7 +1059,7 @@ fn suspend_locks_first_then_stops() {
     let (home, _) = home_with_vault("suspend_lock");
     let cmd = format!(
         "v=.local/share/crystal/diary/vault.age; before=$(sha256sum < $v); \
-         '{BIN}' diary & p=$!; ( sleep 6; kill -TSTP $p; sleep 1; \
+         '{BIN}' unlock diary & p=$!; ( sleep 6; kill -TSTP $p; sleep 1; \
          echo state=$(cut -d' ' -f3 /proc/$p/stat); \
          [ \"$(sha256sum < $v)\" != \"$before\" ] && echo saved=yes || echo saved=no; \
          kill -CONT $p ) & wait $p"
@@ -1093,7 +1097,7 @@ fn shell_ctrl_d_quits() {
     let (home, _) = home_with_vault("shell_ctrl_d");
     let mut steps = pass_step(PASS);
     steps.push((SHELL_READY, b"\x04".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 }
 
@@ -1109,7 +1113,7 @@ fn shell_paste_is_never_a_command() {
     ));
     steps.push(("]52;c;aGk=", b"\x15help\r".to_vec()));
     steps.push(("Commands:", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(
         !output.contains("\x1b]52"),
@@ -1132,7 +1136,7 @@ fn shell_commands_on_an_empty_vault() {
     steps.push(("matching", b"links\r".to_vec()));
     steps.push(("broken", b"view nothing\r".to_vec()));
     steps.push(("find).", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 }
 
@@ -1145,7 +1149,11 @@ fn demo(test: &str, steps: &[(&str, &[u8])]) -> String {
     let (home, _) = home_with_vault(test);
     let mut all = pass_step(PASS);
     all.extend(steps.iter().map(|(wait, keys)| (*wait, keys.to_vec())));
-    let (ok, output) = dialog(&format!("'{BIN}' --demo-notes-for-test diary"), &home, &all);
+    let (ok, output) = dialog(
+        &format!("'{BIN}' unlock --demo-notes-for-test diary"),
+        &home,
+        &all,
+    );
     assert!(ok, "{output}");
     output
 }
@@ -1274,7 +1282,7 @@ fn new_note_is_saved_and_opens_again() {
     steps.push(("Ctrl+S save", format!("hello {CANARY}\x13").into_bytes()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(!after_leaving(&output).contains(CANARY));
 
@@ -1304,7 +1312,7 @@ fn new_note_is_saved_and_opens_again() {
     steps.push(("unlocked.", b"view work/plan\r".to_vec()));
     steps.push(("previous", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     let hex = &CANARY["canary-".len()..CANARY.len() - 1];
     assert!(output.contains(hex), "{output}");
@@ -1328,7 +1336,7 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
     steps.push(("Saved.", b"!\x11".to_vec()));
     steps.push(("again", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 
     // Saved: the new line. Discarded: the "!" typed after the save.
@@ -1336,7 +1344,7 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
     steps.push(("unlocked.", b"view plan\r".to_vec()));
     steps.push(("draft-line", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert!(!visible(&output).contains("draft-line!"), "{output:?}");
 }
@@ -1357,7 +1365,7 @@ fn demo_notes_are_never_saved() {
     steps.push(("never saved", b"\x11\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(
-        &format!("'{BIN}' --demo-notes-for-test diary"),
+        &format!("'{BIN}' unlock --demo-notes-for-test diary"),
         &home,
         &steps,
     );
@@ -1380,7 +1388,7 @@ fn kill_during_saves(home: &Path, delay_ms: u64) {
     // pid): the line always comes before Crystal's prompt. With Crystal as
     // a background job printing `$!`, the prompt could come first, and the
     // wait for it, which starts after the pid line, never ended.
-    let cmd = format!("echo; echo crystal-pid=$$; exec '{BIN}' diary");
+    let cmd = format!("echo; echo crystal-pid=$$; exec '{BIN}' unlock diary");
     let mut child = Command::new("script")
         .args(["-qec", &cmd, "/dev/null"])
         .stdin(Stdio::piped())
@@ -1465,7 +1473,7 @@ fn kill_9_during_saves_never_corrupts_the_vault() {
     steps.push(("Ctrl+S save", b"start\x13".to_vec()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     let first = counter(&home);
     let is_temp = |file: &str| file.starts_with(".vault.age.tmp-");
@@ -1500,7 +1508,7 @@ fn kill_9_during_saves_never_corrupts_the_vault() {
             (PROMPT, format!("{PASS}\r").into_bytes()),
             (SHELL_READY, b"quit\r".to_vec()),
         ];
-        let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+        let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
         assert!(ok, "round {round}: {output}");
         assert!(!output.contains("restore"), "round {round}: {output}");
         round += 1;
@@ -1603,7 +1611,7 @@ fn strace_shows_only_ciphertext_written() {
     let state = state_dir(&home);
     let trace = home.join("trace.txt");
     let cmd = format!(
-        "strace -f -qq -yy -xx -s 100000000 -e trace={WRITE_FAMILY} -o '{}' '{BIN}' diary",
+        "strace -f -qq -yy -xx -s 100000000 -e trace={WRITE_FAMILY} -o '{}' '{BIN}' unlock diary",
         trace.display()
     );
     let mut steps = pass_step(PASS);
@@ -1760,7 +1768,7 @@ fn mv_rewrites_links_and_rm_asks_first() {
     // rm_ignores_a_typed_ahead_answer); the next unlock checks the result.
     steps.push(("delete.", b"no\r".to_vec()));
     steps.push(("", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 
     // The link followed the note (n selects it, Enter follows it to
@@ -1772,7 +1780,7 @@ fn mv_rewrites_links_and_rm_asks_first() {
     steps.push((SHELL_READY, b"rm index\r".to_vec()));
     steps.push(("delete.", b"y\r".to_vec()));
     steps.push(("", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 
     let mut steps = pass_step(PASS);
@@ -1780,7 +1788,7 @@ fn mv_rewrites_links_and_rm_asks_first() {
     steps.push(("No note with that name", b"view goals\r".to_vec()));
     steps.push(("Plan", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 }
 
@@ -1800,7 +1808,7 @@ fn rm_ignores_a_typed_ahead_answer() {
     steps.push(("delete.", b"view plan\r".to_vec()));
     steps.push(("Plan", b"q".to_vec()));
     steps.push(("deleted.", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     let shown = visible(&output);
     assert!(shown.contains("Not deleted."), "{shown}");
@@ -1814,7 +1822,7 @@ fn rm_ignores_a_typed_ahead_answer() {
     steps.push(("trash:", b"\r".to_vec()));
     steps.push(("Not", b"y\r".to_vec()));
     steps.push(("unknown", b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     let shown = visible(&output);
     assert!(shown.contains("unknown command: y"), "{shown}");
@@ -1825,6 +1833,6 @@ fn rm_ignores_a_typed_ahead_answer() {
     steps.push(("unlocked.", b"view plan\r".to_vec()));
     steps.push(("Plan", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 }

@@ -185,7 +185,7 @@ directory that existed before is never removed.
 
 ## 0023 Unlock: one prompt, fail closed, pinned vault id {#0023}
 
-*2026-11-06.* `crystal NAME` treats every input as untrusted. Before
+*2026-11-06.* `crystal unlock NAME` ([0058](#0058)) treats every input as untrusted. Before
 asking for anything it opens the vault directory ([0032](#0032)), reads
 `VERSION`, and refuses while a `vault.sync-conflict-*.age` copy sits
 beside `vault.age` (the user keeps one version, [0045](#0045)). After one
@@ -282,10 +282,10 @@ checks, the largest untrusted input besides the vault format.
 read, not yet created. Each vault has its own passphrase.
 `~/.local/state/crystal/NAME.pin` holds the vault's `vault_id`, set at
 `init` or the first unlock on a device, so a vault swapped in under
-another name is refused. The first word may be a command: `crystal init
-NAME`, `crystal NAME`, `recover NAME`, `check-code NAME` (checks the
-recovery code, changes nothing), `rm NAME` and `help`; those words are
-reserved and cannot name a vault. `crystal rm NAME`, after the name is
+another name is refused. The first word is a command ([0058](#0058)): `crystal init NAME`,
+`unlock NAME`, `recover NAME`, `check-code NAME` (checks the recovery
+code, changes nothing), `rm NAME` and `help`; `init`, `rm`, `recover`,
+`check-code` and `help` are reserved and cannot name a vault. `crystal rm NAME`, after the name is
 typed again, deletes the vault for good: Crystal's own files, conflict
 copies, temp leftovers, the directory, the pin and the counter; other
 files, and then the directory, are left alone. There is no trash.
@@ -293,7 +293,7 @@ Deleting is allowed only there and in `init`'s undo, before the sandbox.
 
 ## 0033 The Crystal shell {#0033}
 
-*2026-11-08.* `crystal NAME` unlocks and opens a command shell on the
+*2026-11-08.* `crystal unlock NAME` unlocks and opens a command shell on the
 alternate screen, with the prompt `crystal:NAME>` following the output
 ([0049](#0049)), in place of a multi-pane TUI. No one-shot command prints
 note content, so no note text reaches stdout, pipes, logs or the
@@ -606,3 +606,25 @@ gaps, and j skips the border under a table's header. Past the last
 numbered line j keeps the cursor and only scrolls the rows after it into
 view; k does the same before the first. Drawing the fences as dim rows,
 and numbering the border under the header, were dropped for this.
+
+## 0058 A vault is opened with `crystal unlock NAME` {#0058}
+
+*2026-11-15.* The first word is always a command: `unlock`, `init`,
+`recover`, `check-code`, `rm` or `help`. A vault is opened with
+`crystal unlock NAME`; the bare `crystal NAME` is refused, as is an
+empty command line, with the usage, so every action is named and none
+is a default. The refusal never repeats the word, which could be a
+mistyped passphrase. `unlock` is not reserved as a vault name: the
+command always comes first, so `crystal unlock unlock` is unambiguous;
+the reserved words of [0032](#0032) stay as they are. The debug-only
+test options go with `unlock` only. The passphrase is asked under the
+lock screen's cowsay cow ([0048](#0048)), saying "Welcome to Crystal!",
+and both cow screens, at unlock and when locked, are centered in the
+window: the cow as one block, each line below it on its own. The size is
+read once when the prompt opens (again after a wrong passphrase); a
+resize while it is open does not redraw it, and a terminal too small for
+it shows it at the top left. Only these two screens are centered; `init`,
+`recover` and `check-code` keep their instructions at the top left. A
+passphrase box and a large braille drawing beside the prompt were
+dropped: about 200 lines of layout and resize handling, with no security
+benefit.

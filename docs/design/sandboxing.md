@@ -193,7 +193,7 @@ exec bwrap \
   --perms 0700 --dir "$HOME/.local/share/crystal" \
   --bind "$vault" "$vault" \
   --bind "$state" "$state" \
-  "$bin" "$@" "$name"
+  "$bin" unlock "$@" "$name"
 ```
 
 - `--clearenv` plus `--setenv` mirrors Crystal's own environment allowlist (`HOME`, `TERM`).

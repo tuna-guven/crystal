@@ -82,7 +82,7 @@ fn refuses_without_terminal() {
     // New session: no controlling terminal, even when `cargo test` itself
     // runs in an interactive shell.
     let out = Command::new("setsid")
-        .args(["--wait", BIN, "--skip-unlock-for-test", "diary"])
+        .args(["--wait", BIN, "unlock", "--skip-unlock-for-test", "diary"])
         .env("HOME", &home)
         .output()
         .unwrap();
@@ -102,7 +102,7 @@ fn starts_in_terminal_with_redirected_stdio() {
     let home = fresh_home("redirected_stdio");
     make_data_dir(&home);
     let (ok, output) = run_in_pty(
-        "--skip-unlock-for-test diary </dev/null >/dev/null",
+        "unlock --skip-unlock-for-test diary </dev/null >/dev/null",
         Some(&home),
     );
     assert!(ok, "{output}");
@@ -113,10 +113,28 @@ fn starts_in_terminal_with_redirected_stdio() {
 fn rejects_secret_argument_without_echoing_it() {
     let home = fresh_home("secret_argument");
     make_data_dir(&home);
-    let (ok, output) = run_in_pty("--passphrase hunter2 diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --passphrase hunter2 diary", Some(&home));
     assert!(!ok, "{output}");
     assert!(output.contains("unknown argument"), "{output}");
     assert!(!output.contains("hunter2"), "{output}");
+}
+
+/// Step 6: the bare `crystal NAME` of before decision 0058 is refused
+/// with the usage, without echoing the word (it could be a passphrase),
+/// and nothing is created.
+#[test]
+fn rejects_bare_vault_name() {
+    let home = fresh_home("bare_name");
+    make_data_dir(&home);
+    let (ok, output) = run_in_pty("hunter2", Some(&home));
+    assert!(!ok, "{output}");
+    assert!(
+        output.contains("the first word must be a command"),
+        "{output}"
+    );
+    assert!(output.contains("crystal unlock NAME"), "{output}");
+    assert!(!output.contains("hunter2"), "{output}");
+    assert!(!home.join(".local/state").exists());
 }
 
 /// Step 6: a vault name that could escape ~/.local/share/crystal is
@@ -126,7 +144,7 @@ fn rejects_unsafe_vault_name() {
     let home = fresh_home("unsafe_name");
     make_data_dir(&home);
     for name in ["../hunter2", "hunter2/x", ".hunter2"] {
-        let (ok, output) = run_in_pty(&format!("'{name}'"), Some(&home));
+        let (ok, output) = run_in_pty(&format!("unlock '{name}'"), Some(&home));
         assert!(!ok && output.contains("vault name must be"), "{output}");
         assert!(!output.contains("hunter2"), "{output}");
     }
@@ -140,7 +158,10 @@ fn rejects_unsafe_vault_name() {
 fn refuses_inherited_file_descriptor() {
     let home = fresh_home("inherited_fd");
     make_data_dir(&home);
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary 5</dev/null", Some(&home));
+    let (ok, output) = run_in_pty(
+        "unlock --skip-unlock-for-test diary 5</dev/null",
+        Some(&home),
+    );
     assert!(
         !ok && output.contains("1 open file descriptor(s) inherited")
             && output.contains("lowest 5"),
@@ -163,7 +184,7 @@ fn running_binary_is_hardened() {
     let home = fresh_home("hardened");
     make_data_dir(&home);
     let cmd = format!(
-        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; echo; \
+        "'{BIN}' unlock --skip-unlock-for-test diary & p=$!; sleep 1; echo; \
          echo environ_owner=$(stat -c %u /proc/$p/environ); \
          grep -E '^(VmLck|NoNewPrivs|Umask):' /proc/$p/status; \
          grep 'Max core file size' /proc/$p/limits; \
@@ -201,7 +222,7 @@ fn data_dir_checks() {
     let home = fresh_home("data_dir");
     let data = home.join(".local/share/crystal");
 
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(!ok && output.contains("there is no vault yet"), "{output}");
     assert_eq!(
         std::fs::read_dir(&home).unwrap().count(),
@@ -211,7 +232,7 @@ fn data_dir_checks() {
 
     make_data_dir(&home);
     set_mode(&data, 0o755);
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("~/.local/share/crystal has mode 755, need 700"),
         "{output}"
@@ -223,7 +244,7 @@ fn data_dir_checks() {
     std::fs::rename(&data, &elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, &data).unwrap();
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("~/.local/share/crystal is a symlink or not a directory"),
         "{output}"
@@ -235,7 +256,7 @@ fn data_dir_checks() {
     std::fs::remove_file(real_share.join("crystal")).unwrap();
     std::fs::rename(&elsewhere, real_share.join("crystal")).unwrap();
     symlink(&real_share, home.join(".local/share")).unwrap();
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("a parent of ~/.local/share/crystal is a symlink"),
         "{output}"
@@ -250,13 +271,13 @@ fn data_dir_checks() {
 fn creates_state_dir_with_mode_0700() {
     let home = fresh_home("state_dir_fresh");
     make_data_dir(&home);
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(ok, "{output}");
     for dir in [".local", ".local/state", ".local/state/crystal"] {
         assert_eq!(mode(&home.join(dir)), 0o700, "{dir}");
     }
     // A second start accepts the directory it created.
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(ok, "{output}");
 }
 
@@ -270,7 +291,7 @@ fn refuses_state_dir_with_loose_mode() {
     let state = home.join(".local/state/crystal");
     std::fs::create_dir_all(&state).unwrap();
     set_mode(&state, 0o755);
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(!ok && output.contains("mode 755, need 700"), "{output}");
     assert!(output.contains("chmod 700"), "{output}");
     assert_eq!(
@@ -291,7 +312,7 @@ fn refuses_state_dir_symlink() {
     std::fs::create_dir(&elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, home.join(".local/state/crystal")).unwrap();
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("is a symlink or not a directory"),
         "{output}"
@@ -311,7 +332,7 @@ fn refuses_state_dir_parent_symlink() {
     std::fs::create_dir(&elsewhere).unwrap();
     set_mode(&elsewhere, 0o700);
     symlink(&elsewhere, home.join(".local/state")).unwrap();
-    let (ok, output) = run_in_pty("--skip-unlock-for-test diary", Some(&home));
+    let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", Some(&home));
     assert!(
         !ok && output.contains("a parent of ~/.local/state/crystal is a symlink"),
         "{output}"
@@ -324,7 +345,7 @@ fn refuses_state_dir_parent_symlink() {
 #[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn refuses_missing_or_relative_home() {
     for home in [None, Some(Path::new("relative/home"))] {
-        let (ok, output) = run_in_pty("--skip-unlock-for-test diary", home);
+        let (ok, output) = run_in_pty("unlock --skip-unlock-for-test diary", home);
         assert!(
             !ok && output.contains("HOME is unset or not an absolute path"),
             "{output}"
@@ -420,7 +441,7 @@ fn init_then_rm_end_to_end() {
         (PROMPT, format!("{new_pass}\r").into_bytes()),
         ("crystal:diary> ", b"quit\r".to_vec()),
     ];
-    let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
     assert_eq!(
         std::fs::read(vault.join("vault.age")).unwrap(),
@@ -511,7 +532,7 @@ fn terminal_guard_restores_terminal() {
     let home = fresh_home("terminal_guard");
     make_data_dir(&home);
     // echo: Crystal prints no newline, so separate its output from stty's.
-    let cmd = format!("stty -g; '{BIN}' --skip-unlock-for-test diary; echo; stty -g");
+    let cmd = format!("stty -g; '{BIN}' unlock --skip-unlock-for-test diary; echo; stty -g");
     let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
     assert!(ok, "{output}");
 
@@ -538,8 +559,9 @@ fn terminal_guard_restores_terminal() {
 fn forced_panic_leaves_clean_terminal() {
     let home = fresh_home("forced_panic");
     make_data_dir(&home);
-    let cmd =
-        format!("stty -g; '{BIN}' --crash-for-test panic diary; s=$?; echo; echo exit=$s; stty -g");
+    let cmd = format!(
+        "stty -g; '{BIN}' unlock --crash-for-test panic diary; s=$?; echo; echo exit=$s; stty -g"
+    );
     let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
     assert!(ok, "{output}");
     // 101: a Rust panic that unwound out of main, not death by a signal.
@@ -607,7 +629,7 @@ fn abort_paths_print_no_secret_and_leave_no_core() {
         let home = fresh_home(&format!("abort_{kind}"));
         make_data_dir(&home);
         let cmd = format!(
-            "stty -g; '{BIN}' --crash-for-test {kind} diary; s=$?; echo; echo exit=$s; stty -g"
+            "stty -g; '{BIN}' unlock --crash-for-test {kind} diary; s=$?; echo; echo exit=$s; stty -g"
         );
         let (ok, output) = run_shell_in_pty(&cmd, Some(&home));
         assert!(ok, "{kind}: {output}");
@@ -644,7 +666,7 @@ fn terminal_hangup_exits_cleanly() {
     make_data_dir(&home);
     let status = home.join("status");
     let cmd = format!(
-        "trap '' HUP; '{BIN}' --skip-unlock-for-test diary; echo $? > '{}'",
+        "trap '' HUP; '{BIN}' unlock --skip-unlock-for-test diary; echo $? > '{}'",
         status.display()
     );
     let mut script = Command::new("script")
@@ -684,7 +706,7 @@ fn kill_9_leaves_no_new_files() {
     let listing = |name: &str| home.with_extension(name);
     let (before, after) = (listing("before"), listing("after"));
     let cmd = format!(
-        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; find . | sort > '{}'; kill -9 $p; wait $p; s=$?; \
+        "'{BIN}' unlock --skip-unlock-for-test diary & p=$!; sleep 1; find . | sort > '{}'; kill -9 $p; wait $p; s=$?; \
          find . | sort > '{}'; echo; echo exit=$s",
         before.display(),
         after.display()
@@ -726,7 +748,7 @@ fn exit_signal_restores_terminal(signal: &str) {
     let home = fresh_home(&format!("signal_{signal}"));
     make_data_dir(&home);
     let cmd = format!(
-        "stty -g; '{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; kill -{signal} $p; wait $p; s=$?; \
+        "stty -g; '{BIN}' unlock --skip-unlock-for-test diary & p=$!; sleep 1; kill -{signal} $p; wait $p; s=$?; \
          echo; echo exit=$s; stty -g"
     );
     let (ok, output) = pty(&cmd, Some(&home), b"");
@@ -758,7 +780,7 @@ fn exit_signal_restores_terminal(signal: &str) {
 fn ctrl_z_is_a_key_not_a_suspend() {
     let home = fresh_home("ctrl-z");
     make_data_dir(&home);
-    let cmd = format!("'{BIN}' --skip-unlock-for-test diary; echo; echo exit=$?");
+    let cmd = format!("'{BIN}' unlock --skip-unlock-for-test diary; echo; echo exit=$?");
     let (ok, output) = pty_dialog(&cmd, &home, &[("\x1b[?1049h", b"\x1a")]);
     assert!(ok, "{output:?}");
     assert!(output.contains("exit=0"), "{output:?}");
@@ -778,7 +800,7 @@ fn suspend_restores_terminal_and_resume_reenters() {
     let home = fresh_home("suspend");
     make_data_dir(&home);
     let cmd = format!(
-        "stty -g; '{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; kill -TSTP $p; sleep 0.5; \
+        "stty -g; '{BIN}' unlock --skip-unlock-for-test diary & p=$!; sleep 1; kill -TSTP $p; sleep 0.5; \
          echo; echo state=$(cut -d' ' -f3 /proc/$p/stat); stty -g; \
          kill -CONT $p; sleep 0.5; kill -TERM $p; wait $p; s=$?; echo; echo exit=$s; stty -g"
     );
@@ -820,7 +842,7 @@ fn resize_signal_redraws_and_keeps_running() {
     let home = fresh_home("resize");
     make_data_dir(&home);
     let cmd = format!(
-        "'{BIN}' --skip-unlock-for-test diary & p=$!; sleep 1; \
+        "'{BIN}' unlock --skip-unlock-for-test diary & p=$!; sleep 1; \
          for i in 1 2 3 4 5; do kill -WINCH $p; done; sleep 0.5; \
          echo; echo state=$(cut -d' ' -f3 /proc/$p/stat); \
          kill -TERM $p; wait $p; s=$?; echo; echo exit=$s"
@@ -839,7 +861,7 @@ fn resize_signal_redraws_and_keeps_running() {
 fn prompt_run(test: &str, kind: &str, steps: &[(&str, &[u8])]) -> (bool, String) {
     let home = fresh_home(test);
     make_data_dir(&home);
-    let cmd = format!("'{BIN}' --prompt-for-test {kind} diary");
+    let cmd = format!("'{BIN}' unlock --prompt-for-test {kind} diary");
     pty_dialog(&cmd, &home, steps)
 }
 
@@ -870,7 +892,7 @@ fn prompt_reads_passphrase_without_echo() {
 fn prompt_discards_keys_typed_before_it() {
     let home = fresh_home("prompt_typeahead");
     make_data_dir(&home);
-    let cmd = format!("sleep 1; '{BIN}' --prompt-for-test read diary");
+    let cmd = format!("sleep 1; '{BIN}' unlock --prompt-for-test read diary");
     let steps: [(&str, &[u8]); 2] = [("", b"early"), (PROMPT, b"pw\r")];
     let (ok, output) = pty_dialog(&cmd, &home, &steps);
     assert!(ok, "{output:?}");
@@ -966,7 +988,8 @@ fn prompt_refuses_overlong_input() {
 fn prompt_exit_signal_cancels() {
     let home = fresh_home("prompt_signal");
     make_data_dir(&home);
-    let cmd = format!("(sleep 1; kill -TERM $$) & exec '{BIN}' --prompt-for-test read diary");
+    let cmd =
+        format!("(sleep 1; kill -TERM $$) & exec '{BIN}' unlock --prompt-for-test read diary");
     let (ok, output) = pty_dialog(&cmd, &home, &[(PROMPT, b"hunter2")]);
     assert!(!ok, "{output:?}");
     assert!(
