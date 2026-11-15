@@ -622,15 +622,11 @@ mistyped passphrase. `unlock` is not reserved as a vault name: the
 command always comes first, so `crystal unlock unlock` is unambiguous;
 the reserved words of [0032](#0032) stay as they are. The debug-only
 test options go with `unlock` only. The passphrase is asked under the
-lock screen's cowsay cow ([0048](#0048)), saying "Welcome to Crystal!",
-and on both cow screens, at unlock and when locked, the `Passphrase:`
-line sits on the middle row, centered, with the cow just above it as one
-block and each line below the cow centered on its own; a terminal too
-small for it shows it at the top left. Every passphrase prompt is drawn
-again when the window is resized (SIGWINCH, already caught for the
-shell): keys typed so far are kept, and since only fixed text is drawn,
-a redraw shows nothing of the passphrase, not even its length. A prompt
-that echoes, such as the recovery code's, is not redrawn. `init`,
-`recover` and `check-code` keep their text at the top left. A
-passphrase box and a large braille drawing beside the prompt were
-dropped: about 200 lines of layout, with no security benefit.
+lock screen's cowsay cow ([0048](#0048)), saying "Welcome to Crystal!".
+Both cow screens, at unlock and when locked, are fixed text at the top
+left: the cow, then the lines below it and the `Passphrase:` line, with
+no centering and nothing that depends on the window's size. A resize
+while a prompt is open draws nothing again; the keys typed so far are
+kept. A passphrase box, a large braille drawing beside the prompt and a
+centered, redrawn prompt were dropped: layout code with no security
+benefit.

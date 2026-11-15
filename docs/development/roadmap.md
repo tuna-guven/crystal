@@ -57,6 +57,8 @@ the prompt; the user kept only the command (decision 0058).
 | C1 (done) | The `Passphrase:` line on the middle row, the cow just above it | User's request |
 | C2 (done) | Every passphrase prompt is drawn again on a resize (the resize pipe in `next_keys`), keeping the keys typed; `read_public_line` ignores it | User's request; about 40 lines, no new syscall |
 | C3 (done) | Pty test `resize_redraws_the_prompt_and_keeps_the_keys`; decision 0058, setup guide, startup step 6 (left stale by A3), syscalls.md rows | Book rule in CLAUDE.md |
+| T1 (done) | Centering and redraw removed again (replaces W2, C1, C2): both cow screens are fixed text at the top left; `read_passphrase_sized` and `size_or_fallback` gone, a resize at a prompt is ignored; pty test `resize_keeps_the_prompt_and_the_keys` | User's request: simpler |
+| T2 (done) | Decision 0058 cut in place (no new decision: UI only), setup guide, syscalls.md rows, roadmap; all checks | Book rule in CLAUDE.md |
 
 ## Steps L1 to L4 (viewer line-number fixes)
 

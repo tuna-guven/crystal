@@ -558,31 +558,13 @@ impl TerminalGuard {
         signals: &Signals,
         prompt: &str,
     ) -> Result<Passphrase, PromptError> {
-        self.read_passphrase_sized(signals, &|_| prompt.to_owned())
-    }
-
-    /// As `read_passphrase`, with a screen drawn for the window's size
-    /// (columns, rows) by `screen`: once when the prompt opens and again
-    /// after each resize (decision 0058). The screen is fixed text; keys
-    /// typed so far are kept, since none are shown.
-    pub fn read_passphrase_sized(
-        &mut self,
-        signals: &Signals,
-        screen: &dyn Fn((u16, u16)) -> String,
-    ) -> Result<Passphrase, PromptError> {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
-        self.show(screen(self.size_or_fallback()).as_bytes())?;
+        self.show(prompt.as_bytes())?;
         let result = self
-            .read_line_raw(signals, LineEditor::new(), Some(screen))
+            .read_line_raw(signals, LineEditor::new())
             .and_then(LineEditor::finish);
         self.show(b"")?;
         result
-    }
-
-    /// `size`, or 80 by 24 if the terminal cannot tell: a prompt still
-    /// opens, laid out for the usual size.
-    fn size_or_fallback(&self) -> (u16, u16) {
-        self.size().unwrap_or(FALLBACK_SIZE)
     }
 
     /// For `crystal init`: asks twice and accepts only matching entries, compared
@@ -660,20 +642,16 @@ impl TerminalGuard {
 
     /// The keys up to Enter into `line`, not yet checked. Each read lands
     /// in a small stack buffer that is wiped on drop; bytes after Enter in
-    /// the same read are discarded with it. After a resize, `screen` (if
-    /// any) is drawn again at the new size.
+    /// the same read are discarded with it. A resize leaves the prompt as
+    /// it is, at the top left, and keeps the keys typed so far.
     fn read_line_raw(
         &mut self,
         signals: &Signals,
         mut line: LineEditor,
-        screen: Option<&dyn Fn((u16, u16)) -> String>,
     ) -> Result<LineEditor, PromptError> {
         let mut chunk = Zeroizing::new([0u8; 64]);
         loop {
             let Some(n) = self.next_keys(signals, &mut chunk[..])? else {
-                if let Some(screen) = screen {
-                    self.show(screen(self.size_or_fallback()).as_bytes())?;
-                }
                 continue;
             };
             for &byte in &chunk[..n] {

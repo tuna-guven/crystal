@@ -160,8 +160,8 @@ Crystal did not make are left alone, and so is the directory then.
 
 ### Opening a vault
 
-`crystal unlock NAME` asks for the passphrase once, in the middle of the
-window (also after a resize) under a cow that welcomes you ([decision 0058](../decisions.md#0058)),
+`crystal unlock NAME` asks for the passphrase once, at the top left
+of the window under a cow that welcomes you ([decision 0058](../decisions.md#0058)),
 and unlocks the vault into the Crystal shell ([decision 0033](../decisions.md#0033)): like a
 terminal, it starts at the top, and the prompt follows the output down
 the screen ([decision 0049](../decisions.md#0049));
@@ -179,7 +179,7 @@ the terminal's scrollback. The shell knows:
 | `mv OLD NEW` | Renames or moves a note, keeping its type; `[[links]]` to it follow |
 | `rm NAME` | Deletes a note for good, after you type y |
 | `links` | Every `[[link]]` that leads nowhere, and why |
-| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt, centered). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
+| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt, at the top left). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
 Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the

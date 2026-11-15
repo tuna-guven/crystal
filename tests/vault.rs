@@ -943,29 +943,30 @@ fn lock_screen_turns_off_paste_mode_and_shows_the_cursor() {
     assert!(last("\x1b[?25h") > last("\x1b[?25l"), "cursor hidden");
 }
 
-/// A resize while the passphrase prompt is open redraws it centered for
-/// the new size (decision 0058), and keeps the keys typed so far: half
-/// the passphrase typed at 80 columns, the rest after the window grew to
-/// 100, unlocks. `stty` sets the size, and the kernel sends Crystal the
-/// SIGWINCH.
+/// A resize while the passphrase prompt is open leaves it at the top
+/// left, under the cow, and keeps the keys typed so far: half the
+/// passphrase typed at 80 columns, the rest after the window grew to 100,
+/// unlocks. `stty` sets the size, the kernel sends Crystal the SIGWINCH,
+/// and `RESIZED` written to the terminal marks when that happened.
 #[test]
-fn resize_redraws_the_prompt_and_keeps_the_keys() {
+fn resize_keeps_the_prompt_and_the_keys() {
     let (home, _) = home_with_vault("prompt_resize");
     let (first, rest) = PASS.split_at(PASS.len() / 2);
-    // The prompt centered in 80 and in 100 columns.
-    let at_80 = format!("\n{}{PROMPT}", " ".repeat(34));
-    let at_100 = format!("\n{}{PROMPT}", " ".repeat(44));
+    let under_the_cow = format!("||\r\n\r\n{PROMPT}");
     let steps = [
-        (at_80.as_str(), first.as_bytes().to_vec()),
-        (at_100.as_str(), format!("{rest}\r").into_bytes()),
+        (under_the_cow.as_str(), first.as_bytes().to_vec()),
+        ("RESIZED", format!("{rest}\r").into_bytes()),
         (SHELL_READY, b"quit\r".to_vec()),
     ];
     let cmd = format!(
-        "stty rows 24 cols 80; (sleep 2; stty rows 40 cols 100 </dev/tty) & exec '{BIN}' unlock diary"
+        "stty rows 24 cols 80; (sleep 2; stty rows 40 cols 100 </dev/tty; printf RESIZED >/dev/tty) & exec '{BIN}' unlock diary"
     );
     let (ok, output) = dialog(&cmd, &home, &steps);
     // The shell's prompt (the last step) came: the passphrase opened it.
     assert!(ok, "{output}");
+    // Drawn once: a resize does not draw the prompt again.
+    let before_shell = &output[..output.find(SHELL_READY).unwrap()];
+    assert_eq!(before_shell.matches(PROMPT).count(), 1, "{output}");
 }
 
 /// Esc at the lock screen quits Crystal cleanly: exit status 0, the
