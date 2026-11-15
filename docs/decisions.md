@@ -541,15 +541,14 @@ select links. There is no mouse: capturing it takes plain drag-selection
 from the terminal, the only way text leaves Crystal ([0041](#0041)), and
 adds a parser for mouse reports and a mode to undo on every exit.
 
-## 0053 The viewer has a gutter with the note's line numbers; y copies a line {#0053}
+## 0053 The viewer has a gutter for the cursor; y copies a line {#0053}
 
-*2026-11-15.* A gutter left of the viewer's text shows `>` on the cursor's
-row and the note's line numbers ([0055](#0055)), dropped below 20 columns
-of text; the cell colors stay as rendered. A line break in a note stays a
-line break, as in Obsidian's reading view, so every line starts a row. `y`
-copies the cursor's line as written into Crystal's clipboard, `Y` the
-whole note. Numbering rendered rows was rejected: the numbers would
-change with the window and match nothing in the editor.
+*2026-11-15.* A gutter left of the viewer's text shows the cursor's `>`
+([0057](#0057)); the cell colors stay as rendered. A line break in a note
+stays a line break, as in Obsidian's reading view, so every line starts a
+row. `y` copies the cursor's line as written into Crystal's clipboard,
+`Y` the whole note. Numbering rendered rows was rejected: the numbers
+would change with the window and match nothing in the editor.
 
 ## 0054 Web and mail links are clickable (OSC 8), without their address {#0054}
 
@@ -569,11 +568,12 @@ link from an untrusted note can name another site than its target.
 ## 0055 Lines with text are numbered in the viewer and the editor; j/k go by line; narrow tables stay boxed {#0055}
 
 *2026-11-15.* Only lines with text are numbered, counted from 1, by one
-module (`model::lines`) for the viewer, `y` and the editor, which gets
-the same gutter (dim numbers, none on blank or wrapped rows, dropped
-below 20 columns). In the viewer, j/k and the arrows, and so the mouse
+module (`model::lines`) for the viewer, `y` and the editor, which shows
+them in a gutter (dim numbers, none on blank or wrapped rows, dropped
+below 20 columns); which lines count, and the viewer's gutter, are in
+[0057](#0057). In the viewer, j/k and the arrows, and so the mouse
 wheel, go from one numbered line to the next, showing a wrapped line
-whole, and the cursor's `>` and number are bold orange. A table wider
+whole. A table wider
 than the screen stays boxed: columns that fit their share keep their
 width, the wider ones split the rest, each cell wraps inside its column;
 only below 3 columns a cell is it drawn unboxed. Mouse clicks moving the
@@ -589,3 +589,20 @@ force. A decision replaced entirely is deleted (0018 into
 what still holds, and the full records stay in git history. The log is
 shorter to read and keep current, at the cost of the alternatives and
 consequences each record spelled out.
+
+## 0057 The viewer shows no line numbers; fences and `|---|` lines are not counted {#0057}
+
+*2026-11-15.* The viewer's gutter is two columns, the cursor's bold
+orange `>` and a blank before the text; it shows no line numbers. j/k
+still go from one numbered line to the next ([0055](#0055)), and `y`
+copies the line by its number, so the numbers decide where the cursor
+stops without being drawn. The editor keeps its numbers. Besides blank
+lines, a code fence (three or more `` ` `` or `~`, after indentation, `>`
+and list markers such as `-` or `1.`; a backtick fence holds no other
+backtick) and a table's `|---|` line (only `|`, `-`, `:` and blanks, with
+a `|` and a `-`) get no number and are not counted, in the viewer and the
+editor alike: the viewer draws no row for them, so their numbers left
+gaps, and j skips the border under a table's header. Past the last
+numbered line j keeps the cursor and only scrolls the rows after it into
+view; k does the same before the first. Drawing the fences as dim rows,
+and numbering the border under the header, were dropped for this.

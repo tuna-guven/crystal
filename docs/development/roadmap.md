@@ -25,6 +25,19 @@ suspended.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
 
+## Steps L1 to L4 (viewer line-number fixes)
+
+Proposed 2026-11-15, after the user reported three bugs; the user then
+asked for the viewer to show no numbers at all.
+
+| Step | What | Why |
+| --- | --- | --- |
+| L1 (done) | Past the last numbered line j keeps the cursor and scrolls the rows after it into view; k likewise before the first | j went on onto wrapped and empty rows |
+| L2 (done) | A table's `\|---\|` line counts as blank (not numbered, not counted); j skips the border under the header | Its number was missing |
+| L3 (done) | A code fence (```` ``` ````, ```` ```rust ````, `~~~`), also on a list item's line (`` - ```rust ``), counts as blank | Its number was missing |
+| G1, G2 (done) | The viewer's gutter is the bold orange `>` and a blank, without numbers; the editor keeps them | User's request |
+| L4 (done) | Decision 0057 (cuts 0053 and 0055), setup guide, dependencies; all checks | Book rule in CLAUDE.md |
+
 ## Steps V1 to V5 (viewer and editor line fixes)
 
 Proposed 2026-11-15, after the user reported five bugs. Clicks moving the

@@ -1019,9 +1019,10 @@ fn auto_lock_saves_unsaved_edits_first() {
     let cmd = format!("'{BIN}' --lock-after-for-test 2 diary");
     let (ok, output) = dialog(&cmd, &home, &steps);
     assert!(ok, "{output}");
-    // The frame writer may skip an unchanged cell, so not the last letter.
+    // The frame writer skips a cell already showing the same letter (here
+    // the `l` of the shell's `help` under it), so only the start.
     let locked = output.find("saved first").unwrap();
-    assert!(output[locked..].contains("draft-lin"), "{output}");
+    assert!(output[locked..].contains("draft-"), "{output}");
 }
 
 /// When the save before auto-lock cannot happen (debug-only demo notes are

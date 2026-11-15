@@ -1459,7 +1459,7 @@ mod tests {
         );
         assert_eq!(
             numbers(table, Kind::Markdown, 21),
-            [0, 1, 0, 3, 0, 0, 0, 4, 0]
+            [0, 1, 0, 2, 0, 0, 0, 3, 0]
         );
         // Every row fits, at every width down to the unboxed fallback.
         for width in 1..60 {
@@ -1869,15 +1869,24 @@ mod tests {
         // `\r\n` is one line break, as in the editor.
         assert_eq!(numbers("a\r\nb", Kind::Markdown, 9), [1, 2]);
         // Code keeps its lines; a blank one, or one of spaces only, has
-        // no number and is not counted.
-        assert_eq!(numbers("```\nx\n\ny\n```", Kind::Markdown, 9), [2, 0, 3]);
-        assert_eq!(numbers("```\nx\n   \ny\n```", Kind::Markdown, 9), [2, 0, 3]);
+        // no number and is not counted, nor have its fences: no gap.
+        let code = "a\n\n```rust\nx\n\ny\n```\n\nb";
+        assert_eq!(numbers(code, Kind::Markdown, 9), [1, 0, 2, 0, 3, 0, 4]);
+        assert_eq!(numbers("```\nx\n   \ny\n```", Kind::Markdown, 9), [1, 0, 2]);
+        assert_eq!(numbers("> ~~~\n> x\n> ~~~", Kind::Markdown, 9), [1]);
+        // A fence on a list item's line: its first code line is drawn on
+        // the item's row, numbered next.
+        let item = "a\n\n- ```rust\n  x\n  ```\n- b";
+        assert_eq!(md(item, 20), ["a", "", "• x", "• b"]);
+        assert_eq!(numbers(item, Kind::Markdown, 20), [1, 0, 2, 3]);
         // A boxed table: rows numbered, borders not; the `|-|` line
-        // under the header makes no row.
+        // under the header makes no row and is not counted: no gap.
         assert_eq!(
             numbers("| a |\n|---|\n| b |\n| c |", Kind::Markdown, 20),
-            [0, 1, 0, 3, 0, 4, 0]
+            [0, 1, 0, 2, 0, 3, 0]
         );
+        let unboxed = "| a | b | c |\n|-|-|-|\n| d | e | f |";
+        assert_eq!(numbers(unboxed, Kind::Markdown, 8), [1, 0, 0, 2, 0]);
         // Plain text: every line its own, blanks without.
         assert_eq!(numbers("aaa bbb\n\nc", Kind::Plain, 4), [1, 0, 0, 2]);
         // Each row's line, wrapped ones included, for copying.

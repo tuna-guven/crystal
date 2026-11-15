@@ -1,19 +1,62 @@
 //! Line numbers as Crystal shows them, in the viewer and the editor alike
 //! (decision 0055): only lines with text are numbered, counted from 1; a
 //! blank line (only spaces and tabs before its line break) has no number
-//! and is not counted. `\n` ends a line, and so does `\r\n`.
+//! and is not counted, and neither has a code fence (```` ``` ````,
+//! ```` ```rust ````, `~~~`) or a table's `|---|` line, which the viewer
+//! does not show. `\n` ends a line, and so does `\r\n`.
 //!
 //! The same rule works on the raw note (the editor) and the sanitized one
 //! (the viewer): the sanitizer turns a tab into spaces and `\r\n` into
 //! `\n`, and spells out a lone `\r`, which is text either way.
 
-/// Whether `line`, with its line break if it has one, is blank.
+/// Whether `line`, with its line break if it has one, is blank: only
+/// spaces and tabs, a code fence or a table's `|---|` line.
 pub fn is_blank(line: &str) -> bool {
     let body = match line.strip_suffix('\n') {
         Some(body) => body.strip_suffix('\r').unwrap_or(body),
         None => line,
     };
-    body.bytes().all(|b| b == b' ' || b == b'\t')
+    body.bytes().all(|b| b == b' ' || b == b'\t') || is_fence(body) || is_table_rule(body)
+}
+
+/// `line` after the list marker it starts with (`-`, `*` or `+`, or up
+/// to 9 digits then `.` or `)`), which a space or tab must follow.
+fn strip_list_marker(line: &str) -> Option<&str> {
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let marker = match line.as_bytes().get(digits) {
+        Some(b'-' | b'*' | b'+') if digits == 0 => 1,
+        Some(b'.' | b')') if (1..=9).contains(&digits) => digits + 1,
+        _ => return None,
+    };
+    let rest = &line[marker..];
+    rest.starts_with([' ', '\t']).then_some(rest)
+}
+
+/// Whether `line` is the line under a table's header: after `>` quote
+/// markers, only `|`, `-`, `:`, spaces and tabs, with a `|` and a `-`. A
+/// `---` rule has no `|`, so it stays text.
+fn is_table_rule(line: &str) -> bool {
+    let body = line.trim_start_matches([' ', '\t', '>']);
+    body.contains('|')
+        && body.contains('-')
+        && body
+            .bytes()
+            .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'))
+}
+
+/// Whether `line` opens or closes a fenced code block: after indentation,
+/// `>` quote markers and list markers (`-`, `*`, `+`, `1.`, `1)`), three
+/// or more `` ` `` (the rest holding none) or three or more `~`.
+fn is_fence(line: &str) -> bool {
+    let mut body = line.trim_start_matches([' ', '\t', '>']);
+    while let Some(rest) = strip_list_marker(body) {
+        body = rest.trim_start_matches([' ', '\t', '>']);
+    }
+    let Some(mark) = body.chars().next().filter(|c| matches!(c, '`' | '~')) else {
+        return false;
+    };
+    let rest = body.trim_start_matches(mark);
+    body.len() - rest.len() >= 3 && !(mark == '`' && rest.contains('`'))
 }
 
 /// How many lines of `text` are numbered: the last number.
@@ -90,6 +133,33 @@ mod tests {
         }
         // A lone `\r` is text, as the sanitizer spells it out.
         for text in ["a", " a\n", "\r", " \r", "\u{a0}\n", "\r\r\n"] {
+            assert!(!is_blank(text), "{text:?}");
+        }
+        // Code fences count as blank; inline code and short runs do not.
+        for fence in ["```", "```rust\n", "  ~~~~ py\r\n", "> ```", "````"] {
+            assert!(is_blank(fence), "{fence:?}");
+        }
+        // Also on a list item's line, however nested.
+        for fence in [
+            "- ```rust",
+            "* ~~~",
+            "+\t```",
+            "12. ```",
+            "3) ```",
+            "> - 1. ```",
+        ] {
+            assert!(is_blank(fence), "{fence:?}");
+        }
+        for text in [
+            "``", "```x```", "a ```", "~~", "-```", "1```", "a. ```", "- x ```",
+        ] {
+            assert!(!is_blank(text), "{text:?}");
+        }
+        // So do tables' `|---|` lines; a `---` rule or a row does not.
+        for rule in ["|---|", "| :-- | --: |\n", "> |-|-|", "--- | ---"] {
+            assert!(is_blank(rule), "{rule:?}");
+        }
+        for text in ["---", "| a |", "|", "| - x |"] {
             assert!(!is_blank(text), "{text:?}");
         }
     }
