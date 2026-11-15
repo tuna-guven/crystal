@@ -666,4 +666,6 @@ forbidden, and BPF and Landlock ABI details are easy to get wrong.
 `landlock` brings `enumflags2` and its build-time derive macro. Four
 crates join `Cargo.lock` (79). `seccompiler` is Apache-2.0 or
 BSD-3-Clause and is taken under BSD-3-Clause, already allowed in
-`deny.toml`.
+`deny.toml`. `libc` =0.2.191, already in the tree through
+both, is a direct dependency for its constants only (the syscall and
+`ioctl` numbers of the allowlist), so no number is typed by hand.

@@ -130,6 +130,7 @@ dependencies = [
  "hmac",
  "landlock",
  "lexopt",
+ "libc",
  "miniz_oxide",
  "postcard",
  "proptest",

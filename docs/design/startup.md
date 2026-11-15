@@ -19,6 +19,6 @@ Hardening happens in a fixed order: protections that cost nothing go first, and 
 
 **Explicitly denied:** `socket`, `socketpair`, `connect`, `bind`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `userfaultfd`, `perf_event_open`, `keyctl`, `add_key`, `mount`, `unshare`, `setns`, `personality`, `memfd_create`, `clone`, `clone3` (Crystal is single-threaded), and the `ioctl` requests `TIOCSTI` and `TIOCLINUX`.
 
-Develop with the `sandbox-audit` feature (log action), run every feature, and collect the real syscall set from the audit log with `run0 ausearch -m SECCOMP -c crystal`; this works with secureblue's `deny_ptrace` on. `strace -f -c` also works where ptrace is allowed. Then switch to kill. Crystal is single-threaded: if a dependency starts a thread, that is a finding to fix, not a reason to allow `clone`.
+Collect the real syscall set as [Sandboxing](sandboxing.md) section 6 describes: the test suites with the log action as a local, never-committed change, then `run0 ausearch -m SECCOMP -c crystal -i`. Every build kills on a syscall outside the list; there is no log build. Crystal is single-threaded: if a dependency starts a thread, that is a finding to fix, not a reason to allow `clone`.
 
 **System-level recommendations:** encrypted swap or zram only, hibernation disabled, Yama `ptrace_scope` at 1 or higher, full-disk encryption, and a terminal emulator without disk-backed scrollback.

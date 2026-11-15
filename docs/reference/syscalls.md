@@ -10,6 +10,31 @@ restricted by the filter (for example `ioctl` request numbers) go in the
 a Markdown table) and write flag combinations as comma-separated lists, not
 with `|`, which splits cells in many renderers.
 
+## The allowlist
+
+`src/harden/seccomp.rs` allows exactly these 23 syscalls after startup
+step 9 (decision 0059: before the passphrase prompt); any other kills the
+process. The tables below give each use in detail. Collected on this
+machine (step S4): the full debug and release test suites ran with the
+filter in log mode and the audit log was read, then with
+`mprotect`, `mremap`, `madvise`, `futex`, `rt_sigprocmask`,
+`sigaltstack` and `exit` left out, which nothing logged. Argument
+restrictions come with step S5.
+
+| Syscall | Who, after the sandbox | Why |
+| --- | --- | --- |
+| `openat`, `read`, `write`, `close`, `fstat`, `newfstatat`, `getdents64`, `renameat2`, `unlinkat`, `fsync` | `unlock`, `vault::atomic_write`, `public_file`, `generation`, `pin`; the terminal | Read and save the vault's files beneath the vault and state directories (Landlock allows nothing else); read keys from and draw to `/dev/tty` |
+| `ppoll` | `term::TerminalGuard::wait`, the prompts | Wait for a key, a signal pipe or a time limit |
+| `ioctl` | `term` (rustix termios) | Raw mode on and off, window size, discarding typed-ahead keys at a prompt |
+| `fcntl` | `term::TerminalGuard::engage` on resume after a suspend (`File::try_clone`); in debug builds also std's `debug_assert_fd_is_open` on every fd close | `F_DUPFD_CLOEXEC`: a second terminal fd for the panic hook's restore. `F_GETFD`: a debug-only check in std, never in release |
+| `getpid`, `kill` | `term::TerminalGuard::suspend` | Stop ourselves with `SIGSTOP` after restoring the terminal |
+| `rt_sigreturn` | kernel, after signal-hook's handler | Return from a signal handler |
+| `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces |
+| `clock_gettime` | `session::now`, `term::Idle` | Timestamps and auto-lock (usually answered by the vDSO; the syscall is the fallback) |
+| `prlimit64` | `crypto::scrypt_policy`, before the first passphrase is used | Read the memlock hard limit, to refuse an scrypt work factor that cannot fit |
+| `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 256 MiB |
+| `exit_group` | std, at the end of `main` | Exit |
+
 | Syscall | Used by | Why | Restriction |
 | --- | --- | --- | --- |
 | `getdents64` | `vault::atomic_write` (sweep, rustix `Dir`) | List the target's directory to find `.<name>.tmp-<16 hex>` files a killed writer left behind | fd for `.` in the target's directory |

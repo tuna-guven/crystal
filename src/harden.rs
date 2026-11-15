@@ -2,6 +2,7 @@
 //! tty checks, Landlock and seccomp, applied in the order docs/design/startup.md fixes.
 
 mod landlock;
+mod seccomp;
 
 use std::fmt;
 use std::io::{self, Write};
@@ -49,6 +50,9 @@ pub enum HardenError {
     Landlock(::landlock::RulesetError),
     /// The kernel took the ruleset but reports it as not fully enforced.
     LandlockNotEnforced,
+    /// Building or applying the seccomp filter failed. The crate's error
+    /// names only syscall numbers, errnos and pids.
+    Seccomp(seccompiler::Error),
 }
 
 impl fmt::Display for HardenError {
@@ -80,6 +84,7 @@ impl fmt::Display for HardenError {
             Self::LandlockNotEnforced => {
                 write!(f, "Landlock is not fully enforced; Crystal refuses to run")
             }
+            Self::Seccomp(e) => write!(f, "seccomp failed: {e}"),
         }
     }
 }
@@ -164,7 +169,8 @@ fn stray_fds<'a>(names: impl Iterator<Item = &'a [u8]>, own: i32) -> Vec<i32> {
 /// before the passphrase prompt. `vault` and `state` are the directory fds
 /// of startup step 7. Fails closed: on any error the caller must exit.
 pub fn enter_sandbox(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), HardenError> {
-    landlock::restrict(vault, state)
+    landlock::restrict(vault, state)?;
+    seccomp::restrict()
 }
 
 /// Environment variables Crystal may read (startup step 3). Add a variant

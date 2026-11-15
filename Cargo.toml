@@ -63,6 +63,10 @@ landlock = "=0.4.7"
 # seccomp-bpf allowlist, built in pure Rust (no C libseccomp). No default
 # features: no `json`, so no serde_json.
 seccompiler = { version = "=0.5.0", default-features = false }
+# x86_64 syscall and ioctl numbers for the seccomp allowlist, never typed by
+# hand. Already in the tree (landlock, seccompiler, signal-hook); declaring
+# it adds no crate. Constants only: calling into it would need `unsafe`.
+libc = "=0.2.191"
 
 [dev-dependencies]
 # Round-trip property tests. No `fork`/`timeout`: they pull in rusty-fork
