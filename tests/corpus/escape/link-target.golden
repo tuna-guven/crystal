@@ -1,0 +1,27 @@
+[raw
+esc](https://example.org/<U+001B>]8;;https://evil.example<U+
+001B>)
+
+entity esc
+(https://example.org/<U+001B>]8;;https://evil.example<U+0007
+>)
+
+bel (https://example.org/<U+0007>)
+
+[angle](<https://example.org/<U+001B>>)
+
+c1 st (https://example.org/<U+009C>)
+
+bidi (https://example.org/<U+202E>)
+
+space (https://example.org/a b)
+
+file (file:///etc/passwd)
+
+script (javascript:alert(1))
+
+<https://example.org/<U+001B>]8;;x>
+
+ref (https://example.org/<U+001B>[2J)
+
+ok and https://example.org/auto

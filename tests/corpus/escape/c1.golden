@@ -7,7 +7,6 @@ plain <U+009B>31m <U+009D>0;title<U+009C> text
   <U+009B>31m <U+009D>0;title<U+009C>
 
   link <U+009B>31m <U+009D>0;title<U+009C>
-  (https://example.org)
 
   [text](https://example.org/<U+009B>31m
   <U+009D>0;title<U+009C>)

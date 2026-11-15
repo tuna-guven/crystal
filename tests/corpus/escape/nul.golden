@@ -6,7 +6,7 @@ plain a<U+0000>b text
 
   a<U+0000>b
 
-  link a<U+0000>b (https://example.org)
+  link a<U+0000>b
 
   text (https://example.org/a<U+0000>b)
 

@@ -10,7 +10,12 @@
 //!   flush: frames hold note text, and a growing `Vec` would leave unwiped
 //!   copies behind on every reallocation.
 //! - The only sequences Crystal writes itself are cursor moves (CUP) and
-//!   styles (SGR), built from numbers.
+//!   styles (SGR), built from numbers, and hyperlinks (OSC 8,
+//!   docs/decisions/0054-clickable-links.md): a link's target is written
+//!   only if `md::link::clickable` accepts it, checked again here; it is
+//!   printable ASCII without ESC or BEL, so it cannot end or extend the
+//!   sequence. A link is opened where its cells start and closed where
+//!   they end, and always before the frame ends.
 
 #![cfg_attr(
     not(test),
@@ -22,12 +27,18 @@ use std::io::{self, Write};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::grid::{Color, Grid, Mods, REPLACEMENT, Style, is_forbidden};
+use crate::md::link::clickable;
 
 /// Bytes buffered before a write to the terminal.
 const CHUNK: usize = 4096;
 
 /// All attributes off, default colors.
 const RESET_STYLE: &[u8] = b"\x1b[0m";
+
+/// Starts a hyperlink (OSC 8, no parameters): the target, then `LINK_END`.
+const LINK_START: &[u8] = b"\x1b]8;;";
+/// Ends the OSC 8 sequence (ST).
+const LINK_END: &[u8] = b"\x1b\\";
 
 /// Buffers terminal output in one fixed, zeroizing chunk and hands it to
 /// `out` when full and at `flush`. It never allocates.
@@ -89,10 +100,22 @@ pub fn draw<W: Write>(shown: &Grid, next: &Grid, out: &mut FrameWriter<W>) -> io
     let mut cursor: Option<(u16, u16)> = None;
     out.write_all(RESET_STYLE)?;
     let mut style = Style::PLAIN;
+    // The link open on the terminal, by target.
+    let mut open: Option<&str> = None;
     for (x, y, cell) in next.diff(shown) {
         if cursor != Some((x, y)) {
             // CUP is 1-based.
             write!(out, "\x1b[{};{}H", u32::from(y) + 1, u32::from(x) + 1)?;
+        }
+        let link = next.link_target(cell.link()).filter(|t| clickable(t));
+        if link != open {
+            if open.is_some() {
+                write_link(out, "")?;
+            }
+            if let Some(target) = link {
+                write_link(out, target)?;
+            }
+            open = link;
         }
         if cell.style() != style {
             style = cell.style();
@@ -110,8 +133,19 @@ pub fn draw<W: Write>(shown: &Grid, next: &Grid, out: &mut FrameWriter<W>) -> io
         let next_x = x.saturating_add(u16::from(cell.width()));
         cursor = (next_x < right).then_some((next_x, y));
     }
+    if open.is_some() {
+        write_link(out, "")?;
+    }
     out.write_all(RESET_STYLE)?;
     out.flush()
+}
+
+/// One OSC 8 sequence: opens a link to `target`, or closes the open one
+/// when `target` is empty. `target` is empty or `clickable`.
+fn write_link<W: Write>(out: &mut FrameWriter<W>, target: &str) -> io::Result<()> {
+    out.write_all(LINK_START)?;
+    out.write_all(target.as_bytes())?;
+    out.write_all(LINK_END)
 }
 
 /// One SGR sequence: reset, then the attributes, then the colors.
@@ -307,6 +341,109 @@ mod tests {
             "{shown:?}"
         );
         assert!(shown.contains("a?[2J?31m"), "{shown:?}");
+    }
+
+    /// A grid with `text` on its one row and `link` set on columns
+    /// `from..to`.
+    fn linked(text: &str, target: &str, from: u16, to: u16) -> Grid {
+        let mut g = grid(8, 1, &[text]);
+        let link = g.add_link(target);
+        g.set_link(from, 0, to - from, link);
+        g
+    }
+
+    #[test]
+    fn links_open_where_they_start_and_close_where_they_end() {
+        let next = linked("a link b", "https://e.org/x", 2, 6);
+        assert_eq!(
+            text(&frame(&Grid::new(8, 1), &next)),
+            // Spaces already on the blank screen are skipped.
+            "\x1b[0m\x1b[1;1Ha\x1b[1;3H\x1b]8;;https://e.org/x\x1b\\link\
+             \x1b[1;8H\x1b]8;;\x1b\\b\x1b[0m"
+        );
+        // A link at the end of the frame is closed before it ends.
+        let next = linked("a link", "mailto:m@e.org", 2, 6);
+        assert!(
+            text(&frame(&Grid::new(8, 1), &next))
+                .ends_with("\x1b]8;;mailto:m@e.org\x1b\\link\x1b]8;;\x1b\\\x1b[0m")
+        );
+        // Two links side by side: the first closes, the second opens.
+        let mut next = grid(8, 1, &["abcd"]);
+        let (a, b) = (
+            next.add_link("https://a.org"),
+            next.add_link("https://b.org"),
+        );
+        next.set_link(0, 0, 2, a);
+        next.set_link(2, 0, 2, b);
+        assert_eq!(
+            text(&frame(&Grid::new(8, 1), &next)),
+            "\x1b[0m\x1b[1;1H\x1b]8;;https://a.org\x1b\\ab\x1b]8;;\x1b\\\
+             \x1b]8;;https://b.org\x1b\\cd\x1b]8;;\x1b\\\x1b[0m"
+        );
+    }
+
+    /// A target the grid should never hold (forced in here) is not
+    /// written: its cells are plain text.
+    #[test]
+    fn unsafe_link_target_is_not_written() {
+        for target in [
+            "https://e.org/\u{1b}\\",
+            "file:///etc/passwd",
+            "https://e.org/\u{7}x",
+        ] {
+            let mut next = grid(4, 1, &["link"]);
+            let link = next.push_link_raw_for_test(target);
+            next.set_link(0, 0, 4, link);
+            assert_eq!(
+                text(&frame(&Grid::new(4, 1), &next)),
+                "\x1b[0m\x1b[1;1Hlink\x1b[0m",
+                "{target:?}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        // Whatever the targets and wherever they are set, every OSC 8 the
+        // frame writes carries a clickable target or none, opens and
+        // closes alternate, and the frame ends with none open.
+        #[test]
+        fn written_links_are_always_safe_and_closed(
+            targets in proptest::collection::vec(
+                proptest::prop_oneof![
+                    proptest::prelude::any::<String>(),
+                    "https://[a-z]{1,8}\\.org/[ -~]{0,12}",
+                ],
+                1..5,
+            ),
+            raw in proptest::prelude::any::<bool>(),
+            spans in proptest::collection::vec((0u16..12, 0u16..3, 0u16..6, 0usize..5), 0..8),
+        ) {
+            let mut next = grid(12, 3, &["0123456789ab", "cdefghijklmn", "opqrstuvwxyz"]);
+            let links: Vec<u16> = targets
+                .iter()
+                .map(|t| if raw { next.push_link_raw_for_test(t) } else { next.add_link(t) })
+                .collect();
+            for (x, y, len, which) in spans {
+                next.set_link(x, y, len, links[which % links.len()]);
+            }
+            let bytes = frame(&Grid::new(12, 3), &next);
+            let mut rest = &bytes[..];
+            let mut open = false;
+            while let Some(at) = rest.windows(LINK_START.len()).position(|w| w == LINK_START) {
+                let after = &rest[at + LINK_START.len()..];
+                let end = after.windows(2).position(|w| w == LINK_END).unwrap();
+                let target = std::str::from_utf8(&after[..end]).unwrap();
+                if target.is_empty() {
+                    proptest::prop_assert!(open, "a close without an open");
+                } else {
+                    proptest::prop_assert!(!open, "an open inside an open");
+                    proptest::prop_assert!(clickable(target), "{target:?}");
+                }
+                open = !target.is_empty();
+                rest = &after[end + 2..];
+            }
+            proptest::prop_assert!(!open, "left open");
+        }
     }
 
     #[test]

@@ -1206,6 +1206,48 @@ fn hostile_note_cannot_set_the_clipboard() {
     assert!(shown.contains("<U+202E>"), "{shown}");
 }
 
+/// Clickable links through the binary (decision 0054): the one good
+/// target reaches the terminal inside OSC 8 and is closed again; the
+/// target with an ESC smuggled in as `&#27;` and the `file:` one never
+/// do, and show their address as text.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "uses the debug-only --demo-notes-for-test"
+)]
+fn only_clickable_targets_reach_the_terminal() {
+    let output = demo(
+        "links_view",
+        &[
+            (SHELL_READY, b"view links\r"),
+            ("previous", b"q"),
+            (SHELL_READY, b"quit\r"),
+        ],
+    );
+    let targets: Vec<&str> = output
+        .match_indices("\x1b]8;;")
+        .map(|(at, _)| {
+            let rest = &output[at + 5..];
+            &rest[..rest.find("\x1b\\").unwrap_or(rest.len())]
+        })
+        .collect();
+    let opened: Vec<&str> = targets.iter().copied().filter(|t| !t.is_empty()).collect();
+    assert_eq!(opened, ["https://example.org/ok"], "{output:?}");
+    // The next OSC 8 after it closes it.
+    assert!(
+        targets
+            .windows(2)
+            .any(|pair| pair == ["https://example.org/ok", ""]),
+        "{output:?}"
+    );
+    let shown = visible(&output);
+    assert!(shown.contains("(file:///etc/passwd)"), "{shown}");
+    assert!(
+        shown.contains("<U+001B>]8;;https://evil.example<U+0007>"),
+        "{shown}"
+    );
+}
+
 // ---- the editor (decision 0045): new, edit, save, preview ----
 
 /// A string only these tests type, to look for on disk.

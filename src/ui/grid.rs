@@ -13,6 +13,10 @@
 //!   continuation (width 0). Overwriting either half blanks the other, so
 //!   the grid never holds half a wide character.
 //! - Nothing panics: writes outside the grid are clipped.
+//! - A cell can belong to a clickable link (docs/decisions/0054-
+//!   clickable-links.md): it holds a number into the grid's list of the
+//!   frame's link targets, which only takes targets `md::link::clickable`
+//!   accepts. The list is wiped with the cells.
 //!
 //! Not `Debug`: cells hold note text (docs/design/leakage.md).
 
@@ -25,15 +29,20 @@ use std::ops::BitOr;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::layout::Rect;
+use crate::md::link::clickable;
 use crate::model::assert_not_impl;
 
 /// The longest grapheme a cell holds, in bytes. Longer ones (stacked
 /// combining marks, "Zalgo" text) are drawn as `?`: they could not be
 /// shown sensibly in one cell anyway.
 pub const MAX_CELL_BYTES: usize = 16;
+
+/// The most link targets one frame holds; links past them are drawn as
+/// plain text.
+pub const MAX_LINKS: usize = 1024;
 
 /// Drawn in place of a grapheme that must not, or cannot, be shown: plain
 /// ASCII, so every font has it (U+FFFD is missing from some terminal
@@ -216,6 +225,9 @@ pub struct Cell {
     /// 1 or 2 for a grapheme, 0 for the right half of a wide one.
     width: u8,
     style: Style,
+    /// The link it belongs to: 0 for none, else a number from
+    /// `Grid::add_link`.
+    link: u16,
 }
 
 assert_not_impl!(Cell: std::fmt::Debug, std::fmt::Display);
@@ -230,6 +242,7 @@ impl Cell {
             len: 1,
             width: 1,
             style,
+            link: 0,
         }
     }
 
@@ -240,6 +253,7 @@ impl Cell {
             len: 0,
             width: 0,
             style,
+            link: 0,
         }
     }
 
@@ -253,6 +267,7 @@ impl Cell {
             len: symbol.len() as u8,
             width,
             style,
+            link: 0,
         }
     }
 
@@ -270,6 +285,11 @@ impl Cell {
 
     pub fn style(&self) -> Style {
         self.style
+    }
+
+    /// The link it belongs to: 0 for none (`Grid::link_target`).
+    pub fn link(&self) -> u16 {
+        self.link
     }
 }
 
@@ -304,6 +324,10 @@ pub struct Grid {
     width: u16,
     height: u16,
     cells: Vec<Cell>,
+    /// This frame's link targets; link `n` is `links[n - 1]`. Freed
+    /// blocks are wiped by the allocator (`zalloc`), and each target on
+    /// drop.
+    links: Vec<Zeroizing<String>>,
 }
 
 impl Grid {
@@ -314,6 +338,7 @@ impl Grid {
             width,
             height,
             cells: vec![Cell::blank(Style::PLAIN); count],
+            links: Vec::new(),
         }
     }
 
@@ -340,11 +365,51 @@ impl Grid {
         }
     }
 
-    /// Blanks every cell; the text they held is wiped.
+    /// Blanks every cell and drops the links; the text they held is
+    /// wiped.
     pub fn reset(&mut self) {
         for cell in &mut self.cells {
             cell.bytes.zeroize();
             *cell = Cell::blank(Style::PLAIN);
+        }
+        self.links.clear();
+    }
+
+    /// The number for a link to `target` in this frame, to mark its cells
+    /// with `set_link`: the same number for the same target. 0, so plain
+    /// text, for a target `clickable` refuses or past `MAX_LINKS`.
+    pub fn add_link(&mut self, target: &str) -> u16 {
+        if !clickable(target) {
+            return 0;
+        }
+        let index = match self.links.iter().position(|t| t.as_str() == target) {
+            Some(index) => index,
+            None if self.links.len() < MAX_LINKS => {
+                self.links.push(Zeroizing::new(target.to_owned()));
+                self.links.len() - 1
+            }
+            None => return 0,
+        };
+        // At most MAX_LINKS, so it fits.
+        (index + 1) as u16
+    }
+
+    /// The target of link `link` (from `Cell::link`), if it is one.
+    pub fn link_target(&self, link: u16) -> Option<&str> {
+        let index = usize::from(link).checked_sub(1)?;
+        self.links.get(index).map(|t| t.as_str())
+    }
+
+    /// Marks `len` cells from (x, y) as part of link `link`, keeping their
+    /// text and style. A number this frame did not give is ignored.
+    pub fn set_link(&mut self, x: u16, y: u16, len: u16, link: u16) {
+        if link != 0 && self.link_target(link).is_none() {
+            return;
+        }
+        for column in x..x.saturating_add(len).min(self.width) {
+            if let Some(i) = self.index(column, y) {
+                self.cells[i].link = link;
+            }
         }
     }
 
@@ -423,6 +488,14 @@ impl Grid {
         }
     }
 
+    /// Adds `target` as a link unchecked, so the frame writer's own check
+    /// can be tested.
+    #[cfg(test)]
+    pub fn push_link_raw_for_test(&mut self, target: &str) -> u16 {
+        self.links.push(Zeroizing::new(target.to_owned()));
+        self.links.len() as u16
+    }
+
     /// If cell `i` is half of a wide grapheme, blanks the other half (cell
     /// `i` itself is about to be overwritten).
     fn split_wide(&mut self, i: usize) {
@@ -443,14 +516,21 @@ impl Grid {
     /// The cells of `self` that differ from `shown`, as (x, y, cell), left
     /// to right and top to bottom; continuations are left out (the wide
     /// grapheme before them covers them). If the sizes differ, every cell
-    /// counts as changed.
+    /// counts as changed. Link numbers are given per frame, so a cell
+    /// whose link's target differs has changed, even under the same
+    /// number.
     pub fn diff<'a>(&'a self, shown: &'a Grid) -> impl Iterator<Item = (u16, u16, &'a Cell)> {
         let same_size = self.width == shown.width && self.height == shown.height;
         let width = usize::from(self.width.max(1));
+        let same = move |i: usize, cell: &Cell| {
+            same_size
+                && shown.cells[i] == *cell
+                && shown.link_target(cell.link) == self.link_target(cell.link)
+        };
         self.cells
             .iter()
             .enumerate()
-            .filter(move |&(i, cell)| cell.width > 0 && !(same_size && shown.cells[i] == *cell))
+            .filter(move |&(i, cell)| cell.width > 0 && !same(i, cell))
             .map(move |(i, cell)| {
                 // Both fit in u16: i < width * height.
                 ((i % width) as u16, (i / width) as u16, cell)
@@ -672,6 +752,72 @@ mod tests {
         let style = next.cell(1, 0).unwrap().style();
         assert!(style.mods.contains(Mods::BOLD) && style.mods.contains(Mods::UNDERLINED));
         assert!(!style.mods.contains(Mods::ITALIC));
+    }
+
+    #[test]
+    fn links_number_targets_and_refuse_unsafe_ones() {
+        let mut g = Grid::new(10, 1);
+        let a = g.add_link("https://a.example");
+        let b = g.add_link("mailto:b@example.org");
+        assert_eq!((a, b), (1, 2));
+        assert_eq!(
+            g.add_link("https://a.example"),
+            a,
+            "same target, same number"
+        );
+        assert_eq!(g.link_target(a), Some("https://a.example"));
+        assert_eq!(g.link_target(0), None);
+        assert_eq!(g.link_target(9), None);
+        for refused in [
+            "file:///etc/passwd",
+            "https://e.org/\u{1b}\\",
+            "javascript:x",
+        ] {
+            assert_eq!(g.add_link(refused), 0, "{refused:?}");
+        }
+        // Text keeps its link until it is overwritten; a number the frame
+        // did not give is ignored.
+        g.put_str(0, 0, "abc", Style::PLAIN, 10);
+        g.set_link(0, 0, 2, a);
+        g.set_link(2, 0, 1, 7);
+        let links: Vec<u16> = (0..3).map(|x| g.cell(x, 0).unwrap().link()).collect();
+        assert_eq!(links, [a, a, 0]);
+        assert_eq!(g.cell(0, 0).unwrap().symbol(), "a");
+        g.put_str(0, 0, "x", Style::PLAIN, 1);
+        assert_eq!(g.cell(0, 0).unwrap().link(), 0);
+        // Reset drops them.
+        g.reset();
+        assert_eq!(g.link_target(a), None);
+        assert_eq!(g.add_link("https://c.example"), 1);
+    }
+
+    #[test]
+    fn links_past_the_limit_are_plain() {
+        let mut g = Grid::new(1, 1);
+        for i in 0..MAX_LINKS {
+            assert_ne!(g.add_link(&format!("https://e.org/{i}")), 0);
+        }
+        assert_eq!(g.add_link("https://e.org/more"), 0);
+        assert_eq!(g.add_link("https://e.org/0"), 1, "a known one still is");
+    }
+
+    /// The same link number with another target is a change: the terminal
+    /// must not keep an old address under the text.
+    #[test]
+    fn diff_sees_a_changed_link_target() {
+        let frame = |target: &str| {
+            let mut g = Grid::new(4, 1);
+            g.put_str(0, 0, "link", Style::PLAIN, 4);
+            let link = g.add_link(target);
+            g.set_link(0, 0, 4, link);
+            g
+        };
+        let shown = frame("https://a.example");
+        assert_eq!(frame("https://a.example").diff(&shown).count(), 0);
+        assert_eq!(frame("https://b.example").diff(&shown).count(), 4);
+        let mut plain = Grid::new(4, 1);
+        plain.put_str(0, 0, "link", Style::PLAIN, 4);
+        assert_eq!(plain.diff(&shown).count(), 4);
     }
 
     #[test]

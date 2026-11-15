@@ -6,8 +6,10 @@
 //!   level, their sections indented, docs/decisions/0052-viewer-cursor-
 //!   and-folding.md), emphasis, strong,
 //!   strikethrough, inline and block code, lists (nested, numbered, task
-//!   items), block quotes, rules, tables boxed with aligned columns, links with their
-//!   address, Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
+//!   items), block quotes, rules, tables boxed with aligned columns, links
+//!   (clickable, docs/decisions/0054-clickable-links.md, when
+//!   `md::link::clickable` accepts the target, else with their address
+//!   dimmed after them), Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
 //!   dimmed and literal. A line break in the note stays a line break, as
 //!   in Obsidian's reading view. Nothing is ever opened or followed here.
 //! - **Line numbers:** each row records the note line (as the editor
@@ -34,6 +36,7 @@ use pulldown_cmark::{
     Alignment, CowStr, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
 };
 
+use super::link::clickable;
 use super::safe::{SafeText, sanitize};
 use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
 #[cfg(test)]
@@ -88,6 +91,9 @@ struct Run {
     style: Style,
     /// The `[[link]]` this run belongs to (an index into `Page::links`).
     link: Option<u32>,
+    /// The clickable link this run belongs to (an index into
+    /// `Page::urls`).
+    url: Option<u32>,
     /// Where in the sanitized note the run's text begins, for line
     /// numbers; `None` for what the renderer adds around the text
     /// (indents, markers, table borders and padding).
@@ -128,6 +134,8 @@ pub struct Page {
     /// Where each line starts in `runs`.
     line_starts: Vec<usize>,
     links: Vec<PageLink>,
+    /// The targets of clickable links, each `clickable`.
+    urls: Vec<Text>,
     /// Heading text (sanitized) and its line.
     headings: Vec<(Zeroizing<String>, usize)>,
     /// Block ids and their first line.
@@ -255,7 +263,7 @@ impl Page {
             } else {
                 run.style
             };
-            used += match run.text {
+            let columns = match run.text {
                 Text::Rule => {
                     for i in 0..room {
                         grid.put_str(x + i, y, "─", style, 1);
@@ -264,6 +272,13 @@ impl Page {
                 }
                 ref text => grid.put_str(x, y, self.text_of(text), style, room),
             };
+            // A clickable link's cells carry its target; the grid checks
+            // it again.
+            if let Some(url) = run.url.and_then(|u| self.urls.get(u as usize)) {
+                let link = grid.add_link(self.text_of(url));
+                grid.set_link(x, y, columns, link);
+            }
+            used += columns;
         }
         used
     }
@@ -292,6 +307,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
                 text: Text::Source(all),
                 style: PLAIN,
                 link: None,
+                url: None,
                 at: Some(0),
             });
             builder.flush();
@@ -303,6 +319,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         runs,
         line_starts,
         page_links: links,
+        urls,
         headings,
         blocks,
         mut sections,
@@ -323,6 +340,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         runs,
         line_starts,
         links,
+        urls,
         headings,
         blocks,
         sections,
@@ -363,6 +381,9 @@ struct Builder<'s> {
     in_code: bool,
     /// The `[[link]]` being read, if any.
     current_link: Option<u32>,
+    /// The clickable link being read, if any (an index into `urls`).
+    current_url: Option<u32>,
+    urls: Vec<Text>,
     page_links: Vec<PageLink>,
     headings: Vec<(Zeroizing<String>, usize)>,
     blocks: Vec<(Zeroizing<String>, usize)>,
@@ -410,6 +431,8 @@ impl<'s> Builder<'s> {
             blank: false,
             in_code: false,
             current_link: None,
+            current_url: None,
+            urls: Vec::new(),
             page_links: Vec::new(),
             headings: Vec::new(),
             blocks: Vec::new(),
@@ -526,6 +549,7 @@ impl<'s> Builder<'s> {
             text,
             style,
             link,
+            url: self.current_url,
             at,
         });
     }
@@ -624,6 +648,7 @@ impl<'s> Builder<'s> {
                         text: Text::Fixed(icon),
                         style,
                         link: None,
+                        url: None,
                         at: None,
                     },
                     width: 2,
@@ -666,6 +691,7 @@ impl<'s> Builder<'s> {
                         text: marker,
                         style: DIM,
                         link: None,
+                        url: None,
                         at: None,
                     },
                     width: u16::try_from(width).unwrap_or(2).min(16),
@@ -695,9 +721,18 @@ impl<'s> Builder<'s> {
                     self.current_link = u32::try_from(self.page_links.len()).ok();
                     self.page_links.push(PageLink { target, line: None });
                 }
+                // A target that may be clickable is checked as the parser
+                // decoded it, before sanitizing: an entity that decodes to
+                // ESC (`&#27;`) is refused here. Its address is not shown.
+                let wiki = matches!(link_type, LinkType::WikiLink { .. });
+                if !wiki && clickable(&dest_url) {
+                    let target = self.text(&dest_url);
+                    self.current_url = u32::try_from(self.urls.len()).ok();
+                    self.urls.push(target);
+                }
                 let shown = match link_type {
                     LinkType::Autolink | LinkType::Email | LinkType::WikiLink { .. } => None,
-                    _ if dest_url.is_empty() => None,
+                    _ if dest_url.is_empty() || self.current_url.is_some() => None,
                     _ => Some(self.text(&dest_url)),
                 };
                 self.links.push(shown);
@@ -793,6 +828,7 @@ impl<'s> Builder<'s> {
             | TagEnd::Subscript => self.pop_style(),
             TagEnd::Link => {
                 self.current_link = None;
+                self.current_url = None;
                 self.pop_style();
                 if let Some(Some(url)) = self.links.pop() {
                     self.add(Text::Fixed(" ("), DIM);
@@ -952,6 +988,7 @@ impl<'s> Builder<'s> {
                 text: Text::Fixed(&SPACES[..usize::from(width)]),
                 style: PLAIN,
                 link: None,
+                url: None,
                 at: None,
             });
         }
@@ -962,6 +999,7 @@ impl<'s> Builder<'s> {
                         text: Text::Fixed("│ "),
                         style: QUOTE_BAR,
                         link: None,
+                        url: None,
                         at: None,
                     });
                     width += 2;
@@ -977,6 +1015,7 @@ impl<'s> Builder<'s> {
                             text: Text::Fixed(&SPACES[..usize::from(*w)]),
                             style: PLAIN,
                             link: None,
+                            url: None,
                             at: None,
                         });
                     } else {
@@ -1068,6 +1107,7 @@ impl<'s> Builder<'s> {
                             text,
                             style: only[piece.span].style,
                             link: run.link,
+                            url: run.url,
                             at,
                         }
                     })
@@ -1233,7 +1273,7 @@ mod tests {
     fn links_images_html_tables() {
         assert_eq!(
             md("see [site](https://x.org) and <https://y.org>", 60),
-            ["see site (https://x.org) and https://y.org"]
+            ["see site and https://y.org"]
         );
         assert_eq!(md("[[Roadmap]] and [[work/a|A]]", 40), ["Roadmap and A"]);
         assert_eq!(md("![a cat](cat.png)", 40), ["[image: a cat]"]);
@@ -1493,6 +1533,43 @@ mod tests {
         assert!(md("&#27;x", 80)[0].contains("<U+001B>x"));
     }
 
+    /// A clickable link's cells, on every row it wraps to and through
+    /// its emphasis, carry its target and show no address; other text
+    /// and a refused target carry none, and the refused one keeps its
+    /// address.
+    #[test]
+    fn clickable_links_mark_their_cells() {
+        let source = "go [to **the** site](https://e.org/x) now [f](file:///x)";
+        let page = render(source, Kind::Markdown, 12);
+        let height = u16::try_from(page.line_count()).unwrap();
+        let mut grid = Grid::new(12, height);
+        let area = grid.area();
+        page.draw(&mut grid, area, 0);
+        let shown: Vec<String> = (0..height)
+            .map(|y| {
+                (0..12)
+                    .map(|x| grid.cell(x, y).unwrap().symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(shown, ["go to the", "site now f", "(file:///x)"]);
+        let target = |x, y| grid.link_target(grid.cell(x, y).unwrap().link());
+        // "to the" on row 0 and "site" on row 1, the bold "the" too.
+        for (x, y) in [(3, 0), (4, 0), (6, 0), (8, 0), (0, 1), (3, 1)] {
+            assert_eq!(target(x, y), Some("https://e.org/x"), "({x}, {y})");
+        }
+        for (x, y) in [(0, 0), (2, 0), (5, 1), (9, 1), (0, 2)] {
+            assert_eq!(target(x, y), None, "({x}, {y})");
+        }
+        // An entity that decodes to ESC makes the target refused.
+        assert_eq!(
+            md("[x](https://e.org/&#27;)", 40),
+            ["x (https://e.org/<U+001B>)"]
+        );
+    }
+
     /// Phase 3 acceptance: every file in tests/corpus/escape renders as
     /// inert text, in every context, and as its golden output.
     #[test]
@@ -1517,6 +1594,18 @@ mod tests {
                     !shown.contains(|c| c != '\n' && is_forbidden(c)),
                     "{name} {kind:?}: {shown:?}"
                 );
+            }
+            // Every clickable link holds a target `clickable` accepts.
+            let page = render(&source, Kind::Markdown, 60);
+            let height = u16::try_from(page.line_count()).unwrap();
+            let mut grid = Grid::new(60, height);
+            let area = grid.area();
+            page.draw(&mut grid, area, 0);
+            for (x, y) in (0..height).flat_map(|y| (0..60).map(move |x| (x, y))) {
+                let link = grid.cell(x, y).unwrap().link();
+                if let Some(target) = grid.link_target(link) {
+                    assert!(clickable(target), "{name}: {target:?}");
+                }
             }
             let shown = rows(&source, Kind::Markdown, 60).join("\n") + "\n";
             let golden = path.with_extension("golden");
@@ -1674,9 +1763,10 @@ mod tests {
             [Some(1), None, Some(3), Some(3), None, None, Some(5), None]
         );
         // A reference link's address is numbered by the link, not by its
-        // definition further down.
+        // definition further down (`ftp:` is not clickable, so its
+        // address is shown).
         assert_eq!(
-            numbers("[x][r] and words\n\n[r]: http://e.org", Kind::Markdown, 9),
+            numbers("[x][r] and words\n\n[r]: ftp://e.org", Kind::Markdown, 9),
             [1, 0, 0, 0]
         );
     }

@@ -15,7 +15,6 @@ text
 
   [link
   <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>10A
-  (https://example.org)
 
   text
   (https://example.org/<U+001B>[2J<U+001B>[H<U+001B>[31mred<

@@ -68,6 +68,7 @@
   - [0051 RustCrypto and dalek primitives moved to their current lines](decisions/0051-rustcrypto-upgrade.md)
   - [0052 The viewer has a keyboard cursor and folds sections](decisions/0052-viewer-cursor-and-folding.md)
   - [0053 The viewer has a gutter with the note's line numbers; y copies a line](decisions/0053-viewer-gutter-and-line-copy.md)
+  - [0054 Web and mail links are clickable (OSC 8), without their address](decisions/0054-clickable-links.md)
 
 # Development
 

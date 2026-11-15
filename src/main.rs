@@ -454,7 +454,8 @@ fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn E
 }
 
 /// Debug builds only: notes for the tests through the binary, in memory
-/// only (`--demo-notes-for-test`). One of them is hostile.
+/// only (`--demo-notes-for-test`). One of them is hostile; `links` holds
+/// one clickable link and two refused ones (decision 0054).
 #[cfg(debug_assertions)]
 fn demo_notes_for_test(contents: &mut vault::codec::VaultContents) {
     let text = |s: &str| model::NoteText::from_zeroizing(zeroize::Zeroizing::new(s.to_owned()));
@@ -469,6 +470,13 @@ fn demo_notes_for_test(contents: &mut vault::codec::VaultContents) {
             "",
             "hostile",
             "a\u{1b}]52;c;ZXZpbA==\u{7}b \u{1b}[2J \u{202E}z",
+        ),
+        (
+            "",
+            "links",
+            "# Links\n\n[good](https://example.org/ok) and \
+             [bad](https://example.org/&#27;]8;;https://evil.example&#7;) and \
+             [local](file:///etc/passwd)",
         ),
     ];
     for (i, (folder, title, body)) in notes.into_iter().enumerate() {

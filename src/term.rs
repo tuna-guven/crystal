@@ -22,11 +22,12 @@ use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
-/// Turn bracketed paste off and show the cursor again (the shell turns one
-/// on and hides the other), clear the alternate screen while still on it,
+/// Close any link a broken-off frame left open (`ui::frame`), turn
+/// bracketed paste off and show the cursor again (the shell turns one on
+/// and hides the other), clear the alternate screen while still on it,
 /// then leave it, so none of its content survives in terminals that keep
 /// it around.
-const LEAVE_SCREEN: &[u8] = b"\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
+const LEAVE_SCREEN: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
 
 /// The controlling terminal, opened directly. Redirected stdin or stdout can
 /// then neither feed input (a passphrase) nor capture output (the UI).
@@ -421,12 +422,13 @@ impl TerminalGuard {
 /// (growing would copy the passphrase and free the old buffer unwiped).
 pub const MAX_PASSPHRASE: usize = 1024;
 
-/// Before a prompt: bracketed paste off and the cursor shown, then clear
+/// Before a prompt: any link a broken-off frame left open closed
+/// (`ui::frame`), bracketed paste off and the cursor shown, then clear
 /// the alternate screen, cursor to top left. The shell's frames turn
 /// paste on and hide the cursor (`ui::screen`); at a prompt after a lock,
 /// a paste would arrive wrapped in `ESC [ 200 ~`, and ESC cancels
 /// (decision 0048). The shell's next full redraw turns both back.
-const CLEAR_SCREEN: &[u8] = b"\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
+const CLEAR_SCREEN: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
 
 const CTRL_C: u8 = 0x03;
 const BACKSPACE: u8 = 0x08;
