@@ -18,13 +18,13 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 | Secret types | `zeroize` =1.9.1 | `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext, passphrases and keys. `secrecy` was dropped in step C2: only the `age` crate's API needed `SecretString` ([decision 0042](../decisions.md#0042)). The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions.md#0013)) |
 | Serialization | `serde` + `postcard` | Compact, schema-light, small attack surface for the vault contents |
 | Syscalls | `rustix` | prctl, setrlimit, mlockall, fsync, renameat without writing `unsafe` yourself |
-| Filesystem sandbox | `landlock` | Restrict file access to the vault and state directories. Version 0.4.7 supports Landlock ABI up to 9; no raw Landlock syscalls, which would need `unsafe` ([Sandboxing](sandboxing.md) 5.1) |
-| Syscall filter | `seccompiler` | Pure Rust BPF builder from Firecracker; avoids the C libseccomp |
+| Filesystem sandbox | `landlock` =0.4.7 | Restrict file access to the vault and state directories. Supports Landlock ABI up to 9; no raw Landlock syscalls, which would need `unsafe` ([Sandboxing](sandboxing.md) 5.1). Brings `enumflags2` and its derive macro (build time); `libc` and `thiserror` were already in the tree ([decision 0060](../decisions.md#0060)) |
+| Syscall filter | `seccompiler` =0.5.0 (no default features, so no `json` and no serde_json) | Pure Rust BPF builder from Firecracker (rust-vmm); avoids the C libseccomp; depends on `libc` only ([decision 0060](../decisions.md#0060)) |
 | CLI args | `lexopt` | Tiny; you only parse a vault path and a few flags |
 
 **About age and rage:** Crystal's files are age files, readable by age, rage or any age implementation. Crystal implements the published format itself, ported from rage's library (the `age` crate), because that crate brought about a hundred crates for two recipient types ([decision 0042](../decisions.md#0042)). Never shell out to the `rage` or `age` binary, which would need `execve` and push plaintext through pipes.
 
-**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed. None of them is in the binary. The `age` crate was one until step C3; files it wrote are kept in `tests/corpus/age-rage/` instead ([decision 0043](../decisions.md#0043)). `Cargo.lock` holds 75 crates (78 before decision 0051, 160 before C3).
+**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed. None of them is in the binary. The `age` crate was one until step C3; files it wrote are kept in `tests/corpus/age-rage/` instead ([decision 0043](../decisions.md#0043)). `Cargo.lock` holds 79 crates (75 before decision 0060, 78 before decision 0051, 160 before C3).
 
 **Avoid:** `tokio` or any async runtime, HTTP clients, `clap` (large for this job), syntax highlighters (`syntect`), `tui-markdown` or other ready-made renderers, image crates, file watchers, logging crates that write files, `rpassword` (read the passphrase yourself in raw mode).
 

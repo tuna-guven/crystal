@@ -652,3 +652,17 @@ they parse `identity.backup.age`; `init` and `rm` create and remove
 directories, so they stay outside and exit. Nothing Crystal does needs
 `execve`. A hardware-key plugin (Phase 8) would; how such a vault
 unlocks is decided then, and the sandbox is never weakened for it.
+
+## 0060 Sandbox crates: `landlock` and `seccompiler`, pinned exactly {#0060}
+
+*2026-11-15.* Landlock is applied through `landlock` =0.4.7 and the
+seccomp filter is built with `seccompiler` =0.5.0 (no default features,
+so no JSON parser), both pinned exactly like the other crates that
+guard secrets ([Dependencies](design/dependencies.md)). Writing either by
+hand would need raw syscalls and `unsafe` in the crystal crate, which is
+forbidden, and BPF and Landlock ABI details are easy to get wrong.
+`seccompiler` is pure Rust (no C libseccomp) and needs only `libc`;
+`landlock` brings `enumflags2` and its build-time derive macro. Four
+crates join `Cargo.lock` (79). `seccompiler` is Apache-2.0 or
+BSD-3-Clause and is taken under BSD-3-Clause, already allowed in
+`deny.toml`.

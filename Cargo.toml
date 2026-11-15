@@ -56,6 +56,13 @@ unicode-segmentation = "=1.13.3"
 # CommonMark parser for the viewer (decision 0031). No default features:
 # no getopts (its CLI) and no HTML writer; Crystal renders the events.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
+# Phase 6 (decision 0059). Exact pins: these build the sandbox.
+# Landlock up to ABI 9 in hard-requirement mode (decision 0010); the crate
+# makes the raw Landlock syscalls, which would need `unsafe` here.
+landlock = "=0.4.7"
+# seccomp-bpf allowlist, built in pure Rust (no C libseccomp). No default
+# features: no `json`, so no serde_json.
+seccompiler = { version = "=0.5.0", default-features = false }
 
 [dev-dependencies]
 # Round-trip property tests. No `fork`/`timeout`: they pull in rusty-fork
