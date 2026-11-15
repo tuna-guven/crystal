@@ -36,7 +36,8 @@ use crate::ui::grid::{Color, Grid, Mods, Style};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
 
-const TITLE: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::BOLD));
+/// The title bar: the note's name in bold on the terminal's background.
+const TITLE: Style = Style::PLAIN.mods(Mods::BOLD);
 const HINT: Style = Style::PLAIN.mods(Mods::DIM);
 const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
@@ -490,8 +491,8 @@ impl Pager {
         grid.fill(top, TITLE);
         let marker = if previewing { "preview " } else { "" };
         let title = Rect::new(top.x + 1, top.y, top.width.saturating_sub(1), 1);
-        let (name, kind) = shown(notes.name(self.note));
-        status_line(grid, title, name, kind.label(), marker, TITLE);
+        let (name, _) = shown(notes.name(self.note));
+        status_line(grid, title, name, marker, TITLE);
         if let Some(list) = &self.backlinks {
             grid.put_str(
                 body.x,
@@ -587,7 +588,7 @@ mod tests {
         let n = sample();
         let mut p = Pager::open(0);
         let shown = rows(&mut p, &n, 60, 6);
-        assert_eq!(shown[0], " home · markdown");
+        assert_eq!(shown[0], " home");
         assert_eq!(shown[1], "> Start at b or b#Second or b#^k.");
         assert!(shown[5].starts_with("q shell · j/k move · Tab fold"));
     }
@@ -707,7 +708,7 @@ mod tests {
         assert_eq!(p.selected, Some(1));
         p.key(Key::Enter, &n);
         let shown = rows(&mut p, &n, 60, 10);
-        assert_eq!(shown[0], " b · markdown");
+        assert_eq!(shown[0], " b");
         // Near the end the page cannot scroll further, so the heading is
         // shown lower down, not on the first row.
         assert!(
@@ -717,7 +718,7 @@ mod tests {
         assert_eq!(p.scroll, p.max_scroll());
         p.key(Key::Backspace, &n);
         let shown = rows(&mut p, &n, 60, 10);
-        assert_eq!(shown[0], " home · markdown");
+        assert_eq!(shown[0], " home");
         // The block link: the last one on the cursor's line, which came
         // back with the note.
         assert_eq!(p.cursor, 0);
@@ -839,18 +840,18 @@ mod tests {
         assert_eq!(shown[1..4], ["", "      c1", ">"]);
     }
 
-    /// A text note's title bar shows its name without `.txt`, the type
-    /// dimmed after it (decision 0038).
+    /// The title bar shows only the name, without `.txt` or the type, in
+    /// bold on the terminal's background (decision 0038).
     #[test]
-    fn title_shows_the_type() {
+    fn title_shows_only_the_name() {
         let n = notes(vec![note(1, "work", "todo.txt", "milk")]);
         let mut p = Pager::open(0);
         let shown = rows(&mut p, &n, 40, 4);
-        assert_eq!(shown[0], " work/todo · text");
+        assert_eq!(shown[0], " work/todo");
         let mut grid = Grid::new(40, 4);
         p.draw(&mut grid, &n, None);
-        assert!(!grid.cell(9, 0).unwrap().style().mods.contains(Mods::DIM));
-        assert!(grid.cell(11, 0).unwrap().style().mods.contains(Mods::DIM));
+        assert!((0..40).all(|x| grid.cell(x, 0).unwrap().style() == TITLE));
+        assert!(!TITLE.mods.contains(Mods::REVERSED));
     }
 
     #[test]
@@ -863,7 +864,7 @@ mod tests {
         assert!(shown[1].starts_with("Linked from"));
         assert_eq!(shown[2], " c · markdown");
         p.key(Key::Enter, &n);
-        assert_eq!(rows(&mut p, &n, 60, 10)[0], " c · markdown");
+        assert_eq!(rows(&mut p, &n, 60, 10)[0], " c");
         let mut p = Pager::open(2);
         rows(&mut p, &n, 60, 10);
         p.key(Key::Char('b'), &n);

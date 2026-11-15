@@ -39,7 +39,7 @@ in `.txt` still marks plain text (decision 0038), only hidden.
 | N1 (done) | `md::render::shown`: a name without its `.txt`, and its kind; `view`, `edit`, `rm` and `mv` find `todo` stored as `todo.txt` | The shown name must be the one you type |
 | N2 (done) | `edit NAME` with no such note asks "Create it?" (y), then the type (m or Enter: Markdown, t: text); `new` removed | User's request: one command opens or creates |
 | N3 (done) | `mv` keeps the type: a text note keeps its hidden `.txt`; a typed `.txt` is refused | User's request |
-| N4 (done) | `ls`, tag lists, `find`, `search`, `links`, the pager's and editor's title bars and backlinks show `NAME · markdown` or `NAME · text` (the type dimmed); completion offers the shown names | User's request |
+| N4 (done) | `ls`, tag lists, `find`, `search`, `links` and backlinks show `NAME · markdown` or `NAME · text` (the type dimmed); completion offers the shown names | User's request |
 | N5 (done) | Decision 0038 brought up to date (no new decision: the change is not security related), 0033 and 0045 command lists, overview, storage, setup guide, roadmap status; all checks | The log states only what is in force |
 
 ## Steps A1 to A3 (`crystal unlock NAME`)

@@ -92,18 +92,11 @@ pub fn text_pane(grid: &mut Grid, area: Rect, lines: &[Line], spans: &[Span], sc
     }
 }
 
-/// Fills the first row of `area` with `style`, `left` at the start, then
-/// `label` dimmed (a note's type, decision 0038), and `right` at the end.
+/// Fills the first row of `area` with `style`, `left` at the start and
+/// `right` at the end.
 /// When they do not fit, `right` wins: it holds the state (locked,
 /// unsaved) that must stay visible; then `left`.
-pub fn status_line(
-    grid: &mut Grid,
-    area: Rect,
-    left: &str,
-    label: &str,
-    right: &str,
-    style: Style,
-) {
+pub fn status_line(grid: &mut Grid, area: Rect, left: &str, right: &str, style: Style) {
     if area.is_empty() {
         return;
     }
@@ -116,9 +109,7 @@ pub fn status_line(
     grid.put_str(right_x, area.y, right, style, right_width);
     let gap = u16::from(right_width > 0);
     let room = (right_x - area.x).saturating_sub(gap);
-    let used = grid.put_str(area.x, area.y, left, style, room);
-    let dim = style.mods(style.mods | Mods::DIM);
-    grid.put_str(area.x + used, area.y, label, dim, room - used);
+    grid.put_str(area.x, area.y, left, style, room);
 }
 
 #[cfg(test)]
@@ -205,37 +196,17 @@ mod tests {
         let style = Style::PLAIN.bg(Color::Blue);
         let mut grid = Grid::new(16, 1);
         let area = grid.area();
-        status_line(&mut grid, area, "diary", "", "unsaved", style);
+        status_line(&mut grid, area, "diary", "unsaved", style);
         assert_eq!(rows(&grid), ["diary    unsaved"]);
         assert!((0..16).all(|x| grid.cell(x, 0).unwrap().style() == style));
         let mut narrow = Grid::new(10, 1);
         let area = narrow.area();
-        status_line(&mut narrow, area, "a long name", "", "unsaved", style);
+        status_line(&mut narrow, area, "a long name", "unsaved", style);
         assert_eq!(rows(&narrow), ["a  unsaved"]);
         let mut tiny = Grid::new(4, 1);
         let area = tiny.area();
-        status_line(&mut tiny, area, "name", "", "unsaved", style);
+        status_line(&mut tiny, area, "name", "unsaved", style);
         assert_eq!(rows(&tiny), ["unsa"]);
-    }
-
-    /// The label follows the name, dimmed, and gives way to it and to the
-    /// right side (decision 0038).
-    #[test]
-    fn status_line_dims_the_label() {
-        let style = Style::PLAIN.bg(Color::Blue);
-        let dim = style.mods(Mods::DIM);
-        let mut grid = Grid::new(20, 1);
-        let area = grid.area();
-        status_line(&mut grid, area, "todo", " · text", "[+]", style);
-        assert_eq!(rows(&grid), ["todo · text      [+]"]);
-        assert_eq!(grid.cell(3, 0).unwrap().style(), style);
-        assert!((4..11).all(|x| grid.cell(x, 0).unwrap().style() == dim));
-        let mut narrow = Grid::new(10, 1);
-        let area = narrow.area();
-        status_line(&mut narrow, area, "todo", " · text", "[+]", style);
-        // 10 columns: `[+]`, a gap, and 6 for the name and what fits of
-        // the label.
-        assert_eq!(rows(&narrow), ["todo · [+]"]);
     }
 
     #[test]
@@ -256,7 +227,7 @@ mod tests {
                 }
                 1 => list(&mut grid, area, &[hostile; 9], 2, Some(3), Style::PLAIN),
                 2 => text_pane(&mut grid, area, &wrap(&spans, 4), &spans, 0),
-                _ => status_line(&mut grid, area, hostile, hostile, hostile, Style::PLAIN),
+                _ => status_line(&mut grid, area, hostile, hostile, Style::PLAIN),
             }
             for y in 0..7 {
                 for x in 0..10 {

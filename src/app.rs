@@ -294,11 +294,11 @@ fn run_loop(
                 Mode::Edit(e) => match &mut e.preview {
                     Some(pager) => pager.draw(grid, notes, Some(e.editor.text())),
                     None => {
-                        let (name, kind) = shown(match &e.target {
+                        let (name, _) = shown(match &e.target {
                             Target::Note(note) => notes.name(*note),
                             Target::New { name, .. } => name.as_str(),
                         });
-                        e.view.draw(grid, &mut e.editor, name, kind.label());
+                        e.view.draw(grid, &mut e.editor, name);
                     }
                 },
             }

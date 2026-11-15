@@ -360,8 +360,10 @@ harmless.
 *2026-11-08.* A note is Markdown or plain text, chosen when `edit` creates
 it (Markdown by default) and never changed after. In the vault a text
 note's title ends in `.txt` (any case): the title is the only marker, so
-the vault format is unchanged. The shell and the title bars never show
-the `.txt`; they show the type dimmed after the name (`todo · text`),
+the vault format is unchanged. The shell never shows the `.txt`; it
+shows the type dimmed after the name (`todo · text`), while the viewer's
+and editor's title bars show only the name, in bold on the terminal's
+background,
 `view todo` finds `todo.txt`, `mv` keeps the type (a typed `.txt` is
 refused), and no two notes show the same name. Plain text is shown as
 written, sanitized and wrapped, with no links or tags read from it, as in

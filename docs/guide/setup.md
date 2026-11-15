@@ -170,7 +170,7 @@ the terminal's scrollback. The shell knows:
 
 | Command | Does |
 | --- | --- |
-| `ls [FOLDER]` | Notes and folders as a tree (folders first, ignoring case). Each note shows its type dimmed after its name: `Linux Kernel · markdown`, `todo · text`; lists and title bars show it the same way ([decision 0038](../decisions.md#0038)) |
+| `ls [FOLDER]` | Notes and folders as a tree (folders first, ignoring case). Each note shows its type dimmed after its name: `Linux Kernel · markdown`, `todo · text`; lists show it the same way; title bars show only the name ([decision 0038](../decisions.md#0038)) |
 | `ls #TAG`, `tags` | The notes with a tag; every tag with its count |
 | `find TEXT` | Names holding TEXT's letters in order, best match first |
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
