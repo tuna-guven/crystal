@@ -5,7 +5,8 @@
   clipboards, OSC 52) and 0039 (filtered system copies), now removed.
   Copying every editor selection automatically is replaced by
   [0045](0045-simple-editor.md): the editor copies only on Ctrl+C or
-  Ctrl+X.
+  Ctrl+X. In the pager, `y` copies the cursor's line and `Y` the whole
+  note ([0053](0053-viewer-gutter-and-line-copy.md)).
 
 ## Context
 

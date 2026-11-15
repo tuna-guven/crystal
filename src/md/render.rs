@@ -8,7 +8,11 @@
 //!   strikethrough, inline and block code, lists (nested, numbered, task
 //!   items), block quotes, rules, tables boxed with aligned columns, links with their
 //!   address, Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
-//!   dimmed and literal. Nothing is ever opened or followed here.
+//!   dimmed and literal. A line break in the note stays a line break, as
+//!   in Obsidian's reading view. Nothing is ever opened or followed here.
+//! - **Line numbers:** each row records the note line (as the editor
+//!   counts them) that starts on it, from the parser's source offsets;
+//!   wrapped rows, blanks and table borders have none (decision 0053).
 //! - **Plain text** (`*.txt`, docs/decisions/0038-plain-text-notes.md):
 //!   shown as written, wrapped, with no Markdown.
 //!
@@ -84,6 +88,10 @@ struct Run {
     style: Style,
     /// The `[[link]]` this run belongs to (an index into `Page::links`).
     link: Option<u32>,
+    /// Where in the sanitized note the run's text begins, for line
+    /// numbers; `None` for what the renderer adds around the text
+    /// (indents, markers, table borders and padding).
+    at: Option<usize>,
 }
 
 /// An Obsidian `[[link]]` on the page: its target as written (`name`,
@@ -126,7 +134,15 @@ pub struct Page {
     blocks: Vec<(Zeroizing<String>, usize)>,
     /// The sections headings outside quotes and lists open, in order.
     sections: Vec<Section>,
+    /// Each line's number in the note (from 1, as the editor counts), 0
+    /// for a line holding no note text, with `CONTINUES` set on a line
+    /// that wraps on from the one above.
+    numbers: Vec<u32>,
 }
+
+/// Marks a line number as continued from the line above. A note holds at
+/// most 8 MiB, so its line numbers never reach this bit.
+const CONTINUES: u32 = 1 << 31;
 
 /// A heading's section: the heading's line, its level (1 to 6), and the
 /// line after its last one, where the next heading of the same or a
@@ -162,6 +178,25 @@ impl Page {
             Text::Fixed(s) => s,
             Text::Rule => "",
         }
+    }
+
+    /// The note line (from 1) that starts on line `index`, if one does:
+    /// `None` for a wrapped line, a blank and a table border.
+    pub fn number(&self, index: usize) -> Option<u32> {
+        self.numbers
+            .get(index)
+            .copied()
+            .filter(|&n| n > 0 && n & CONTINUES == 0)
+    }
+
+    /// The note line (from 1) line `index` shows: the one starting on it,
+    /// or the one a wrapped line continues. `None` for a line holding no
+    /// note text (a blank, a table border).
+    pub fn note_line(&self, index: usize) -> Option<u32> {
+        self.numbers
+            .get(index)
+            .map(|&n| n & !CONTINUES)
+            .filter(|&n| n > 0)
     }
 
     /// How many `[[links]]` the page has.
@@ -244,7 +279,8 @@ impl Page {
 
 /// Renders `text` as `kind` for `width` columns. The whole note is laid
 /// out at once: an 8 MiB note of empty paragraphs is about 4 million lines
-/// (about 120 MB of line data), within the 512 MiB memory budget. Accepted;
+/// (about 140 MB of line data, numbers included), within the 512 MiB
+/// memory budget. Accepted;
 /// laying out only the visible part is the fix if it ever matters.
 pub fn render(text: &str, kind: Kind, width: u16) -> Page {
     let source = sanitize(text);
@@ -256,6 +292,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
                 text: Text::Source(all),
                 style: PLAIN,
                 link: None,
+                at: Some(0),
             });
             builder.flush();
         }
@@ -269,6 +306,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         headings,
         blocks,
         mut sections,
+        numbers,
         ..
     } = builder;
     // A section ends where the next heading of its level or higher starts.
@@ -288,6 +326,7 @@ pub fn render(text: &str, kind: Kind, width: u16) -> Page {
         headings,
         blocks,
         sections,
+        numbers,
     }
 }
 
@@ -334,6 +373,15 @@ struct Builder<'s> {
     /// any quote or list prefix.
     section_indent: u16,
     sections: Vec<Section>,
+    /// The start of the parser event being read.
+    at: usize,
+    /// Each row's line number in the note (from 1), 0 for none.
+    numbers: Vec<u32>,
+    /// The last number given to a row.
+    last_number: u32,
+    /// A byte of the sanitized note and the line it is on, where
+    /// `line_of` last counted to.
+    counted: (usize, u32),
 }
 
 /// A table's cells as runs (rows of cells), held until the table ends.
@@ -368,6 +416,10 @@ impl<'s> Builder<'s> {
             table: None,
             section_indent: 0,
             sections: Vec::new(),
+            at: 0,
+            numbers: Vec::new(),
+            last_number: 0,
+            counted: (0, 1),
         }
     }
 
@@ -451,9 +503,31 @@ impl<'s> Builder<'s> {
         Text::Extra(self.extra.len() - 1, 0..len)
     }
 
+    /// Note text, or the renderer's text standing for it (a task box, an
+    /// image's `[image: `): numbered by where it begins, or else by the
+    /// event it comes from.
     fn add(&mut self, text: Text, style: Style) {
+        let at = match &text {
+            Text::Source(r) => r.start,
+            _ => self.at,
+        };
+        self.add_at(text, style, Some(at));
+    }
+
+    /// Text the renderer adds around the note's (table borders, padding,
+    /// separators): never numbered.
+    fn decorate(&mut self, text: Text, style: Style) {
+        self.add_at(text, style, None);
+    }
+
+    fn add_at(&mut self, text: Text, style: Style, at: Option<usize>) {
         let link = self.current_link;
-        self.content.push(Run { text, style, link });
+        self.content.push(Run {
+            text,
+            style,
+            link,
+            at,
+        });
     }
 
     fn markdown(&mut self) {
@@ -463,7 +537,8 @@ impl<'s> Builder<'s> {
             | Options::ENABLE_WIKILINKS;
         // The parser borrows the sanitized text for 's, apart from `self`.
         let source: &'s SafeText = self.source;
-        for event in Parser::new_ext(source.as_str(), options) {
+        for (event, range) in Parser::new_ext(source.as_str(), options).into_offset_iter() {
+            self.at = range.start;
             self.event(event);
         }
         self.flush();
@@ -491,7 +566,10 @@ impl<'s> Builder<'s> {
                 let style = self.style();
                 self.add(run, style);
             }
-            Event::SoftBreak => self.add(Text::Fixed(" "), PLAIN),
+            // A line break in the note stays one on screen, as in
+            // Obsidian's reading view, so every line of the note starts a
+            // row and has its number.
+            Event::SoftBreak => self.add(Text::Fixed("\n"), PLAIN),
             Event::HardBreak => self.add(Text::Fixed("\n"), PLAIN),
             Event::Rule => {
                 self.start_block();
@@ -546,6 +624,7 @@ impl<'s> Builder<'s> {
                         text: Text::Fixed(icon),
                         style,
                         link: None,
+                        at: None,
                     },
                     width: 2,
                     shown: false,
@@ -587,6 +666,7 @@ impl<'s> Builder<'s> {
                         text: marker,
                         style: DIM,
                         link: None,
+                        at: None,
                     },
                     width: u16::try_from(width).unwrap_or(2).min(16),
                     shown: false,
@@ -716,7 +796,9 @@ impl<'s> Builder<'s> {
                 self.pop_style();
                 if let Some(Some(url)) = self.links.pop() {
                     self.add(Text::Fixed(" ("), DIM);
-                    self.add(url, DIM);
+                    // A reference link's address is written elsewhere in
+                    // the note: number it by the link.
+                    self.add_at(url, DIM, Some(self.at));
                     self.add(Text::Fixed(")"), DIM);
                 }
             }
@@ -774,7 +856,7 @@ impl<'s> Builder<'s> {
         for (i, row) in table.rows.into_iter().enumerate() {
             let mut cells = row.into_iter();
             for (c, &width) in widths.iter().enumerate() {
-                self.add(Text::Fixed(if c == 0 { "│ " } else { " │ " }), QUOTE_BAR);
+                self.decorate(Text::Fixed(if c == 0 { "│ " } else { " │ " }), QUOTE_BAR);
                 let cell = cells.next().unwrap_or_default();
                 let room = width - self.cell_width(&cell);
                 let before = match table.aligns.get(c) {
@@ -786,7 +868,7 @@ impl<'s> Builder<'s> {
                 self.content.extend(cell);
                 self.repeat(SPACES, room - before, PLAIN);
             }
-            self.add(Text::Fixed(" │"), QUOTE_BAR);
+            self.decorate(Text::Fixed(" │"), QUOTE_BAR);
             self.flush();
             if i + 1 < rows {
                 self.border(&widths, "├─", "─┼─", "─┤");
@@ -805,10 +887,10 @@ impl<'s> Builder<'s> {
         right: &'static str,
     ) {
         for (c, &width) in widths.iter().enumerate() {
-            self.add(Text::Fixed(if c == 0 { left } else { mid }), QUOTE_BAR);
+            self.decorate(Text::Fixed(if c == 0 { left } else { mid }), QUOTE_BAR);
             self.repeat(DASHES, width, QUOTE_BAR);
         }
-        self.add(Text::Fixed(right), QUOTE_BAR);
+        self.decorate(Text::Fixed(right), QUOTE_BAR);
         self.flush();
     }
 
@@ -817,14 +899,14 @@ impl<'s> Builder<'s> {
     fn draw_wrapped_table(&mut self, table: Table, columns: usize) {
         for (i, row) in table.rows.into_iter().enumerate() {
             if i == table.head && i > 0 {
-                self.add(Text::Rule, QUOTE_BAR);
+                self.decorate(Text::Rule, QUOTE_BAR);
                 self.flush();
             }
             // A short row still gets its `│`s, as in a boxed table.
             let mut cells = row.into_iter();
             for c in 0..columns {
                 if c > 0 {
-                    self.add(Text::Fixed(" │ "), QUOTE_BAR);
+                    self.decorate(Text::Fixed(" │ "), QUOTE_BAR);
                 }
                 self.content.extend(cells.next().unwrap_or_default());
             }
@@ -845,7 +927,7 @@ impl<'s> Builder<'s> {
         let most = fill.chars().count();
         while count > 0 {
             let n = count.min(most);
-            self.add(Text::Fixed(&fill[..n * char_len]), style);
+            self.decorate(Text::Fixed(&fill[..n * char_len]), style);
             count -= n;
         }
     }
@@ -855,7 +937,7 @@ impl<'s> Builder<'s> {
     fn start_block(&mut self) {
         self.flush();
         if self.blank && !self.line_starts.is_empty() {
-            self.line_starts.push(self.runs.len());
+            self.new_row(None);
         }
         self.blank = false;
     }
@@ -870,6 +952,7 @@ impl<'s> Builder<'s> {
                 text: Text::Fixed(&SPACES[..usize::from(width)]),
                 style: PLAIN,
                 link: None,
+                at: None,
             });
         }
         for container in self.containers.iter_mut().take(MAX_INDENT_LEVELS) {
@@ -879,6 +962,7 @@ impl<'s> Builder<'s> {
                         text: Text::Fixed("│ "),
                         style: QUOTE_BAR,
                         link: None,
+                        at: None,
                     });
                     width += 2;
                 }
@@ -893,6 +977,7 @@ impl<'s> Builder<'s> {
                             text: Text::Fixed(&SPACES[..usize::from(*w)]),
                             style: PLAIN,
                             link: None,
+                            at: None,
                         });
                     } else {
                         runs.push(marker.clone());
@@ -970,10 +1055,20 @@ impl<'s> Builder<'s> {
                             Text::Fixed(s) => Text::Fixed(&s[piece.range.clone()]),
                             Text::Rule => Text::Rule,
                         };
+                        // Note text numbered by where it is: by where this
+                        // piece of it is. Else (a reference link's address)
+                        // as the whole run.
+                        let at = match &run.text {
+                            Text::Source(r) if run.at == Some(r.start) => {
+                                Some(offset + piece.range.start)
+                            }
+                            _ => run.at,
+                        };
                         Run {
                             text,
                             style: only[piece.span].style,
                             link: run.link,
+                            at,
                         }
                     })
                     .collect();
@@ -989,12 +1084,48 @@ impl<'s> Builder<'s> {
                     link.line.get_or_insert(number);
                 }
             }
-            self.line_starts.push(self.runs.len());
+            let at = line.iter().find_map(|r| r.at);
+            self.new_row(at);
             if indent {
                 self.runs.extend(prefix);
             }
             self.runs.extend(line);
         }
+    }
+
+    /// Starts a row at the end of the runs. `at` is where its first note
+    /// text begins: the row is numbered with that text's line if no
+    /// earlier row was; a row going on with the last numbered line is
+    /// marked `CONTINUES`; a row with no note text (a blank, a border),
+    /// or one going back to an earlier line, has none.
+    fn new_row(&mut self, at: Option<usize>) {
+        let number = match at.map(|at| self.line_of(at)) {
+            Some(line) if line > self.last_number => {
+                self.last_number = line;
+                line
+            }
+            Some(line) if line == self.last_number => line | CONTINUES,
+            _ => 0,
+        };
+        self.line_starts.push(self.runs.len());
+        self.numbers.push(number);
+    }
+
+    /// The line (from 1) of byte `at` of the sanitized note, which keeps
+    /// the note's line breaks. Counts on from the last answer, as rows
+    /// mostly go forward; from the start when one goes back.
+    fn line_of(&mut self, at: usize) -> u32 {
+        let text = self.source.as_str().as_bytes();
+        let at = at.min(text.len());
+        let (from, line) = if at >= self.counted.0 {
+            self.counted
+        } else {
+            (0, 1)
+        };
+        let breaks = text[from..at].iter().filter(|&&b| b == b'\n').count();
+        let line = line.saturating_add(u32::try_from(breaks).unwrap_or(u32::MAX));
+        self.counted = (at, line);
+        line
     }
 
     /// The prefix width, without marking markers as shown.
@@ -1051,9 +1182,10 @@ mod tests {
 
     #[test]
     fn paragraphs_wrap_with_a_blank_line_between() {
+        // A line break in the note stays one.
         assert_eq!(
             md("one two three\nfour\n\nnext one", 10),
-            ["one two", "three four", "", "next one"]
+            ["one two", "three", "four", "", "next one"]
         );
     }
 
@@ -1088,7 +1220,7 @@ mod tests {
 
     #[test]
     fn quotes_code_and_rules() {
-        assert_eq!(md("> quoted\n> text", 20), ["│ quoted text"]);
+        assert_eq!(md("> quoted\n> text", 20), ["│ quoted", "│ text"]);
         assert_eq!(md("> a\n>> b", 20), ["│ a", "", "│ │ b"]);
         assert_eq!(
             md("```\nfn x() {\n    y\n}\n```", 20),
@@ -1486,7 +1618,93 @@ mod tests {
         }
     }
 
+    /// Each row's note line, `0` for none.
+    fn numbers(source: &str, kind: Kind, width: u16) -> Vec<u32> {
+        let page = render(source, kind, width);
+        (0..page.line_count())
+            .map(|i| page.number(i).unwrap_or(0))
+            .collect()
+    }
+
+    /// A row has the number of the note line that starts on it, counted
+    /// as the editor does; wrapped rows, blanks, the renderer's blank row
+    /// between blocks and table borders have none.
+    #[test]
+    fn rows_carry_the_note_lines_they_start() {
+        let source = "# Title\n\none two three\nfour\n\n- a\n- [ ] b\n\n> q\n> r\n\n---";
+        assert_eq!(
+            md(source, 12),
+            [
+                "◉ Title",
+                "",
+                "  one two",
+                "  three",
+                "  four",
+                "",
+                "  • a",
+                "  • [ ] b",
+                "",
+                "  │ q",
+                "  │ r",
+                "",
+                "  ──────────"
+            ]
+        );
+        assert_eq!(
+            numbers(source, Kind::Markdown, 12),
+            [1, 0, 3, 0, 4, 0, 6, 7, 0, 9, 10, 0, 12]
+        );
+        // `\r\n` is one line break, as in the editor.
+        assert_eq!(numbers("a\r\nb", Kind::Markdown, 9), [1, 2]);
+        // Code keeps its lines; a blank one has no number.
+        assert_eq!(numbers("```\nx\n\ny\n```", Kind::Markdown, 9), [2, 0, 4]);
+        // A boxed table: rows numbered, borders not; the `|-|` line
+        // under the header makes no row.
+        assert_eq!(
+            numbers("| a |\n|---|\n| b |\n| c |", Kind::Markdown, 20),
+            [0, 1, 0, 3, 0, 4, 0]
+        );
+        // Plain text: every line its own, blanks without.
+        assert_eq!(numbers("aaa bbb\n\nc", Kind::Plain, 4), [1, 0, 0, 3]);
+        // Each row's line, wrapped ones included, for copying.
+        let page = render("# T\n\naaa bbb\n\n| x |\n|-|", Kind::Markdown, 8);
+        let lines: Vec<_> = (0..page.line_count()).map(|i| page.note_line(i)).collect();
+        assert_eq!(
+            lines,
+            [Some(1), None, Some(3), Some(3), None, None, Some(5), None]
+        );
+        // A reference link's address is numbered by the link, not by its
+        // definition further down.
+        assert_eq!(
+            numbers("[x][r] and words\n\n[r]: http://e.org", Kind::Markdown, 9),
+            [1, 0, 0, 0]
+        );
+    }
+
     proptest::proptest! {
+        // Numbers only go up, and never past the note's last line.
+        #[test]
+        fn numbers_increase_within_the_note(
+            parts in proptest::collection::vec(
+                proptest::sample::select(vec![
+                    "# ", "- ", "1. ", "> ", "```\n", "|", "|-|", "---", "\n", "\r\n", "\n\n",
+                    "word ", "[x][r]", "[r]: http://e.org\n", "- [ ] ", "<b>", "\t", "\u{1b}",
+                ]),
+                0..40,
+            ),
+            width in 1u16..30,
+        ) {
+            let source: String = parts.concat();
+            let lines = u32::try_from(source.matches('\n').count()).unwrap() + 1;
+            for kind in [Kind::Markdown, Kind::Plain] {
+                let mut last = 0;
+                for n in numbers(&source, kind, width).into_iter().filter(|&n| n > 0) {
+                    proptest::prop_assert!(n > last && n <= lines, "{n} after {last} of {lines}");
+                    last = n;
+                }
+            }
+        }
+
         // Anything at all: no panic, no line wider than the page, nothing
         // forbidden on screen.
         #[test]

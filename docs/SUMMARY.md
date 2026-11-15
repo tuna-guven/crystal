@@ -67,6 +67,7 @@
   - [0050 Auto-lock counts the time the computer sleeps](decisions/0050-auto-lock-counts-sleep.md)
   - [0051 RustCrypto and dalek primitives moved to their current lines](decisions/0051-rustcrypto-upgrade.md)
   - [0052 The viewer has a keyboard cursor and folds sections](decisions/0052-viewer-cursor-and-folding.md)
+  - [0053 The viewer has a gutter with the note's line numbers; y copies a line](decisions/0053-viewer-gutter-and-line-copy.md)
 
 # Development
 

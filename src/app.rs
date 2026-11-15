@@ -21,7 +21,7 @@ use crate::editor::view::View;
 use crate::editor::{Editor, EditorAction};
 use crate::model::NoteText;
 use crate::notes::Notes;
-use crate::pager::{Pager, PagerAction};
+use crate::pager::{self, Pager, PagerAction};
 use crate::session::{Change, SaveError, Session};
 use crate::shell::keys::Key;
 use crate::shell::{self, ERROR_STYLE, Shell};
@@ -307,21 +307,36 @@ fn run_loop(
                                 clipboard.set(session.notes().note(note).body.as_str());
                                 pager.tell(COPIED);
                             }
+                            PagerAction::CopyLine(note, line) => {
+                                let text = session.notes().note(note).body.as_str();
+                                clipboard.set(pager::line_in(text, line));
+                                pager.tell(COPIED);
+                            }
                         },
                         Mode::Edit(e) => {
                             if let Some(pager) = &mut e.preview {
-                                match pager.key(key, session.notes()) {
+                                let action = pager.key(key, session.notes());
+                                match action {
                                     PagerAction::Stay => {}
                                     // Ctrl+E, q or Esc: back to the editor,
                                     // whichever note the preview has reached.
                                     PagerAction::Close | PagerAction::Edit(_) => e.preview = None,
-                                    PagerAction::Copy(note) => {
+                                    // The text previewed is the editor's,
+                                    // unsaved; a note reached by a link is
+                                    // its saved one.
+                                    PagerAction::Copy(note) | PagerAction::CopyLine(note, _) => {
                                         let previewed =
                                             matches!(e.target, Target::Note(n) if n == note);
-                                        clipboard.set(if previewed {
+                                        let text = if previewed {
                                             e.editor.text()
                                         } else {
                                             session.notes().note(note).body.as_str()
+                                        };
+                                        clipboard.set(match action {
+                                            PagerAction::CopyLine(_, line) => {
+                                                pager::line_in(text, line)
+                                            }
+                                            _ => text,
                                         });
                                         pager.tell(COPIED);
                                     }

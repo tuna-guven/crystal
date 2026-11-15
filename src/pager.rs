@@ -1,7 +1,8 @@
 //! `view NAME`: a note, rendered full screen (docs/decisions/0033-shell.md).
 //!
 //! The title on the top row, the note below, a key line at the bottom.
-//! A cursor marks one line; it changes nothing, it only points. j/k and
+//! A `>` in the gutter on the left marks the cursor's line; the cursor
+//! changes nothing, it only points. j/k and
 //! the arrows move it by a line, Space and PgDn/PgUp by a screen, g/G or
 //! Home/End to the ends, and the screen scrolls to keep it in view. n and
 //! N select the next and previous `[[link]]` and move the cursor to it,
@@ -10,8 +11,10 @@
 //! next heading of its level or higher) or unfolds it; a folded heading
 //! ends in ` …`. Folds last while the note is shown and are never saved;
 //! a jump or a link selected inside a fold opens it. b lists the notes
-//! linking here. y copies the note into Crystal's own
-//! clipboard (docs/decisions/0041-internal-clipboard-only.md). q or Esc
+//! linking here. y copies the note line the cursor is on, as written
+//! (Markdown included), into Crystal's own clipboard, Y the whole note
+//! (docs/decisions/0041-internal-clipboard-only.md); the editor's Ctrl+V
+//! pastes it. q or Esc
 //! returns to the shell. Ctrl+E asks to edit the note shown
 //! (docs/decisions/0045-simple-editor.md).
 //!
@@ -36,11 +39,22 @@ const TITLE: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::BOLD));
 const HINT: Style = Style::PLAIN.mods(Mods::DIM);
 const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
-/// The cursor line's background. Text drawn in it keeps its own colors,
-/// except dark gray (quote bars, table borders), which turns gray.
-const CURSOR_BG: Color = Color::DarkGray;
+/// The cursor's mark, in the gutter left of the note.
+const MARKER: Style = Style::PLAIN.mods(Mods::BOLD);
+/// Columns left of the note without line numbers: the marker and a space.
+const GUTTER: u16 = 2;
+/// Line numbers are shown only if this many columns stay for the note.
+const MIN_TEXT: u16 = 20;
 const HINTS: &str = "q shell · j/k move · Tab fold · n/N links · Enter follow · \
-                     Backspace previous · b backlinks · y copy · Ctrl+E edit";
+                     Backspace previous · b backlinks · y/Y copy line/note · Ctrl+E edit";
+
+/// Line `number` (from 1) of `text`, as the editor counts lines (`\n`
+/// ends one, `\r\n` too), without its line break; empty past the end.
+pub fn line_in(text: &str, number: u32) -> &str {
+    let index = usize::try_from(number.saturating_sub(1)).unwrap_or(usize::MAX);
+    let line = text.split('\n').nth(index).unwrap_or("");
+    line.strip_suffix('\r').unwrap_or(line)
+}
 
 /// After a key: stay, or go back to the shell.
 #[derive(Debug, PartialEq, Eq)]
@@ -49,6 +63,8 @@ pub enum PagerAction {
     Close,
     /// Copy this note into Crystal's own clipboard.
     Copy(usize),
+    /// Copy this line (from 1) of this note into Crystal's own clipboard.
+    CopyLine(usize, u32),
     /// Ctrl+E: edit this note (or go back to the editor it previews).
     Edit(usize),
 }
@@ -71,7 +87,10 @@ pub struct Pager {
     /// positions.
     history: Vec<(usize, usize, usize)>,
     page: Option<Page>,
+    /// The note area's width the page was rendered for, gutter included.
     width: u16,
+    /// Digits of the rendered note's last line number.
+    digits: u16,
     scroll: usize,
     /// The line the cursor is on; always a shown line, on the screen
     /// once drawn. `scroll` is a shown line too.
@@ -95,6 +114,7 @@ impl Pager {
             history: Vec::new(),
             page: None,
             width: 0,
+            digits: 1,
             scroll: 0,
             cursor: 0,
             folded: Vec::new(),
@@ -210,7 +230,11 @@ impl Pager {
         let page = self.rows.max(1);
         match key {
             Key::Char('q') | Key::Esc => return PagerAction::Close,
-            Key::Char('y') => return PagerAction::Copy(self.note),
+            Key::Char('y') => match self.page.as_ref().and_then(|p| p.note_line(self.cursor)) {
+                Some(line) => return PagerAction::CopyLine(self.note, line),
+                None => self.notice = Some("No line here to copy."),
+            },
+            Key::Char('Y') => return PagerAction::Copy(self.note),
             Key::Ctrl('e') => return PagerAction::Edit(self.note),
             Key::Char('j') | Key::Down => self.move_cursor(self.step(self.cursor, 1, true)),
             Key::Char('k') | Key::Up => self.move_cursor(self.step(self.cursor, 1, false)),
@@ -366,18 +390,15 @@ impl Pager {
         }
     }
 
-    /// The cursor's background on row `y`, keeping each cell's text and
-    /// colors (dark gray turns gray, to stay visible).
-    fn highlight(&self, grid: &mut Grid, body: Rect, y: u16) {
-        for x in body.x..body.right() {
-            let Some(style) = grid.cell(x, y).map(|c| c.style()) else {
-                continue;
-            };
-            let fg = match style.fg {
-                Color::DarkGray => Color::Gray,
-                fg => fg,
-            };
-            grid.set_style(x, y, 1, style.fg(fg).bg(CURSOR_BG));
+    /// The gutter's width in a note area `width` wide, and whether it
+    /// shows line numbers: `> 12 ` (marker, space, number, space), or only
+    /// `> ` when the numbers would leave the note less than `MIN_TEXT`.
+    fn gutter(&self, width: u16) -> (u16, bool) {
+        let numbered = GUTTER + self.digits + 1;
+        if width >= numbered + MIN_TEXT {
+            (numbered, true)
+        } else {
+            (GUTTER, false)
         }
     }
 
@@ -401,7 +422,13 @@ impl Pager {
                 Some(text) if previewing => text,
                 _ => note.body.as_str(),
             };
-            self.page = Some(render(text, kind_of(note.title.as_str()), body.width));
+            // The gutter is as wide as the note's last line number, known
+            // before rendering, so it never changes while scrolling.
+            let last = text.bytes().filter(|&b| b == b'\n').count() + 1;
+            self.digits = u16::try_from(last.ilog10() + 1).unwrap_or(u16::MAX);
+            let (columns, _) = self.gutter(body.width);
+            let width = body.width.saturating_sub(columns);
+            self.page = Some(render(text, kind_of(note.title.as_str()), width));
             self.width = body.width;
             self.selected = None;
             // Sections do not depend on the width; a fold past the end
@@ -459,19 +486,28 @@ impl Pager {
                 );
             }
         } else if let Some(page) = &self.page {
+            // The gutter on the left, the note in the rest.
+            let (columns, numbered) = self.gutter(body.width);
+            let (gutter, text_area) = body.split_left(columns);
+            let digits = usize::from(self.digits);
             let mut line = Some(self.scroll).filter(|&l| l < page.line_count());
             for y in body.y..body.bottom() {
                 let Some(index) = line else { break };
-                let used = page.draw_line(grid, (body.x, y), body.width, index, self.selected);
+                let (x, width) = (text_area.x, text_area.width);
+                let used = page.draw_line(grid, (x, y), width, index, self.selected);
                 let folded = self
                     .folded
                     .iter()
                     .any(|&i| page.sections().get(i).is_some_and(|s| s.line == index));
                 if folded {
-                    grid.put_str(body.x + used, y, " …", HINT, body.width - used);
+                    grid.put_str(x + used, y, " …", HINT, width - used);
                 }
                 if index == self.cursor {
-                    self.highlight(grid, body, y);
+                    grid.put_str(gutter.x, y, ">", MARKER, gutter.width);
+                }
+                if let Some(number) = page.number(index).filter(|_| numbered) {
+                    let number = format!("{number:>digits$}");
+                    grid.put_str(gutter.x + GUTTER, y, &number, HINT, self.digits);
                 }
                 line = self.next_shown(index);
             }
@@ -527,7 +563,7 @@ mod tests {
         let mut p = Pager::open(0);
         let shown = rows(&mut p, &n, 60, 6);
         assert_eq!(shown[0], " home");
-        assert_eq!(shown[1], "Start at b or b#Second or b#^k.");
+        assert_eq!(shown[1], "> 1 Start at b or b#Second or b#^k.");
         assert!(shown[5].starts_with("q shell · j/k move · Tab fold"));
     }
 
@@ -583,8 +619,8 @@ mod tests {
     }
 
     /// The cursor moves line by line inside the screen, which scrolls
-    /// only once it would leave; its line has the cursor background and
-    /// keeps its text and colors. n/N put it on the selected link.
+    /// only once it would leave; its line has `>` in the gutter, and the
+    /// text keeps its own colors. n/N put it on the selected link.
     #[test]
     fn cursor_moves_and_the_screen_follows() {
         let n = sample();
@@ -592,21 +628,29 @@ mod tests {
         let mut grid = Grid::new(40, 10);
         p.draw(&mut grid, &n, None);
         // Rows 1 to 8 show the note; the cursor starts on its first line.
-        let bg = |grid: &Grid, y| grid.cell(0, y).unwrap().style().bg;
-        assert_eq!(bg(&grid, 1), CURSOR_BG);
-        assert_eq!(grid.cell(0, 1).unwrap().style().fg, Color::Yellow);
-        assert_eq!(bg(&grid, 2), Color::Default);
+        let marked = |grid: &Grid| -> Vec<u16> {
+            (1..9)
+                .filter(|&y| grid.cell(0, y).unwrap().symbol() == ">")
+                .collect()
+        };
+        assert_eq!(marked(&grid), [1]);
+        // 85 lines: two digits, so the note starts at column 5.
+        assert_eq!(grid.cell(5, 1).unwrap().symbol(), "◉");
+        assert_eq!(grid.cell(5, 1).unwrap().style().fg, Color::Yellow);
+        assert_eq!(grid.cell(5, 1).unwrap().style().bg, Color::Default);
         for _ in 0..7 {
             p.key(Key::Down, &n);
         }
+        // Blank, as the screen hands every frame a blank grid.
+        grid.reset();
         p.draw(&mut grid, &n, None);
         assert_eq!((p.scroll, p.cursor), (0, 7));
-        assert_eq!(bg(&grid, 8), CURSOR_BG);
+        assert_eq!(marked(&grid), [8]);
         p.key(Key::Char('j'), &n);
+        grid.reset();
         p.draw(&mut grid, &n, None);
         assert_eq!((p.scroll, p.cursor), (1, 8));
-        assert_eq!(bg(&grid, 8), CURSOR_BG);
-        assert_eq!(bg(&grid, 1), Color::Default);
+        assert_eq!(marked(&grid), [8]);
         // From the cursor, n finds the first link at or after it.
         let mut p = Pager::open(0);
         rows(&mut p, &n, 60, 10);
@@ -635,7 +679,7 @@ mod tests {
         // Near the end the page cannot scroll further, so the heading is
         // shown lower down, not on the first row.
         assert!(
-            shown.contains(&"  ○ Second".to_owned()),
+            shown.contains(&"> 83   ○ Second".to_owned()),
             "jumped to the heading: {shown:?}"
         );
         assert_eq!(p.scroll, p.max_scroll());
@@ -650,7 +694,7 @@ mod tests {
         p.key(Key::Enter, &n);
         let shown = rows(&mut p, &n, 60, 10);
         assert!(
-            shown.contains(&"    Last.".to_owned()),
+            shown.contains(&"> 85     Last.".to_owned()),
             "jumped to the block, ^id hidden: {shown:?}"
         );
         // A broken link says why.
@@ -660,12 +704,7 @@ mod tests {
         p.key(Key::Char('N'), &n);
         p.key(Key::Enter, &n);
         assert_eq!(p.notice, Some("no note with that name"));
-        assert_eq!(p.key(Key::Char('y'), &n), PagerAction::Copy(0));
-        assert_eq!(
-            p.key(Key::Char('Y'), &n),
-            PagerAction::Stay,
-            "no system copy"
-        );
+        assert_eq!(p.key(Key::Char('Y'), &n), PagerAction::Copy(0));
         assert_eq!(p.key(Key::Char('q'), &n), PagerAction::Close);
     }
 
@@ -690,7 +729,7 @@ mod tests {
         rows(&mut p, &n, 40, 12);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..5], ["◉ A …", "◉ D", "", "  d1"]);
+        assert_eq!(shown[1..5], [">  1 ◉ A …", "  13 ◉ D", "", "  15   d1"]);
         p.key(Key::Char('j'), &n);
         assert_eq!(p.cursor, 12);
         p.key(Key::Char('k'), &n);
@@ -700,7 +739,7 @@ mod tests {
         p.key(Key::Home, &n);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..4], ["◉ A", "", "  a1"]);
+        assert_eq!(shown[1..4], [">  1 ◉ A", "", "   3   a1"]);
         p.key(Key::Char('j'), &n);
         p.key(Key::Tab, &n);
         assert_eq!(p.notice, Some("Move the cursor to a heading to fold it."));
@@ -724,8 +763,11 @@ mod tests {
         p.key(Key::Tab, &n);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..6], ["◉ A", "", "  a1", "", "  ○ B …"]);
-        assert_eq!(shown[6], "  ○ C");
+        assert_eq!(
+            shown[1..6],
+            [">  1 ◉ A", "", "   3   a1", "", "   5   ○ B …"]
+        );
+        assert_eq!(shown[6], "   9   ○ C");
         p.key(Key::Tab, &n);
         p.key(Key::Char('n'), &n);
         assert_eq!((p.selected, p.cursor), (Some(0), 6));
@@ -765,7 +807,7 @@ mod tests {
         p.key(Key::PageUp, &n);
         assert_eq!((p.scroll, p.cursor), (9, 11));
         let shown = rows(&mut p, &n, 40, 5);
-        assert_eq!(shown[1..4], ["", "    c1", ""]);
+        assert_eq!(shown[1..4], ["", "  11     c1", ">"]);
     }
 
     #[test]
@@ -783,6 +825,56 @@ mod tests {
         rows(&mut p, &n, 60, 10);
         p.key(Key::Char('b'), &n);
         assert_eq!(p.notice, Some("No note links here."));
+    }
+
+    /// The gutter: the editor's line numbers, right-aligned to the last
+    /// line's digits, none on a wrapped row; on a screen too narrow for
+    /// them, only the marker.
+    #[test]
+    fn gutter_shows_line_numbers() {
+        let body: String = (1..=9).map(|i| format!("l{i}\n")).collect();
+        let n = notes(vec![note(
+            1,
+            "",
+            "w",
+            &(body + "words words words words words"),
+        )]);
+        let mut p = Pager::open(0);
+        let shown = rows(&mut p, &n, 30, 14);
+        assert_eq!(shown[1], ">  1 l1");
+        assert_eq!(shown[9], "   9 l9");
+        assert_eq!(shown[10], "  10 words words words words");
+        assert_eq!(shown[11], "     words");
+        let shown = rows(&mut p, &n, 24, 14);
+        assert_eq!(shown[1], "> l1");
+        assert_eq!(shown[10], "  words words words");
+    }
+
+    /// y copies the line the cursor is on (the whole note line, on a
+    /// wrapped row too); on a blank it says there is none.
+    #[test]
+    fn y_copies_the_cursors_line() {
+        let n = notes(vec![note(
+            1,
+            "",
+            "y",
+            "# T\r\n\nwords words words words words",
+        )]);
+        let mut p = Pager::open(0);
+        rows(&mut p, &n, 30, 10);
+        assert_eq!(p.key(Key::Char('y'), &n), PagerAction::CopyLine(0, 1));
+        p.key(Key::Char('j'), &n);
+        assert_eq!(p.key(Key::Char('y'), &n), PagerAction::Stay);
+        assert_eq!(p.notice, Some("No line here to copy."));
+        p.key(Key::Char('j'), &n);
+        p.key(Key::Char('j'), &n);
+        assert_eq!(p.cursor, 3, "on the wrapped row");
+        assert_eq!(p.key(Key::Char('y'), &n), PagerAction::CopyLine(0, 3));
+        let text = n.note(0).body.as_str();
+        assert_eq!(line_in(text, 1), "# T");
+        assert_eq!(line_in(text, 2), "");
+        assert_eq!(line_in(text, 3), "words words words words words");
+        assert_eq!(line_in(text, 4), "");
     }
 
     #[test]

@@ -173,7 +173,7 @@ the terminal's scrollback. The shell knows:
 | `ls #TAG`, `tags` | The notes with a tag; every tag with its count |
 | `find TEXT` | Names holding TEXT's letters in order, best match first |
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
-| `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A cursor marks one line: j/k and the arrows move it, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions/0052-viewer-cursor-and-folding.md)) |
+| `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A line break in the note stays one. A gutter on the left shows the editor's line numbers (none on wrapped rows) and `>` on the cursor's line: j/k and the arrows move it, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; y copies the cursor's line and Y the whole note into Crystal's clipboard; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions/0052-viewer-cursor-and-folding.md), [decision 0053](../decisions/0053-viewer-gutter-and-line-copy.md)) |
 | `links` | Every `[[link]]` that leads nowhere, and why |
 | `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions/0048-lock-and-auto-lock.md)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
@@ -207,8 +207,10 @@ yourself; otherwise someone may have put back an old copy.
 
 ### Copying
 
-`y` in the pager copies the note into Crystal's own clipboard, which
-never leaves Crystal; in the editor, Ctrl+C and Ctrl+X copy
+`y` in the pager copies the line the `>` is on, as written, and `Y` the
+whole note, into Crystal's own clipboard, which never leaves Crystal
+([decision 0053](../decisions/0053-viewer-gutter-and-line-copy.md)); in
+the editor, Ctrl+C and Ctrl+X copy
 the selection into it and Ctrl+V pastes from it. The terminal's own
 Ctrl+Shift+C and Ctrl+Shift+V work with the system clipboard
 ([decision 0045](../decisions/0045-simple-editor.md)). Crystal
@@ -225,7 +227,11 @@ kept; convert it to Markdown before copying if you need it
 
 To copy into another program, select the text with the mouse and use the
 terminal's copy key (Ctrl+Shift+C in Ptyxis). That copies what is shown,
-with hidden characters spelled out as `<U+XXXX>`. What you copy this way
+with hidden characters spelled out as `<U+XXXX>`, and in the pager the
+line numbers and the `>` in front of each row too; hold Ctrl while
+dragging for a block selection that leaves them out, where the terminal
+has one. Unfold a section before selecting it: a fold's hidden lines are
+not on screen, so they are not copied. What you copy this way
 is on the system clipboard, where every program you run can read it and a
 clipboard manager may keep it; Crystal cannot clear it.
 

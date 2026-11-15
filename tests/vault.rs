@@ -1252,19 +1252,19 @@ fn new_note_is_saved_and_opens_again() {
     }
 
     // The frame writer skips cells that did not change, so a text can
-    // arrive with gaps (here the canary's last `c` sat on the shell's
-    // "commands."): wait for the pager's status line, the end of its
-    // frame, and look for the text without its last character.
+    // arrive with gaps wherever it covers the same letter of the shell's
+    // frame ("hello" over "Type", the last `c` over "commands."). Wait for
+    // the pager's status line, the end of its frame, and look for the
+    // canary's hex digits, which the shell's frame never shows, without
+    // the last one.
     let mut steps = pass_step(PASS);
     steps.push(("unlocked.", b"view work/plan\r".to_vec()));
     steps.push(("previous", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' diary"), &home, &steps);
     assert!(ok, "{output}");
-    assert!(
-        output.contains(&format!("hello {}", &CANARY[..CANARY.len() - 1])),
-        "{output}"
-    );
+    let hex = &CANARY["canary-".len()..CANARY.len() - 1];
+    assert!(output.contains(hex), "{output}");
 }
 
 /// `edit` changes a saved note; Ctrl+E shows the unsaved text rendered and

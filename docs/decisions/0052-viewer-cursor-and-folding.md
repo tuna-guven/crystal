@@ -1,7 +1,9 @@
 # 0052 The viewer has a keyboard cursor and folds sections
 
 - **Date:** 2026-11-14 (after Phase 5)
-- **Status:** Accepted.
+- **Status:** Accepted. The cursor's dark-gray line highlight is
+  replaced by a `>` in a gutter with line numbers
+  ([0053](0053-viewer-gutter-and-line-copy.md)).
 
 ## Context
 
