@@ -205,6 +205,49 @@ fn older_vault_needs_restore() {
     assert!(!output.contains("older than"), "{output}");
 }
 
+/// The `restore` question waits with the decrypted vault in memory, so it
+/// has auto-lock's limit (decision 0048), shortened to 3 seconds here:
+/// with no key for that long, Crystal quits, accepting nothing. Each key
+/// restarts the time: `resto`, one key a second (about 4 seconds in all),
+/// is echoed whole before the timeout; without the restart, Crystal would
+/// quit mid-word. The next unlock asks again.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn restore_question_times_out() {
+    let (home, _) = home_with_vault("restore_timeout");
+    let counter = vault_counter(&home, "diary");
+    std::fs::write(&counter, b"2\n").unwrap();
+    let question = "Type restore to accept: ";
+    let timed_out = "no answer in time: Crystal quit, wiping the vault from memory; \
+                     nothing was changed";
+
+    let mut steps = pass_step(PASS);
+    steps.push((question, b"r".to_vec()));
+    for key in [b"e", b"s", b"t", b"o"] {
+        steps.push(("", PAUSE_ONE_SECOND.to_vec()));
+        steps.push(("", key.to_vec()));
+    }
+    steps.push((timed_out, Vec::new()));
+    let cmd = format!("'{BIN}' unlock --lock-after-for-test 3 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(!ok, "{output}");
+    let typed = output.find("resto").expect("every key was echoed");
+    assert!(typed < output.find(timed_out).unwrap(), "{output}");
+    assert!(!output.contains("notes unlocked"), "{output}");
+    assert_no_leak(&home, &output);
+    assert_eq!(std::fs::read(&counter).unwrap(), b"2\n");
+
+    // Nothing was accepted: the question comes again.
+    let mut steps = pass_step(PASS);
+    steps.push((question, b"no\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(
+        !ok && output.contains("not restored; nothing was changed"),
+        "{output}"
+    );
+    assert_eq!(std::fs::read(&counter).unwrap(), b"2\n");
+}
+
 /// Another of your vaults moved in under this name: it decrypts with the
 /// same passphrase, but it is not the vault pinned to the name.
 #[test]

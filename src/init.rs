@@ -125,10 +125,10 @@ pub fn confirm_recovery_code(
         ));
         // What is typed here does not matter; it is wiped on drop.
         terminal
-            .read_public_line(signals, &shown)
+            .read_public_line(signals, &shown, None)
             .map_err(InitError::Prompt)?;
         let typed = terminal
-            .read_public_line(signals, CONFIRM_PROMPT)
+            .read_public_line(signals, CONFIRM_PROMPT, None)
             .map_err(InitError::Prompt)?;
         match RecoveryCode::parse(&typed) {
             Ok(back) if back.passphrase().matches(&code.passphrase()) => return Ok(()),

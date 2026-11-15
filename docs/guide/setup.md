@@ -207,7 +207,9 @@ restic --repo /run/media/$USER/backup/crystal check
 To restore, put the vault directory back with `restic restore` and open
 it. If it is older than what this device last saw, Crystal says so and
 asks you to type `restore`. Type it only if you restored the vault
-yourself; otherwise someone may have put back an old copy.
+yourself; otherwise someone may have put back an old copy. With no key
+for 5 minutes at that question, Crystal quits and accepts nothing; the
+next unlock asks again.
 
 ### Copying
 

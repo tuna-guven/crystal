@@ -502,7 +502,10 @@ scrollback, history, clipboard, viewer and editor) and shows the
 passphrase prompt under a fixed cowsay cow, with one line on why it
 locked. Unlocking runs the same checks as at start, in the same process;
 Esc or Ctrl+C there quits. An outside `SIGTSTP` locks first, then
-suspends. There are no settings; colors follow the terminal's theme.
+suspends. The `restore` question after an unlock waits with the vault
+decrypted, so it has the same limit: with no key for 5 minutes, Crystal
+quits and accepts nothing. There are no settings; colors follow the
+terminal's theme.
 
 ## 0049 The shell starts at the top, like a normal shell {#0049}
 

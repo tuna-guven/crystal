@@ -88,6 +88,19 @@ for now: mouse capture costs about 250 lines with no security benefit
 | V4 (done) | The editor gets the same gutter: numbers dim, right-aligned, none on blank lines or wrapped rows, dropped below 20 columns of text; the text area narrows by the gutter. About 50 lines in `editor/view.rs`, tests | The two views show the same numbers |
 | V5 (done) | Decision 0055 (partly replaces 0053's numbering and 0045's "no line numbers"; status lines updated), the viewer and editor chapters, setup guide, SUMMARY; fmt, clippy, test, deny, audit, mdbook; one commit | Book rule in CLAUDE.md |
 
+## Steps F1 to F4 (second Phase 5 review; done)
+
+Approved 2026-11-15. The review found that the `restore` question waits
+with the vault decrypted and no time limit. The lock balloon's wording
+after `lock` was left as it is.
+
+| Step | What | Why |
+| --- | --- | --- |
+| F1 (done) | The two-clock idle time moves from `app` to `term::Idle` | The prompts need the same clock |
+| F2 (done) | `read_public_line` takes a limit; the `restore` question after an unlock passes auto-lock's, and with no key for that long Crystal quits, accepting nothing ([decision 0048](../decisions.md#0048)) | The decrypted vault waited behind the question for good |
+| F3 (done) | Pty test `restore_question_times_out` (keys restart the time; the next unlock asks again) | Mutation-checked: no restart, or no limit, fails it |
+| F4 (done) | Decision 0048 in place, startup step 11, leakage, syscalls, setup guide, this table | The book matches the code |
+
 ## Steps R1 to R7 (Phase 5 review fixes)
 
 Approved 2026-11-14, after a security review of Phase 5.

@@ -297,8 +297,18 @@ fn run_unlocked(
     // An older vault than this device has seen: restored, or put back by
     // someone else. Only the word `restore` accepts it (decision 0036);
     // anything else drops the notes and changes nothing.
+    // Auto-lock's limit (decision 0048); the debug-only flag shortens it
+    // for the pty tests.
+    #[cfg(debug_assertions)]
+    let idle = args
+        .lock_after_for_test
+        .map_or(app::AUTO_LOCK, std::time::Duration::from_secs);
+    #[cfg(not(debug_assertions))]
+    let idle = app::AUTO_LOCK;
     let restored = if let Some(older) = unlocked.older {
-        confirm_restore(terminal, signals, older)?;
+        // The decrypted vault waits behind the question: with no key for
+        // `idle`, Crystal quits and wipes it, accepting nothing.
+        confirm_restore(terminal, signals, older, Some(idle))?;
         unlock::accept_restore(&state_dir, unlocked.contents.vault_id, older)?;
         "\nThe restored vault was accepted: rollback detection starts again from it."
     } else {
@@ -339,12 +349,6 @@ fn run_unlocked(
         ui::grid::Style::PLAIN,
     );
     shell.print("Type help for the commands.", ui::grid::Style::PLAIN);
-    #[cfg(debug_assertions)]
-    let idle = args
-        .lock_after_for_test
-        .map_or(app::AUTO_LOCK, std::time::Duration::from_secs);
-    #[cfg(not(debug_assertions))]
-    let idle = app::AUTO_LOCK;
     let outcome = app::run(terminal, signals, &mut shell, &mut session, demo, idle)?;
     drop(shell);
     match outcome {
@@ -401,7 +405,7 @@ fn recover_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn 
     let mut terminal = term::TerminalGuard::enter(tty)?;
     let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
     if let Some(older) = recover::check_seen(&opened, name, &state_dir)? {
-        confirm_restore(&mut terminal, &signals, older)?;
+        confirm_restore(&mut terminal, &signals, older, None)?;
         recover::accept_restore(&opened, &state_dir, older)?;
     }
     let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
@@ -431,13 +435,15 @@ fn check_code(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Err
 }
 
 /// Asks whether an older vault is a restore; anything but `restore` is a
-/// refusal, and nothing has been changed yet.
+/// refusal, and nothing has been changed yet. `limit`: see
+/// `read_public_line`.
 fn confirm_restore(
     terminal: &mut term::TerminalGuard,
     signals: &term::Signals,
     older: vault::generation::Older,
+    limit: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn Error>> {
-    let answer = terminal.read_public_line(signals, &unlock::restore_prompt(older))?;
+    let answer = terminal.read_public_line(signals, &unlock::restore_prompt(older), limit)?;
     if answer.as_str() == unlock::RESTORE_WORD {
         Ok(())
     } else {
@@ -451,7 +457,7 @@ fn open_with_code(
     signals: &term::Signals,
     vault_dir: &vault::vault_dir::VaultDir,
 ) -> Result<recover::Opened, Box<dyn Error>> {
-    let typed = terminal.read_public_line(signals, recover::CODE_PROMPT)?;
+    let typed = terminal.read_public_line(signals, recover::CODE_PROMPT, None)?;
     let code = recovery::RecoveryCode::parse(&typed).map_err(recover::RecoverError::Code)?;
     drop(typed);
     Ok(recover::open_backup(vault_dir, &code)?)
@@ -470,7 +476,7 @@ fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn E
 
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
-    let typed = terminal.read_public_line(&signals, rm::CONFIRM_PROMPT)?;
+    let typed = terminal.read_public_line(&signals, rm::CONFIRM_PROMPT, None)?;
     drop(terminal);
     if typed.as_str() != name.as_str() {
         return Err(rm::RmError::NotConfirmed.into());

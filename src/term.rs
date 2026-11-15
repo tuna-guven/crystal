@@ -321,6 +321,53 @@ pub enum Event {
     Timeout,
 }
 
+/// The longest single wait for input. The wait's timeout runs on the
+/// monotonic clock, which stops while the computer sleeps; after a wake,
+/// a time limit is checked again at most this late (decision 0050).
+pub const WAKE_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Time since the last key or paste, on two clocks (decision 0050), for
+/// auto-lock.
+pub struct Idle {
+    monotonic: std::time::Instant,
+    wall: std::time::SystemTime,
+}
+
+impl Idle {
+    /// Starts counting now.
+    pub fn start() -> Self {
+        Self {
+            monotonic: std::time::Instant::now(),
+            wall: std::time::SystemTime::now(),
+        }
+    }
+
+    /// How long since `start`.
+    pub fn elapsed(&self) -> std::time::Duration {
+        idle_time(self.monotonic.elapsed(), self.wall.elapsed().ok())
+    }
+}
+
+/// The idle time: the longer of the two clocks. The monotonic clock stops
+/// while the computer sleeps; the wall clock does not, so sleep counts.
+/// The wall clock can be set back (`None` once it is behind the last
+/// input), but the monotonic clock still counts then, so changing the
+/// time cannot delay a lock; setting it forward only locks sooner.
+fn idle_time(
+    monotonic: std::time::Duration,
+    wall: Option<std::time::Duration>,
+) -> std::time::Duration {
+    wall.map_or(monotonic, |wall| wall.max(monotonic))
+}
+
+/// A wait's timeout for `poll`.
+fn timespec(t: std::time::Duration) -> rustix::event::Timespec {
+    rustix::event::Timespec {
+        tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),
+        tv_nsec: i64::from(t.subsec_nanos()),
+    }
+}
+
 /// Used when the terminal reports a size of zero (some serial consoles
 /// and fresh ptys), so layout never divides an empty area.
 const FALLBACK_SIZE: (u16, u16) = (80, 24);
@@ -339,10 +386,7 @@ impl TerminalGuard {
         keys: &mut [u8],
         timeout: Option<std::time::Duration>,
     ) -> Result<Event, TermError> {
-        let timeout = timeout.map(|t| rustix::event::Timespec {
-            tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),
-            tv_nsec: i64::from(t.subsec_nanos()),
-        });
+        let timeout = timeout.map(timespec);
         loop {
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
@@ -453,6 +497,8 @@ pub enum PromptError {
     TooShort,
     /// The terminal went away (hangup or end of input).
     Closed,
+    /// No key within the prompt's limit (the `restore` question).
+    TimedOut,
     Flush(Errno),
     Poll(Errno),
     Read(ErrorKind),
@@ -472,6 +518,11 @@ impl fmt::Display for PromptError {
                  (Crystal recommends 8 or more random words)"
             ),
             Self::Closed => write!(f, "the terminal closed during passphrase entry"),
+            Self::TimedOut => write!(
+                f,
+                "no answer in time: Crystal quit, wiping the vault from memory; nothing was \
+                 changed"
+            ),
             Self::Flush(errno) => write!(f, "cannot discard earlier input ({errno})"),
             Self::Poll(errno) => write!(f, "cannot wait for input ({errno})"),
             Self::Read(kind) => write!(f, "cannot read the terminal ({kind})"),
@@ -599,19 +650,34 @@ impl TerminalGuard {
 
     /// Waits for keys, a resize or an exit signal and reads up to
     /// `chunk.len()` keys into `chunk`. `None` is a resize. An exit signal
-    /// cancels; a closed terminal is `Closed`.
+    /// cancels; a closed terminal is `Closed`. With a `limit`, once the
+    /// time since the last key reaches it, `TimedOut`; each wait lasts at
+    /// most `WAKE_CHECK`, so sleep counts (decision 0050).
     fn next_keys(
         &mut self,
         signals: &Signals,
         chunk: &mut [u8],
+        limit: Option<(&Idle, std::time::Duration)>,
     ) -> Result<Option<usize>, PromptError> {
         loop {
+            let timeout = match limit {
+                None => None,
+                Some((idle, limit)) => {
+                    let left = limit.saturating_sub(idle.elapsed());
+                    if left.is_zero() {
+                        return Err(PromptError::TimedOut);
+                    }
+                    Some(timespec(left.min(WAKE_CHECK)))
+                }
+            };
             let mut fds = [
                 PollFd::new(&self.tty, PollFlags::IN),
                 PollFd::new(&signals.exit, PollFlags::IN),
                 PollFd::new(&signals.resize, PollFlags::IN),
             ];
-            match poll(&mut fds, None) {
+            match poll(&mut fds, timeout.as_ref()) {
+                // The wait ran out: check the limit again.
+                Ok(0) => continue,
                 Ok(_) => {}
                 Err(Errno::INTR) => continue,
                 Err(errno) => return Err(PromptError::Poll(errno)),
@@ -651,7 +717,7 @@ impl TerminalGuard {
     ) -> Result<LineEditor, PromptError> {
         let mut chunk = Zeroizing::new([0u8; 64]);
         loop {
-            let Some(n) = self.next_keys(signals, &mut chunk[..])? else {
+            let Some(n) = self.next_keys(signals, &mut chunk[..], None)? else {
                 continue;
             };
             for &byte in &chunk[..n] {
@@ -674,22 +740,30 @@ impl TerminalGuard {
     /// it also reads the recovery code, typed back at `crystal init` and
     /// given to `crystal recover`, which is shown as typed so typos can be
     /// seen.
+    ///
+    /// `limit`: with no key for this long, `TimedOut`. The `restore`
+    /// question passes `AUTO_LOCK`, since the decrypted vault waits
+    /// behind it (decision 0048); a resize does not count as a key.
     pub fn read_public_line(
         &mut self,
         signals: &Signals,
         prompt: &str,
+        limit: Option<std::time::Duration>,
     ) -> Result<Zeroizing<String>, PromptError> {
         tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
         self.show(prompt.as_bytes())?;
         let mut line = PublicLine::default();
         let mut chunk = Zeroizing::new([0u8; PUBLIC_CHUNK]);
         let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
+        let mut last_key = Idle::start();
         let result = loop {
             // A resize leaves the public line as it is: what was typed is
             // on the screen and stays there.
-            let Some(n) = self.next_keys(signals, &mut chunk[..])? else {
+            let waiting = limit.map(|limit| (&last_key, limit));
+            let Some(n) = self.next_keys(signals, &mut chunk[..], waiting)? else {
                 continue;
             };
+            last_key = Idle::start();
             let mut done = None;
             for &byte in &chunk[..n] {
                 match line.feed(byte, &mut echo) {
@@ -778,6 +852,20 @@ impl PublicLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decision 0050: sleep counts (the wall clock ran on), and a clock set
+    /// back cannot delay a lock (the monotonic clock still counts).
+    #[test]
+    fn idle_time_is_the_longer_clock() {
+        let min = |m: u64| std::time::Duration::from_secs(m * 60);
+        // Slept 10 hours after 1 minute idle: locked at once on wake.
+        assert_eq!(idle_time(min(1), Some(min(600))), min(600));
+        // The clock was set back behind the last key.
+        assert_eq!(idle_time(min(4), None), min(4));
+        // The clock was set back, but not behind the last key.
+        assert_eq!(idle_time(min(4), Some(min(1))), min(4));
+        assert!(idle_time(min(1), Some(min(600))) >= crate::app::AUTO_LOCK);
+    }
 
     fn public(keys: &[u8]) -> (String, Vec<u8>, Vec<Feed>) {
         let mut line = PublicLine::default();

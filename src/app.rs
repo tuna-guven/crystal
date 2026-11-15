@@ -12,7 +12,7 @@
 //! wiped on the way out.
 
 use std::error::Error;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 use zeroize::Zeroizing;
 
@@ -26,7 +26,7 @@ use crate::pager::{Pager, PagerAction};
 use crate::session::{Change, SaveError, Session};
 use crate::shell::keys::Key;
 use crate::shell::{self, ERROR_STYLE, Shell};
-use crate::term::{Event, Signals, TerminalGuard};
+use crate::term::{Event, Idle, Signals, TerminalGuard, WAKE_CHECK};
 use crate::ui::clipboard::Clipboard;
 use crate::ui::grid::Style;
 use crate::ui::screen::Screen;
@@ -35,39 +35,6 @@ const COPIED: &str = "Copied inside Crystal; it never leaves it.";
 
 /// Auto-lock after this long without a key or paste, fixed (decision 0048).
 pub const AUTO_LOCK: Duration = Duration::from_secs(5 * 60);
-
-/// The longest single wait for input. The wait's timeout runs on the
-/// monotonic clock, which stops while the computer sleeps; after a wake,
-/// auto-lock is checked again at most this late (decision 0050).
-const WAKE_CHECK: Duration = Duration::from_secs(5);
-
-/// When the last key or paste came, on two clocks (decision 0050).
-struct LastInput {
-    monotonic: Instant,
-    wall: SystemTime,
-}
-
-impl LastInput {
-    fn now() -> Self {
-        Self {
-            monotonic: Instant::now(),
-            wall: SystemTime::now(),
-        }
-    }
-
-    fn elapsed(&self) -> Duration {
-        idle_time(self.monotonic.elapsed(), self.wall.elapsed().ok())
-    }
-}
-
-/// The idle time: the longer of the two clocks. The monotonic clock stops
-/// while the computer sleeps; the wall clock does not, so sleep counts.
-/// The wall clock can be set back (`None` once it is behind the last
-/// input), but the monotonic clock still counts then, so changing the
-/// time cannot delay a lock; setting it forward only locks sooner.
-fn idle_time(monotonic: Duration, wall: Option<Duration>) -> Duration {
-    wall.map_or(monotonic, |wall| wall.max(monotonic))
-}
 
 /// What has the screen.
 enum Mode {
@@ -282,7 +249,7 @@ fn run_loop(
     let mut question: Option<Question> = None;
     // The last key or paste; a resize does not count. Sleep counts, and a
     // changed system time cannot delay auto-lock (decision 0050).
-    let mut last_input = LastInput::now();
+    let mut last_input = Idle::start();
     // A SIGTSTP sent during the passphrase prompt was not acted on there.
     signals.forget_suspend();
     loop {
@@ -319,7 +286,7 @@ fn run_loop(
             }
             Event::Timeout => {}
             Event::Keys(n) => {
-                last_input = LastInput::now();
+                last_input = Idle::start();
                 decoder.feed(&input[..n], &mut keys);
                 for key in keys.drain(..) {
                     match &mut mode {
@@ -697,19 +664,5 @@ mod tests {
         for no in [Other, Word("n"), Word("y"), Word("text")] {
             assert!(matches!(reply(kind(), no), Reply::Declined("Not created.")));
         }
-    }
-
-    /// Decision 0050: sleep counts (the wall clock ran on), and a clock set
-    /// back cannot delay a lock (the monotonic clock still counts).
-    #[test]
-    fn idle_time_is_the_longer_clock() {
-        let min = |m: u64| Duration::from_secs(m * 60);
-        // Slept 10 hours after 1 minute idle: locked at once on wake.
-        assert_eq!(idle_time(min(1), Some(min(600))), min(600));
-        // The clock was set back behind the last key.
-        assert_eq!(idle_time(min(4), None), min(4));
-        // The clock was set back, but not behind the last key.
-        assert_eq!(idle_time(min(4), Some(min(1))), min(4));
-        assert!(idle_time(min(1), Some(min(600))) >= AUTO_LOCK);
     }
 }
