@@ -17,6 +17,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto::fill_random;
 
+pub mod lines;
 pub mod name;
 
 /// Fails the build if `$ty` implements any of the listed traits; each

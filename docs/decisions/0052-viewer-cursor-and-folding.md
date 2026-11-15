@@ -3,7 +3,9 @@
 - **Date:** 2026-11-14 (after Phase 5)
 - **Status:** Accepted. The cursor's dark-gray line highlight is
   replaced by a `>` in a gutter with line numbers
-  ([0053](0053-viewer-gutter-and-line-copy.md)).
+  ([0053](0053-viewer-gutter-and-line-copy.md)); j/k and the arrows move
+  by numbered line, not by row
+  ([0055](0055-line-numbers-and-narrow-tables.md)).
 
 ## Context
 

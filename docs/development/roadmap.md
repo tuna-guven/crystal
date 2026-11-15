@@ -25,6 +25,21 @@ suspended.
 `edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes).
 
+## Steps V1 to V5 (viewer and editor line fixes)
+
+Proposed 2026-11-15, after the user reported five bugs. Clicks moving the
+cursor (and the orange cursor highlight that went with them) are skipped
+for now: mouse capture costs about 250 lines with no security benefit
+(0052's reasons still hold).
+
+| Step | What | Why |
+| --- | --- | --- |
+| V1 (done) | Tables narrower than the screen stay boxed: columns that fit their share keep their width, the rest share what is left; each cell wraps inside its column, a table row is as tall as its tallest cell, shorter cells padded; the row's number on its first screen row only. Unboxed only when a column would get fewer than 3 characters. About 120 lines in `md/render.rs`, tests, escape goldens | A narrowed window broke tables into unboxed text |
+| V2 (done) | Line numbers count written lines only: a blank (or whitespace-only) line gets no number and is not counted, so numbers run 1, 2, 3; one counting function used by the viewer and (V4) the editor; `y` still copies the right line. About 15 lines | Numbers jumped (1, 3, 5) over blank lines |
+| V3 (done) | j/k and Up/Down move to the next or previous row that has a number (skipping wrapped rows, blank rows and table borders); the screen shows the whole line when it fits. The mouse wheel follows, since the terminal turns it into arrows (no mouse capture). About 30 lines in `pager.rs` | The cursor stopped on rows without a line of their own |
+| V4 (done) | The editor gets the same gutter: numbers dim, right-aligned, none on blank lines or wrapped rows, dropped below 20 columns of text; the text area narrows by the gutter. About 50 lines in `editor/view.rs`, tests | The two views show the same numbers |
+| V5 (done) | Decision 0055 (partly replaces 0053's numbering and 0045's "no line numbers"; status lines updated), the viewer and editor chapters, setup guide, SUMMARY; fmt, clippy, test, deny, audit, mdbook; one commit | Book rule in CLAUDE.md |
+
 ## Steps R1 to R7 (Phase 5 review fixes)
 
 Approved 2026-11-14, after a security review of Phase 5.

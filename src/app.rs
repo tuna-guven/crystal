@@ -19,9 +19,9 @@ use zeroize::Zeroizing;
 use crate::commands::{self, Open};
 use crate::editor::view::View;
 use crate::editor::{Editor, EditorAction};
-use crate::model::NoteText;
+use crate::model::{NoteText, lines};
 use crate::notes::Notes;
-use crate::pager::{self, Pager, PagerAction};
+use crate::pager::{Pager, PagerAction};
 use crate::session::{Change, SaveError, Session};
 use crate::shell::keys::Key;
 use crate::shell::{self, ERROR_STYLE, Shell};
@@ -309,7 +309,7 @@ fn run_loop(
                             }
                             PagerAction::CopyLine(note, line) => {
                                 let text = session.notes().note(note).body.as_str();
-                                clipboard.set(pager::line_in(text, line));
+                                clipboard.set(lines::numbered(text, line));
                                 pager.tell(COPIED);
                             }
                         },
@@ -334,7 +334,7 @@ fn run_loop(
                                         };
                                         clipboard.set(match action {
                                             PagerAction::CopyLine(_, line) => {
-                                                pager::line_in(text, line)
+                                                lines::numbered(text, line)
                                             }
                                             _ => text,
                                         });

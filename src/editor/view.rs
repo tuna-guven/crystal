@@ -12,6 +12,16 @@
 //! The terminal's own cursor stays hidden; the cursor is a reversed,
 //! underlined cell, and the selection is reversed.
 //!
+//! A gutter left of the text shows the line numbers the viewer shows
+//! (`model::lines`, decision 0055): dim, right-aligned, on the first row
+//! of each line with text; none on blank lines or wrapped rows. It is as
+//! wide as the last number, and left out if fewer than `MIN_TEXT` columns
+//! would stay for the text. Its width and first number cost a pass over
+//! the text and one over the text above the screen per frame: under 1 ms
+//! for 8 MiB of long lines, about 18 ms each for 8 MiB of the shortest
+//! (measured in a release build). Accepted, as above: real notes are far
+//! smaller, and a kept count would need keeping in step with every edit.
+//!
 //! Scrolling works from the first row shown, so a key costs the rows on
 //! screen and the logical line around the cursor, not the whole note. The
 //! cursor's line is walked from its start on every key: linear in that
@@ -25,6 +35,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
+use crate::model::lines;
 use crate::ui::grid::{Color, Grid, Mods, Style, grapheme_width, hides_something, is_forbidden};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
@@ -37,6 +48,9 @@ const CURSOR: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::UNDERLINED));
 const HINTS: &str = "Ctrl+S save · Ctrl+Q close · Ctrl+E view · Ctrl+C/X/V copy, cut, \
                      paste · Ctrl+Z/Y undo, redo";
 const TAB_STOP: usize = 4;
+/// Line numbers are shown only if this many columns stay for the text, as
+/// in the viewer.
+const MIN_TEXT: u16 = 20;
 /// `<U+`, up to 6 hex digits, `>`.
 const ESCAPE_LEN: usize = 10;
 
@@ -196,13 +210,33 @@ impl View {
         }
 
         let text = editor.text();
-        let width = usize::from(body.width - 1);
+        // The gutter: the last number's digits and a space.
+        let digits = lines::count(text).max(1).ilog10() + 1;
+        let gutter = u16::try_from(digits).unwrap_or(u16::MAX).saturating_add(1);
+        let gutter = if body.width >= gutter.saturating_add(MIN_TEXT) {
+            gutter
+        } else {
+            0
+        };
+        let area = Rect::new(body.x + gutter, body.y, body.width - gutter, body.height);
+        let width = usize::from(area.width - 1);
         self.scroll(text, editor.cursor(), width, rows);
+        // The numbers given before the first row shown.
+        let mut number = lines::count(&text[..line_start(text, self.top)]);
         let mut start = Some(self.top);
-        for y in body.y..body.bottom() {
+        for y in area.y..area.bottom() {
             let Some(row_start) = start else { break };
             let row = row_at(text, row_start, width);
-            draw_row(grid, Rect::new(body.x, y, body.width, 1), editor, &row);
+            let starts_line = row_start == 0 || text.as_bytes()[row_start - 1] == b'\n';
+            let line = text[row_start..].split_inclusive('\n').next().unwrap_or("");
+            if starts_line && !lines::is_blank(line) {
+                number += 1;
+                if gutter > 0 {
+                    let shown = format!("{number:>width$}", width = gutter as usize - 1);
+                    grid.put_str(body.x, y, &shown, HINT, gutter - 1);
+                }
+            }
+            draw_row(grid, Rect::new(area.x, y, area.width, 1), editor, &row);
             start = row.next;
         }
     }
@@ -376,6 +410,42 @@ mod tests {
         grid
     }
 
+    /// The gutter: the viewer's numbers (blank lines neither numbered nor
+    /// counted), right-aligned to the last one, none on a wrapped row;
+    /// counted on from the text above when scrolled; left out when fewer
+    /// than `MIN_TEXT` columns would stay for the text.
+    #[test]
+    fn gutter_shows_line_numbers() {
+        let words = "word ".repeat(6);
+        let text = format!("# T\n\n  \n{words}\n{}", "x\n".repeat(8));
+        let mut ed = Editor::new(&text).unwrap();
+        let mut view = View::default();
+        let shown = rows(&drawn(&mut ed, &mut view, 24, 8));
+        assert_eq!(
+            shown[1..7],
+            [
+                " 1 # T",
+                "",
+                "",
+                " 2 word word word word",
+                "   word word",
+                " 3 x"
+            ]
+        );
+        // The cursor at the end: the screen shows the last rows, and their
+        // numbers go on from the lines above it.
+        let mut clip = Clipboard::default();
+        for _ in 0..20 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let shown = rows(&drawn(&mut ed, &mut view, 24, 8));
+        assert_eq!(shown[1..7], [" 6 x", " 7 x", " 8 x", " 9 x", "10 x", ""]);
+        // 21 columns leave 18 for the text with the gutter: none.
+        let mut ed = Editor::new(&text).unwrap();
+        let shown = rows(&drawn(&mut ed, &mut View::default(), 21, 4));
+        assert_eq!(shown[1], "# T");
+    }
+
     #[test]
     fn wraps_by_grapheme_and_expands_tabs() {
         let mut ed = Editor::new("abcdef\n\tx\n日本語").unwrap();
@@ -392,8 +462,8 @@ mod tests {
     fn hidden_characters_are_spelled_out_dimmed() {
         let mut ed = Editor::new("a\u{202e}b\u{1b}[2J\u{200b}").unwrap();
         let grid = drawn(&mut ed, &mut View::default(), 40, 3);
-        assert_eq!(rows(&grid)[1], "a<U+202E>b<U+001B>[2J<U+200B>");
-        let dimmed = grid.cell(2, 1).unwrap().style().mods;
+        assert_eq!(rows(&grid)[1], "1 a<U+202E>b<U+001B>[2J<U+200B>");
+        let dimmed = grid.cell(4, 1).unwrap().style().mods;
         assert!(dimmed.contains(Mods::DIM));
     }
 
@@ -404,7 +474,8 @@ mod tests {
         let shown = |text: &str| {
             let mut ed = Editor::new(text).unwrap();
             let grid = drawn(&mut ed, &mut View::default(), 80, 3);
-            rows(&grid)[1].clone()
+            // After the gutter's `1 `.
+            rows(&grid)[1].strip_prefix("1 ").unwrap().to_owned()
         };
         // A tag character, a variation selector, a joiner after a letter,
         // the combining grapheme joiner, a trailing joiner after an emoji.
@@ -518,8 +589,9 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        // 79 characters a row (one column is kept for the cursor).
-        let column = u16::try_from(256 * 1024 % 79).unwrap();
+        // 77 characters a row: the gutter's `1 `, then one column kept
+        // for the cursor.
+        let column = u16::try_from(2 + 256 * 1024 % 77).unwrap();
         assert_eq!(
             cursor_cell(&grid),
             Some((column, 50)),

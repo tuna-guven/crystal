@@ -69,6 +69,7 @@
   - [0052 The viewer has a keyboard cursor and folds sections](decisions/0052-viewer-cursor-and-folding.md)
   - [0053 The viewer has a gutter with the note's line numbers; y copies a line](decisions/0053-viewer-gutter-and-line-copy.md)
   - [0054 Web and mail links are clickable (OSC 8), without their address](decisions/0054-clickable-links.md)
+  - [0055 Lines with text are numbered in the viewer and the editor; j/k go by line; narrow tables stay boxed](decisions/0055-line-numbers-and-narrow-tables.md)
 
 # Development
 

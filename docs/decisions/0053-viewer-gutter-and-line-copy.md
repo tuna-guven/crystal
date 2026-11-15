@@ -1,7 +1,9 @@
 # 0053 The viewer has a gutter with the note's line numbers; y copies a line
 
 - **Date:** 2026-11-15 (after Phase 5)
-- **Status:** Accepted.
+- **Status:** Accepted. The numbering is replaced: only lines with text
+  are numbered, in the viewer and the editor alike, and j/k move by
+  numbered line ([0055](0055-line-numbers-and-narrow-tables.md)).
 
 ## Context
 
