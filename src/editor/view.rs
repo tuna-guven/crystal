@@ -1,4 +1,4 @@
-//! The editor's screen (docs/decisions/0045-simple-editor.md): the note's
+//! The editor's screen (decision 0045): the note's
 //! name on the top row, the text below, a key line at the bottom.
 //!
 //! The text is drawn as written, never rendered. It wraps by grapheme: a
@@ -7,7 +7,7 @@
 //! advances to the next multiple of 4 columns. A control or BiDi character,
 //! a grapheme of no width, or one that carries an invisible character
 //! (`hides_something`) is drawn spelled out as a dimmed `<U+XXXX>`
-//! (docs/decisions/0037-visible-escapes.md): nothing hidden reaches the
+//! (decision 0037): nothing hidden reaches the
 //! terminal or disguises the text, and every cursor position is visible.
 //! The terminal's own cursor stays hidden; the cursor is a reversed,
 //! underlined cell, and the selection is reversed.

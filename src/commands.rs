@@ -1,7 +1,7 @@
-//! The shell's vault commands (docs/decisions/0033-shell.md): `ls`,
+//! The shell's vault commands (decision 0033): `ls`,
 //! `tags`, `find`, `search`, `links`, and the ones that leave the shell:
 //! `view` (the pager), `edit` and `new` (the editor,
-//! docs/decisions/0045-simple-editor.md). Each writes its answer into the
+//! decision 0045). Each writes its answer into the
 //! shell's scrollback, which sanitizes it; every line holding note text is
 //! built in a zeroizing buffer of its final size.
 

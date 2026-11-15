@@ -264,7 +264,7 @@ fn scrypt_log_n(file: &Path) -> u8 {
     stanza.split(' ').nth(3).unwrap().parse().unwrap()
 }
 
-/// docs/decisions/0027-scrypt-fixed.md: every passphrase file is written
+/// decision 0027: every passphrase file is written
 /// at log N 18, whatever this device's memlock limit or speed, so every
 /// device at the floor opens it.
 #[test]

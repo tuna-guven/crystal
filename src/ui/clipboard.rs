@@ -1,7 +1,7 @@
-//! Crystal's own clipboard (docs/decisions/0041-internal-clipboard-only.md):
+//! Crystal's own clipboard (decision 0041):
 //! `y` in the pager copies the note into zeroizing memory that never
 //! leaves Crystal; the editor's Ctrl+C and Ctrl+X copy into it and Ctrl+V
-//! pastes from it (docs/decisions/0045-simple-editor.md). It is wiped on
+//! pastes from it (decision 0045). It is wiped on
 //! quit, and on lock once that exists (Phase 5).
 //!
 //! Crystal never writes to the system clipboard: copying to other

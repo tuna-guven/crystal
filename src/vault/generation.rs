@@ -5,7 +5,7 @@
 //! Each file is a decimal number and a newline, written through the atomic
 //! writer (`PublicBytes::generation`). It is plaintext by design; a process
 //! running as you can lower it, which the threat model accepts (A5,
-//! docs/decisions/0019-generation-counters.md). A malformed file fails
+//! decision 0019). A malformed file fails
 //! closed: Crystal never resets a counter it cannot read.
 
 use std::fmt;
@@ -150,7 +150,7 @@ pub fn remove(state: &OwnedFd, counter: Counter) -> Result<(), rustix::io::Errno
 
 /// An opened vault is older than the newest one this device has seen:
 /// restored from a backup, or put back by someone else. Only the user can
-/// tell (docs/decisions/0036-backups-external.md).
+/// tell (decision 0036).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Older {
     pub seen: u64,

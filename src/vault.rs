@@ -29,7 +29,7 @@ pub(crate) const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::CLOEXEC);
 
 /// A vault name: the directory name under ~/.local/share/crystal
-/// (docs/decisions/0032-fixed-locations.md). 1 to 64 characters
+/// (decision 0032). 1 to 64 characters
 /// from `A-Z a-z 0-9 - _`, starting with a letter or digit, and not a
 /// command word. No `/`, `..`, hidden names or option look-alikes can
 /// exist as a value.
@@ -212,7 +212,7 @@ impl StateDir {
 }
 
 /// ~/.local/share/crystal: every vault, one directory each
-/// (docs/decisions/0032-fixed-locations.md). Must be ours and mode 0700,
+/// (decision 0032). Must be ours and mode 0700,
 /// and reached without a symlink. A normal run only opens it, so a
 /// mistyped command creates nothing; only `crystal init` creates it.
 pub struct DataDir {

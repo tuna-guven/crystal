@@ -36,7 +36,7 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
 }
 
 /// The fewest characters a new passphrase may have
-/// (docs/decisions/0028-passphrase-minimum.md). With scrypt at log N 18,
+/// (decision 0028). With scrypt at log N 18,
 /// this is what keeps offline guessing of a copied `identity.age` out of
 /// reach.
 pub const MIN_NEW_PASSPHRASE_CHARS: usize = 20;
@@ -62,7 +62,7 @@ const TEST_SCRYPT_LOG_N: u8 = 10;
 /// needs 1 TiB); `policy_for` caps decryption far below it.
 const MAX_SCRYPT_LOG_N: u8 = 30;
 
-/// scrypt work factors for this run (docs/decisions/0027-scrypt-fixed.md).
+/// scrypt work factors for this run (decision 0027).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ScryptPolicy {
     /// log2 N for new passphrase files.
@@ -95,7 +95,7 @@ fn fitting_log_n(memlock: Option<u64>) -> u8 {
 /// largest whose memory fits in half of `harden::MEMLOCK_FLOOR` (256 MiB),
 /// so any device that starts Crystal can open it. Fixed, not timed:
 /// `identity.age` is synced, and a factor picked by a faster or larger
-/// machine could be refused elsewhere (docs/decisions/0027-scrypt-fixed.md).
+/// machine could be refused elsewhere (decision 0027).
 const ENCRYPT_LOG_N: u8 = 18;
 
 /// The scrypt policy for a run with memlock hard limit `memlock`.
@@ -263,7 +263,7 @@ assert_not_impl!(VaultIdentity: fmt::Debug, fmt::Display, serde::Serialize, Clon
 
 /// The vault's recipient (public key), kept for the session so each save
 /// can seal `vault.age` after the identity is wiped. Private data
-/// (docs/decisions/0044-vault-recipient-private.md): no Debug, Display,
+/// (decision 0044): no Debug, Display,
 /// Clone or Serialize, so it cannot reach a message, a log or a file. The
 /// key never leaves this type: the only thing it does is encrypt. Wiped on
 /// drop (best effort, like every wiped value: a move may leave a copy).

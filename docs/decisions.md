@@ -1,0 +1,591 @@
+# Decision log
+
+Every decision that matters for Crystal's security, design or ease of use
+gets one paragraph here: cryptography, file formats, sandboxing,
+hardening, dependencies, Linux integration, the threat model, the build
+and release process. Implementation details do not. Each entry says what
+Crystal does today and, briefly, why. Entries are numbered in the order
+the decisions were made. A decision that is replaced entirely is deleted;
+one that is replaced in part is cut to what still holds and names the
+entry that replaced the rest. Git history keeps the old text; numbers are
+never reused, so gaps are expected.
+
+To add one: take the next number, add an entry at the end, and update
+the design chapter it affects in the same commit.
+
+## 0001 One encrypted vault blob {#0001}
+
+*2026-10-11.* The whole vault (every note's folder, title, timestamps and
+body) is one postcard-encoded, Padmé-padded, age-encrypted file,
+`vault.age` ([Storage](design/storage.md)). Storage and sync traffic show
+neither the note count, nor their sizes, nor which note changed, only the
+padded size bucket and the save time, and one age stream authenticates
+every note at once, so single notes cannot be swapped, injected or
+removed. Per-note files leak exactly that metadata, and an encrypted
+filesystem with an external editor leaves plaintext in the page cache and
+in swap and temp files. The cost: every save re-encrypts the whole vault
+(milliseconds), all notes sit decrypted in locked memory while unlocked,
+and a sync conflict is refused, never merged ([0045](#0045)).
+
+## 0003 X25519 vault recipient until rage has hybrid post-quantum {#0003}
+
+*2026-11-06.* The vault's recipient stays X25519, so a copy of today's
+ciphertext is not protected against a future quantum computer ("harvest
+now, decrypt later"). When rage ships a native hybrid ML-KEM-768 + X25519
+recipient, Crystal ports it into its own age code ([0042](#0042)) from the
+age specification, with an approved ML-KEM implementation, and re-encrypts
+the vault on the next save. Rejected for now: age's `tagpq` (decryption
+needs a hardware tag through a plugin, and it pulled in a crate with a
+timing advisory), unaudited third-party crates, and plugins (they need
+`execve`, which the sandbox denies after unlock). Recorded in
+[Storage, Open questions](design/storage.md#open-questions).
+
+## 0004 Two identity files {#0004}
+
+*2026-11-06.* The vault is encrypted to a random X25519 vault identity,
+which is stored twice: `identity.age`, sealed to the passphrase, and
+`identity.backup.age`, sealed to the recovery code ([0029](#0029)). age
+allows a scrypt stanza only as the sole recipient of a file, so one file
+cannot serve both, and encrypting `vault.age` to a second secret would
+tie every save to it. Changing the passphrase rewrites only
+`identity.age` ([Storage, Key design](design/storage.md#key-design)).
+
+## 0006 Per-user install in ~/.local/bin {#0006}
+
+*2026-11-06.* Crystal installs to `~/.local/bin/crystal` without root,
+since secureblue's image is read-only and a system-wide install would need
+root for every update. `chattr +i` (root once per update, after restoring
+the SELinux label) can make the file immutable. Crystal does not check its
+own hash at startup: a replaced binary would skip the check. Same-user
+malware (A5) can replace or shadow a mutable binary and ask for the
+passphrase ([Installation](guide/installation.md)).
+
+## 0007 Fail closed on inherited file descriptors {#0007}
+
+*2026-11-06.* At startup step 2, before opening anything of its own,
+Crystal lists `/proc/self/fd` and refuses to start if any descriptor above
+2 is open. Landlock does not restrict descriptors opened before it,
+seccomp allows `read` and `write`, and closing a descriptor Crystal does
+not own would need `unsafe`. Launchers that leak descriptors must be fixed
+or wrapped; CI closes them before `cargo test` rather than weakening the
+check ([Startup](design/startup.md)).
+
+## 0009 Signals through self-pipes, no threads {#0009}
+
+*2026-11-06.* Every catchable signal whose default action ends the
+process, and `SIGTSTP`, gets a handler (signal-hook's `low_level::pipe`)
+that writes one byte to a non-blocking self-pipe; the main loop polls the
+pipes with the tty and leaves through the normal exit path, so the
+terminal is restored and memory zeroized. signal-hook's iterator and
+channel modules need a `socketpair` or a thread, both denied, and
+restoring the terminal inside a handler is not async-signal-safe. Crystal
+stays single-threaded. Faults, `SIGKILL` and the libc-reserved real-time
+signals stay uncaught ([Leakage, Exits that skip
+cleanup](design/leakage.md#exits-that-skip-cleanup)); none of them writes
+plaintext to disk.
+
+## 0010 Landlock ABI 9 required, no fallback {#0010}
+
+*2026-11-06.* The Landlock ruleset is built with the `landlock` crate in
+hard-requirement mode. Below ABI 9 (whose `RESOLVE_UNIX` blocks pathname
+UNIX sockets such as D-Bus and Wayland), or without Landlock, Crystal
+refuses to start and names the running and the required ABI. There is no
+best-effort mode, which would run a partial sandbox without saying so, no
+override flag, and no raw Landlock syscall (it would need `unsafe`).
+Crystal therefore needs a recent kernel, and CI a runner with ABI 9
+([Sandboxing, 5.4](design/sandboxing.md#54-fallback-policy)).
+
+## 0011 Atomic writer: same-directory temp, renameat2, crash sweep {#0011}
+
+*2026-11-06.* `vault::atomic_write` is the only way Crystal writes a file.
+It removes `.<name>.tmp-<hex>` files left by an earlier crash, creates a
+new one with 16 random hex digits in the target's own directory
+(`O_EXCL`, `O_NOFOLLOW`, mode 0600), writes and `fsync`s it, `renameat2`s
+it over the target (the commit point; a symlink there is replaced, never
+followed) and `fsync`s the directory; on an error before the rename the
+temp file is unlinked. A crash leaves the old version or the new one,
+never a mix, and keeping the temp file in the same directory means
+Landlock's `REFER` right is never granted. Names are a validated
+`FileName`. Tests inject a failure at every step and `kill -9` a writer in
+a loop ([Storage, Save sequence](design/storage.md#save-sequence)).
+
+## 0012 Plaintext exceptions: VERSION, .gen and .pin {#0012}
+
+*2026-11-06.* `atomic_write` takes a `Payload`: `Ciphertext`, which only
+the `crypto` module can build, or `PublicBytes`, which only the encoders
+of three fixed public formats can build: `VERSION` ([0034](#0034)), the
+`*.gen` generation counters ([0019](#0019)) and the `NAME.pin` vault pins
+([0032](#0032)). No caller can pass arbitrary bytes, so plaintext on disk
+is limited to a format number, generation counts and vault ids, none of
+which reveals note content. `VERSION` must be readable before unlock, and
+encrypting the local counters would add nothing.
+
+## 0013 Vault identity in a Box, not SecretBox {#0013}
+
+*2026-11-06.* The vault's secret key is held as
+`VaultIdentity(Box<x25519::Identity>)`: on the heap, wiped on drop by the
+key type itself (x25519-dalek's `zeroize` feature), with no Debug,
+Display, Clone or Serialize, checked at compile time. It is serialized
+only inside `crypto`, straight into an encryption call, and parsed only
+from a decrypted, zeroizing buffer. `secrecy::SecretBox` needs the type to
+implement `Zeroize`, and an empty impl to satisfy it would be misleading.
+Wiping relies on that dependency feature staying on; the zeroizing
+allocator is the backstop.
+
+## 0016 Passphrase prompt without echo or reallocation {#0016}
+
+*2026-11-06.* The passphrase is read from `/dev/tty` in raw mode on the
+alternate screen, with no echo, not even asterisks (they show the
+length), into one zeroizing 1024-byte buffer allocated once: longer input
+is refused, deleted bytes are zeroed at once, and on Enter the buffer
+itself becomes the `Passphrase`. Keys typed before the prompt appeared
+are discarded (`tcflush`), since the terminal already echoed them. Ctrl+C,
+Esc (so also any arrow key) or an exit signal cancels. A new passphrase is
+asked twice and compared in constant time. `rpassword` was rejected for
+giving less control over buffers and echo.
+
+## 0017 Documentation as an mdBook from docs/ {#0017}
+
+*2026-11-06.* `docs/` is the source of an mdBook (`book.toml` at the
+repository root, output in `target/book`): design chapters, user guide,
+reference and this log ([0056](#0056)). CI builds it on every push and
+publishes it to GitHub Pages from `main`, using only GitHub's own actions
+pinned by commit SHA and the official mdBook release binary pinned by
+version and SHA-256, since a third-party installer action would add a
+party to the supply chain. Every change that makes a decision updates the
+book in the same commit. `docs/DESIGN.md` maps the old design document's
+sections to chapters, for older issues.
+
+## 0019 Generation counters for rollback detection {#0019}
+
+*2026-11-06.* age authenticates `vault.age`, but an old copy is as
+authentic as the newest, so each vault carries a `generation`, +1 per
+save, and the never-synced state directory (`~/.local/state/crystal`, mode
+0700) keeps the last one seen in `<vault_id hex>.gen` (ASCII decimal and a
+newline, one valid spelling, [0012](#0012)). A lower generation is
+refused unless the user types `restore` ([0036](#0036)); equal or higher
+is accepted and stored; no counter means first use on this device and is
+reported. The counter is written after the rename commits, so a crash
+leaves it behind the file, never ahead, and a malformed counter is
+refused, never reset. Detection is per device, and a process running as
+the user (A5) can lower or delete a counter: accepted, since it could log
+the passphrase anyway.
+
+## 0022 init: check and ask first, create last, undo on failure {#0022}
+
+*2026-11-06.* `crystal init NAME` checks that the vault directory
+([0032](#0032)) does not exist, asks for the passphrase twice and has the
+recovery code ([0029](#0029)) typed back before it creates anything, so a
+cancelled prompt leaves nothing behind. It then writes `VERSION`, a new
+identity and random `vault_id`, `identity.age`, `identity.backup.age` and
+an empty `vault.age` at generation 1, each through the atomic writer,
+checks the result, and writes the pin and the counter. If a step fails,
+exactly what this run created is removed and the error says so; a
+directory that existed before is never removed.
+
+## 0023 Unlock: one prompt, fail closed, pinned vault id {#0023}
+
+*2026-11-06.* `crystal NAME` treats every input as untrusted. Before
+asking for anything it opens the vault directory ([0032](#0032)), reads
+`VERSION`, and refuses while a `vault.sync-conflict-*.age` copy sits
+beside `vault.age` (the user keeps one version, [0045](#0045)). After one
+passphrase prompt it opens `identity.age`, decrypts `vault.age`
+(authenticated as a whole), requires its `vault_id` to equal the pin, so
+a vault swapped in under the name is refused, and checks and updates the
+generation counter ([0019](#0019)). The passphrase is wiped once the
+identity is open, and only the vault's recipient outlives unlock
+([0045](#0045)). For startup tests, debug builds accept
+`--skip-unlock-for-test`; release builds do not have it.
+
+## 0026 Locked memory floor of 512 MiB {#0026}
+
+*2026-11-07.* Crystal raises the soft `RLIMIT_MEMLOCK` to the hard limit,
+refuses to start if that is below 512 MiB (no override), then calls
+`mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)`, keeping plaintext out
+of swap and hibernation images. Half the floor holds scrypt at log N 18
+([0027](#0027)), so every device that starts Crystal can open every
+vault. The floor is a fixed number, not derived from RAM, the limit or
+speed, because a synced vault must open everywhere. Locking only secret
+buffers would miss copies made by libraries. Most distributions default
+to 8 MiB, so users raise it once ([Setup, Memory
+locking](guide/setup.md#memory-locking-required)).
+
+## 0027 scrypt: one fixed work factor, log N 18 {#0027}
+
+*2026-11-07.* Passphrase files (`identity.age`, `identity.backup.age`) are
+written at log N 18 (256 MiB) on every device; nothing is timed.
+Decryption accepts up to log N 22 and never more than half this device's
+locked-memory limit, and refuses a higher factor before any scrypt work,
+so a planted file cannot stall or abort unlock. age's timed factor was
+dropped because a fast machine wrote files that smaller devices refused.
+Unit tests use log N 10; integration tests run the real binary at 18,
+with the scrypt crates optimized in debug builds; no binary can lower the
+factor. Guessing resistance comes from this factor plus the 20-character
+minimum ([0028](#0028)), about 0.5 s per file on a fast machine.
+
+## 0028 New passphrases: at least 20 characters {#0028}
+
+*2026-11-07.* `identity.age` travels wherever the vault is synced or
+backed up, where it can be guessed offline, so a new passphrase needs at
+least 20 Unicode characters (`crypto::MIN_NEW_PASSPHRASE_CHARS`). It is
+checked as soon as the first entry ends, in `init` and `recover`; a short
+one ends the command with a hint to use five or more random words, and
+nothing is created. An existing passphrase is never checked, so unlock is
+unaffected. Length is the only rule: composition rules push people
+toward patterns, and a strength estimator (zxcvbn) would be a dependency
+for a guess.
+
+## 0029 Recovery code instead of a backup recipient {#0029}
+
+*2026-11-08.* `crystal init` generates a recovery code: 27 random symbols
+(135 bits from `getrandom`) and one check symbol (Σ (2i + 1) · vᵢ mod 32,
+which catches every single wrong symbol and most swaps of neighbours) in
+Crockford's base32, shown once as 7 groups of 4 to be written on paper
+and typed back before anything is created. It is read leniently (any
+case, dashes and spaces, O as 0, I and L as 1), and `identity.backup.age`
+is scrypt-encrypted to it at log N 18. `crystal recover NAME` asks for the
+code (echoed), opens the backup and `vault.age` with it, then sets a new
+passphrase, rewriting `identity.age` only ([0032](#0032)). The code is
+typed only on the tty, kept in zeroizing buffers, and never appears in an
+error or log. Rejected: age backup recipients (they need another program,
+and Crystal alone must suffice), a second chosen passphrase (weak and
+forgettable), BIP-39 words (a 2048-word list in the binary), and a
+printed `AGE-SECRET-KEY` (74 characters, no typo check). Anyone holding
+the paper and a copy of the vault can open it.
+
+## 0031 Own screen grid and terminal backend, no ratatui {#0031}
+
+*2026-11-08.* Crystal already owns the terminal (raw mode, alternate
+screen, `ppoll` with the signal pipes, [0009](#0009)), and
+`ratatui-core` with `ratatui-widgets` brought 28 crates (proc macros,
+`unsafe`, a Zlib licence) for a cell grid, its diff and a few widgets, so
+there is no `ratatui` and no `crossterm`. `ui::grid` is one fixed
+allocation of cells (a grapheme of at most 16 bytes inline, its width,
+its style), wiped on reset and drop, written only through
+`Grid::put_str`, with writes outside it clipped, never a panic;
+`ui::frame` turns the difference of two grids into cursor moves and
+styles on the `/dev/tty` fd. 16 and 256 colors, bold, dim, italic,
+underline, reverse and crossed out; no blink, hidden text or RGB. Three
+small, exactly pinned crates instead: `unicode-width` (no `cjk` tables),
+`unicode-segmentation`, and `pulldown-cmark` without default features (no
+HTML writer; Crystal renders and sanitizes every span, [0037](#0037)).
+
+## 0032 Fixed locations, no config file, one `rm` {#0032}
+
+*2026-11-08.* Vaults live only in `~/.local/share/crystal/NAME`
+(`XDG_DATA_HOME` is not read), reached from `HOME` one component at a
+time with `O_NOFOLLOW`: `.local` and `share` must be the user's and not
+group- or world-writable, `crystal` and each vault the user's with mode
+0700. There is no encrypted config: it cost about 1,200 lines of path
+checks, the largest untrusted input besides the vault format.
+`~/.config/crystal` is reserved for a plain-text file Crystal would only
+read, not yet created. Each vault has its own passphrase.
+`~/.local/state/crystal/NAME.pin` holds the vault's `vault_id`, set at
+`init` or the first unlock on a device, so a vault swapped in under
+another name is refused. The first word may be a command: `crystal init
+NAME`, `crystal NAME`, `recover NAME`, `check-code NAME` (checks the
+recovery code, changes nothing), `rm NAME` and `help`; those words are
+reserved and cannot name a vault. `crystal rm NAME`, after the name is
+typed again, deletes the vault for good: Crystal's own files, conflict
+copies, temp leftovers, the directory, the pin and the counter; other
+files, and then the directory, are left alone. There is no trash.
+Deleting is allowed only there and in `init`'s undo, before the sandbox.
+
+## 0033 The Crystal shell {#0033}
+
+*2026-11-08.* `crystal NAME` unlocks and opens a command shell on the
+alternate screen, with the prompt `crystal:NAME>` following the output
+([0049](#0049)), in place of a multi-pane TUI. No one-shot command prints
+note content, so no note text reaches stdout, pipes, logs or the
+terminal's scrollback. The output (at most 10 000 entries) and the
+history (at most 200) live in zeroizing memory, wiped on quit and lock.
+Commands: `ls [FOLDER]`, `ls #TAG`, `tags`, `view`, `search`, `find`,
+`links` (broken links), `edit`, `new`, `mv` (rewriting links to the
+note), `rm` (asks for `y`; final), `help`, `clear`, `lock`, `quit`. A
+line splits on spaces, with double quotes and a backslash before a quote;
+no pipes, redirection, globbing, variables or substitution, and nothing
+ever runs outside Crystal. The input line is a fixed-size zeroizing
+buffer; Tab completes commands and names, Up and Down walk the history.
+
+## 0034 Vault format 2: folders as metadata, links and tags from the text {#0034}
+
+*2026-11-08.* The decrypted vault is postcard records,
+`format: u16 = 2 | vault_id: [u8; 32] | generation: u64 | notes`, each
+note `id: [u8; 16] | folder | title | created | modified | body`, pinned by
+a golden-bytes test. The format number is decoded alone first and an
+unknown one refused; the limits (100 000 notes, 8 MiB bodies, a 32 MiB
+padded vault, unique ids, no trailing bytes, folders of at most 32 levels
+and 1 KiB) and the name rules are checked by decode before any text is
+copied and by encode, so Crystal never writes a vault it would refuse.
+Folders exist only as prefixes of names (`folder/title`). Names follow
+Obsidian: segments of 1 to 255 bytes, no leading or trailing space, not
+`.` or `..`, none of `[ ] # ^ | \ / : * ? " < >`, no control, BiDi or
+invisible character ([0040](#0040)), unique ignoring case. Links
+(`[[name]]`, `|text`, `#Heading`, `#^block`) and `#tags` live in the text;
+the indexes are built in zeroizing memory at unlock and after every save,
+never stored, and `mv` rewrites links in the same save. `VERSION` (ASCII
+decimal and a newline, read before unlock from a regular file) is the
+newest format the directory may hold. Format 1 (no folder, a separate
+tags field) is still read, its tags appended to the body, and saved as
+format 2, `VERSION` first. Rejected: per-note files, a separate metadata
+file, a stored link table, CSV and self-describing encodings.
+
+## 0036 Backups with dedicated tools; restoring an older vault {#0036}
+
+*2026-11-08.* Crystal has no backup code: back up `~/.local/share/crystal`
+with restic, borg or any file-level tool ([Backups](design/backups.md));
+the atomic writer means a backup taken during a save holds a whole old
+or new `vault.age`, and the recovery code plus one backup restores
+everything. Every save is a fresh ciphertext, so deduplication stores
+each version in full; deterministic encryption would show which note
+changed. When a vault's generation is lower than this device's counter,
+unlock explains that it was restored or put back by someone else, and
+only typing `restore` accepts it and lowers the counter.
+
+## 0037 Hidden characters are spelled out, not replaced by U+FFFD {#0037}
+
+*2026-11-08.* `md::safe::sanitize` spells out every control character
+(C0 and C1, including ESC and a lone `\r`) and BiDi control as dimmed
+`<U+XXXX>`: plain ASCII, visible in every font, showing what was hidden. A
+tab becomes four spaces and `\r\n` becomes `\n`. Its output, `SafeText`
+(zeroizing, sized once, no Debug, Display, Clone or Serialize), is the
+only way note text reaches a widget. The grid and the frame writer draw
+`?` for anything still unsafe or unmeasurable (a grapheme wider than two
+columns or longer than 16 bytes). U+FFFD is missing from some fonts, and
+dropping characters silently would make a Trojan Source note look
+harmless.
+
+## 0038 Plain text notes: titles ending in `.txt` {#0038}
+
+*2026-11-08.* A note whose title ends in `.txt` (any case) is plain text;
+every other note is Markdown. The title is the only marker, so the vault
+format is unchanged and `mv` switches the kind. Plain text is shown as
+written, sanitized and wrapped, with no links or tags read from it, as in
+Obsidian; other notes can link to it as `[[todo.txt]]`. Other extensions
+are not plain text, so titles with a dot do not change kind by accident.
+
+## 0040 Invisible characters are not allowed in note names {#0040}
+
+*2026-11-09.* A title or folder segment may not hold zero-width space,
+word joiner, byte-order mark, soft hyphen or Mongolian vowel separator;
+they are refused like reserved characters when a vault is read and
+written. Two names that differ only by them would look the same in `ls`,
+completion and links. The zero-width joiner and non-joiner stay allowed,
+since emoji and scripts such as Persian need them. Confusable letters
+from different scripts remain possible.
+
+## 0041 Crystal's own clipboard only; copy out with the terminal's selection {#0041}
+
+*2026-11-09.* Crystal's clipboard is zeroizing, locked memory that never
+leaves the process: filled by `y` and `Y` in the viewer ([0053](#0053))
+and Ctrl+C or Ctrl+X in the editor ([0045](#0045)), pasted with Ctrl+V,
+wiped on quit and lock. Crystal never touches the system clipboard: OSC
+52 does nothing in VTE terminals and elsewhere hands note text to every
+program, and the Wayland or X11 protocol needs a socket through the
+sandbox, a library or an external program. To copy out, select with the
+mouse and use the terminal's copy key, which copies what is shown, with
+hidden characters spelled out. Text from other programs arrives as a
+bracketed paste, always text, never keys ([0047](#0047)). Crystal does
+not capture the mouse.
+
+## 0042 Crystal's own implementation of the age v1 format {#0042}
+
+*2026-11-09.* `src/age_v1/` implements age v1 itself, ported from age
+0.12.1 and age-core 0.12.0 under their MIT licence
+(`LICENSES/age-MIT.txt`) and trimmed to X25519 and scrypt recipients over
+whole buffers of at most 32 MiB; the parsers, Base64 and Bech32 are small
+own code following age's grammar. The `age` crate was 102 of 133 runtime
+crates, with build-time advisories, and its 0.12 line pulled in a crate
+with a timing advisory. The format is unchanged: files open with any age
+implementation, the recovery path of last resort. age remains Crystal's
+only encryption format, with no construction or KDF of its own and no
+shelling out to `age` or `rage`. Where age and the specification differ,
+Crystal follows the specification (legacy stanza encodings and Bech32
+with non-zero padding are refused; no grease stanza is written).
+Untrusted headers are limited to 64 KiB and 64 stanzas; the file key
+lives in a wiped box, derived keys in zeroizing buffers; randomness comes
+from `getrandom` (`crypto::fill_random`), which seccomp always allows.
+The primitives come from RustCrypto and dalek, exactly pinned
+([0051](#0051)). Every applicable C2SP/CCTV vector (92 of 147) passes and
+re-encodes byte for byte, with stored files ([0043](#0043)) and property
+tests. Plugins and hardware keys need a new decision.
+
+## 0043 Crystal's age code is checked against stored age files, not the age crate {#0043}
+
+*2026-11-09.* The `age` crate is gone, even as a dev-dependency (82 crates
+and their advisory exceptions). Before it went, it wrote
+`tests/corpus/age-rage/`: X25519 files to one and three keys with age's
+grease, at sizes around the 64 KiB chunk edges, and scrypt files as older
+Crystal wrote them, stored with their keys, passphrases and plaintext
+hashes, and never regenerated. Crystal opens every one and re-encodes its
+stanzas, header MAC and payload to age's bytes exactly; the integration
+tests use Crystal's own commands on the real binary's files. A one-off
+check with Go age v1.3.2 passed both ways ([Testing](development/testing.md))
+and is not repeated in CI.
+
+## 0044 The vault's recipient stays private: age does not authenticate the writer {#0044}
+
+*2026-11-09.* age gives integrity under the file key, not authenticity of
+the writer: anyone who knows a recipient can write a valid file to it. A
+storage or sync attacker (A1) cannot forge a vault only because the
+vault's recipient never leaves the device, and a forger would also need
+the encrypted `vault_id` to pass the pin. So the recipient is private
+data: Crystal never writes, shows, logs or passes it on, and keeps it
+only in memory, derived from the identity. Any feature that would expose
+it (a second recipient, hardware keys, export, sharing) needs a new
+decision on who may then write a vault. No signature of Crystal's own is
+added, since that would be a construction outside age ([0042](#0042)).
+
+## 0045 A simple modeless editor with common Ctrl keys {#0045}
+
+*2026-11-10.* `edit` and `new` open Crystal's own editor on its grid,
+because an external `$EDITOR` writes temp, swap and undo files in
+plaintext. It has one mode and the keys most editors share: arrows,
+Home, End, PgUp and PgDn move, with Shift they select, Ctrl+A selects all,
+Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste Crystal's clipboard, Ctrl+Z
+and Ctrl+Y undo and redo, Ctrl+S saves, Ctrl+E switches to the rendered
+view of the unsaved text and back, and Ctrl+Q closes (twice to discard
+changes); any other key does nothing. A Helix-style modal editor was
+written in part and removed: far more code on hostile text. Ctrl+Z is a
+key, so keyboard suspend is gone (an outside `SIGTSTP` still works,
+[0048](#0048)). Undo is a log of edits, at most 200 steps and 64 MiB.
+Pastes up to 8 MiB keep line breaks and tabs, and one that does not fit
+is refused whole ([0047](#0047)). The text lives in a zeroizing buffer
+grown by copying and wiping, never by `realloc`, and is drawn with hidden
+characters spelled out ([0037](#0037), [0046](#0046)), with line numbers
+([0055](#0055)). Ctrl+S saves the whole vault through the atomic writer
+with the vault's recipient, the only secret kept after unlock. If
+`vault.age` changed on disk since unlock (Syncthing, a second Crystal),
+the save is refused; conflicts are never merged, and the user keeps one
+version.
+
+## 0046 Invisible characters inside a visible grapheme are spelled out {#0046}
+
+*2026-11-14.* A grapheme that carries an invisible character (tag
+characters, variation selectors, zero-width characters, word joiner,
+byte-order mark, combining grapheme joiner, Hangul fillers) is spelled
+out whole as `<U+XXXX>`, in the editor and the sanitizer alike, so text
+that looks the same is the same and an emoji cannot smuggle hidden data.
+Emoji keep what they need: a joiner between two pictographs, and U+FE0F
+after a pictograph or in a keycap, judged by a short range table rather
+than a Unicode property crate. The flags of England, Scotland and Wales
+and ideographic variation sequences are spelled out.
+
+## 0047 A changed paste is reported; pastes stay plain text {#0047}
+
+*2026-11-14.* A bracketed paste is untrusted text (A3), cleaned before use:
+control and BiDi characters dropped, broken UTF-8 replaced, line breaks
+made `\n`. When the cleaning changed it, the editor's status line or the
+shell shows one fixed line, "Untrusted input sanitized and pasted
+safely."; a clean paste shows nothing. The paste is inserted at once as
+one undo step, with no question first. Crystal never reads the clipboard's
+HTML form: that needs a Wayland connection all session (a socket through
+the sandbox, and a channel to every other program), or `wl-paste`, a
+process Crystal may not spawn. Ptyxis pastes ESC as `␛`, so a paste cannot
+forge its own end marker.
+
+## 0048 Lock and auto-lock: 5 minutes, save first, unlock again in place {#0048}
+
+*2026-11-14.* Crystal locks after 5 minutes without a key or paste, fixed
+and not configurable, in the shell, the viewer and the editor (counted
+as in [0050](#0050)), or at once on `lock` in the shell; there is no lock
+key in the editor or viewer. Unsaved edits are saved first; if the save
+is refused or fails, Crystal locks anyway and says the edits were lost.
+Lock wipes everything from the vault (notes, indexes, recipient,
+scrollback, history, clipboard, viewer and editor) and shows the
+passphrase prompt under a fixed cowsay cow, with one line on why it
+locked. Unlocking runs the same checks as at start, in the same process;
+Esc or Ctrl+C there quits. An outside `SIGTSTP` locks first, then
+suspends. There are no settings; colors follow the terminal's theme.
+
+## 0049 The shell starts at the top, like a normal shell {#0049}
+
+*2026-11-14.* The shell's prompt follows its output: a new session shows
+the unlock message on the first rows with the prompt below it, each
+command pushes it down, and once the screen is full the output scrolls
+with the prompt on the bottom row. `clear` returns it to the top. An
+empty screen above a bottom-row prompt looked wrong; the alternate screen
+keeps it out of the scrollback either way.
+
+## 0050 Auto-lock counts the time the computer sleeps {#0050}
+
+*2026-11-14.* The idle time is the longer of the monotonic clock and the
+wall clock, both read at the last input, so the time a laptop sleeps
+counts, and setting the wall clock back cannot delay a lock. Each input
+wait lasts at most 5 seconds, so Crystal locks within 5 seconds of
+waking once the time has passed. `CLOCK_BOOTTIME` or a `timerfd` would
+need a rustix feature or new syscalls for the same result. While the
+computer sleeps, only the OS's screen lock guards the notes.
+
+## 0051 RustCrypto and dalek primitives moved to their current lines {#0051}
+
+*2026-11-14.* Crystal's age code uses `chacha20poly1305` =0.11.0 (with
+its `zeroize` feature, so the AEAD key is still wiped), `scrypt` =0.12.0,
+`x25519-dalek` =3.0.0, `hkdf` =0.13.0, `hmac` =0.13.0, `sha2` =0.11.1,
+`subtle` =2.6.1 and `zeroize` =1.9.1, exactly pinned, on the lines
+RustCrypto and dalek maintain. The move changed no behaviour: the
+C2SP/CCTV vectors and the stored age files pass unchanged, byte for byte.
+New transitive crates (`hybrid-array`, `ctutils`, `cmov`) were approved.
+The next upgrade follows the same rule: exact pins, and the vectors and
+stored files decide.
+
+## 0052 The viewer has a keyboard cursor and folds sections {#0052}
+
+*2026-11-14.* Headings get an icon and a color per level (`◉ ○ ● ✿ ◆ ◇`),
+with their sections indented. A read-only cursor, marked in the gutter
+([0053](#0053)), moves with j/k and the arrows ([0055](#0055)), Space
+and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its
+section up to the next peer (marked ` …`) or unfolds it; folds nest, a
+link or jump inside a fold opens it, and folds are never saved. n and N
+select links. There is no mouse: capturing it takes plain drag-selection
+from the terminal, the only way text leaves Crystal ([0041](#0041)), and
+adds a parser for mouse reports and a mode to undo on every exit.
+
+## 0053 The viewer has a gutter with the note's line numbers; y copies a line {#0053}
+
+*2026-11-15.* A gutter left of the viewer's text shows `>` on the cursor's
+row and the note's line numbers ([0055](#0055)), dropped below 20 columns
+of text; the cell colors stay as rendered. A line break in a note stays a
+line break, as in Obsidian's reading view, so every line starts a row. `y`
+copies the cursor's line as written into Crystal's clipboard, `Y` the
+whole note. Numbering rendered rows was rejected: the numbers would
+change with the window and match nothing in the editor.
+
+## 0054 Web and mail links are clickable (OSC 8), without their address {#0054}
+
+*2026-11-15.* `[text](target)` and `<target>` links in the viewer become
+OSC 8 hyperlinks when `md::link::clickable` accepts the target as the
+parser decoded it: `http`, `https` with a host or `mailto` with an
+address, only printable ASCII that RFC 3986 allows, valid `%XX` escapes,
+at most 2083 bytes. ESC, controls, spaces and BiDi characters therefore
+never enter the escape sequence. Anything else is drawn as before, its
+address dim after it; nothing is repaired. The target is checked again by
+the grid and by the frame writer, which always closes an open link
+before the frame ends, a redraw or a prompt. The terminal opens the link;
+Crystal spawns nothing and sends nothing. At the user's request a
+clickable link's address is hidden, an accepted risk (A3): the text of a
+link from an untrusted note can name another site than its target.
+
+## 0055 Lines with text are numbered in the viewer and the editor; j/k go by line; narrow tables stay boxed {#0055}
+
+*2026-11-15.* Only lines with text are numbered, counted from 1, by one
+module (`model::lines`) for the viewer, `y` and the editor, which gets
+the same gutter (dim numbers, none on blank or wrapped rows, dropped
+below 20 columns). In the viewer, j/k and the arrows, and so the mouse
+wheel, go from one numbered line to the next, showing a wrapped line
+whole, and the cursor's `>` and number are bold orange. A table wider
+than the screen stays boxed: columns that fit their share keep their
+width, the wider ones split the rest, each cell wraps inside its column;
+only below 3 columns a cell is it drawn unboxed. Mouse clicks moving the
+cursor were declined again ([0052](#0052)).
+
+## 0056 One page for the decision log, one paragraph per decision {#0056}
+
+*2026-11-15.* The decision log is this single page, replacing one file per
+record with Context, Decision, Alternatives and Consequences. Each
+decision is one paragraph under its number, stating only what is in
+force. A decision replaced entirely is deleted (0018 into
+[0034](#0034), 0024 into [0032](#0032)), a partly replaced one is cut to
+what still holds, and the full records stay in git history. The log is
+shorter to read and keep current, at the cost of the alternatives and
+consequences each record spelled out.

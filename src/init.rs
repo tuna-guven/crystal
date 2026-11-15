@@ -4,7 +4,7 @@
 //! Everything that can be checked is checked before anything is created:
 //! the vault directory must not exist; the passphrase is asked for and the
 //! recovery code is shown and typed back
-//! (docs/decisions/0029-recovery-code.md). Only then are the directory and
+//! (decision 0029). Only then are the directory and
 //! files made. If a later step fails, exactly what this run created is
 //! removed again, never anything that existed before.
 

@@ -1,5 +1,5 @@
 //! The open vault: its notes, and the one function that saves them
-//! (docs/decisions/0045-simple-editor.md, "Saving"; docs/design/storage.md,
+//! (decision 0045, "Saving"; docs/design/storage.md,
 //! "Save sequence").
 //!
 //! A save writes the whole vault: generation + 1, seal to the recipient,
@@ -13,7 +13,7 @@
 //!   cannot be atomic with the rename: a replacement landing between the
 //!   two is overwritten.
 //! - A directory whose `VERSION` still says format 1 gets `VERSION` 2
-//!   first (docs/decisions/0034-vault-format-2.md), so a crash between the
+//!   first (decision 0034), so a crash between the
 //!   two writes leaves a readable vault.
 //!
 //! A save that fails before the rename changes nothing on disk, and the
@@ -176,7 +176,7 @@ impl Session {
         &self.notes
     }
 
-    /// Lock (docs/decisions/0048-lock-and-auto-lock.md): ends the session
+    /// Lock (decision 0048): ends the session
     /// and keeps only the vault and state directory handles, which are
     /// not secret, to unlock again. The notes, their indexes and the
     /// recipient are dropped here, and each wipes itself.

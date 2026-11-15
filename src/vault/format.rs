@@ -55,7 +55,7 @@ pub fn seal(
 /// authenticates the whole file, so a changed byte anywhere fails at
 /// decryption, before padding or contents are looked at. `version` is the
 /// vault's `VERSION`: a blob in a newer format is refused
-/// (docs/decisions/0034-vault-format-2.md).
+/// (decision 0034).
 pub fn open(
     ciphertext: &[u8],
     identity: &VaultIdentity,
@@ -117,7 +117,7 @@ impl std::error::Error for VersionError {}
 
 /// Parses `VERSION` strictly (`public_file::parse_decimal_line`: one
 /// spelling per number). It names the newest blob format the directory
-/// may hold (docs/decisions/0034-vault-format-2.md), so every format from
+/// may hold (decision 0034), so every format from
 /// the oldest this build reads up to `FORMAT` is accepted. Returns it.
 pub fn check_version(bytes: &[u8]) -> Result<u16, VersionError> {
     let number = parse_decimal_line(bytes)

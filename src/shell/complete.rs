@@ -1,4 +1,4 @@
-//! Tab completion for the shell (docs/decisions/0033-shell.md): command
+//! Tab completion for the shell (decision 0033): command
 //! words in the first word, note names and folders after it, ignoring
 //! case. Names complete one folder level at a time (`wo` → `work/`), and a
 //! name with spaces is quoted, the way `parse` reads it back.

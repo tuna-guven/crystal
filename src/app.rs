@@ -1,6 +1,6 @@
 //! The unlocked session's loop: the shell, and the full-screen pager and
-//! editor it hands the screen to (docs/decisions/0033-shell.md,
-//! docs/decisions/0045-simple-editor.md).
+//! editor it hands the screen to (decision 0033,
+//! decision 0045).
 //!
 //! Draw, wait, handle keys; a resize or resume redraws everything. `view`
 //! opens the pager until `q`; `edit` and `new` open the editor until
@@ -8,7 +8,7 @@
 //! shows the text rendered, unsaved changes included, until Ctrl+E, `q`
 //! or Esc. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal,
 //! and locks on `lock` or after `AUTO_LOCK` without a key or paste
-//! (docs/decisions/0048-lock-and-auto-lock.md); Crystal's own clipboard is
+//! (decision 0048); Crystal's own clipboard is
 //! wiped on the way out.
 
 use std::error::Error;
@@ -101,7 +101,7 @@ pub enum Outcome {
     /// `quit`, an exit signal or a closed terminal: Crystal exits.
     Quit,
     /// The caller wipes the session and asks for the passphrase again
-    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    /// (decision 0048).
     Lock(LockReason),
 }
 

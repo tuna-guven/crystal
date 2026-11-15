@@ -1,5 +1,5 @@
 //! Which link targets the pager may make clickable
-//! (docs/decisions/0054-clickable-links.md).
+//! (decision 0054).
 //!
 //! A clickable link's target is written into an OSC 8 escape sequence
 //! (`ESC ] 8 ; ; TARGET ESC \`), the first note-chosen text Crystal puts

@@ -140,7 +140,7 @@ impl Identity {
 pub(crate) struct Recipient(PublicKey);
 
 /// For `crypto::VaultRecipient`, which wipes the vault's recipient on drop
-/// (docs/decisions/0044-vault-recipient-private.md). `PublicKey` derives
+/// (decision 0044). `PublicKey` derives
 /// `Zeroize` but does not wipe itself.
 impl Zeroize for Recipient {
     fn zeroize(&mut self) {

@@ -1,4 +1,4 @@
-//! Splitting a shell line into words (docs/decisions/0033-shell.md): spaces
+//! Splitting a shell line into words (decision 0033): spaces
 //! separate words, double quotes group a name with spaces, and a backslash
 //! takes the next character literally (`\"`, `\\`). Nothing else is
 //! special: no pipes, redirection, globbing, variables or substitution,

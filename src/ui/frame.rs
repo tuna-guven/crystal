@@ -11,7 +11,7 @@
 //!   copies behind on every reallocation.
 //! - The only sequences Crystal writes itself are cursor moves (CUP) and
 //!   styles (SGR), built from numbers, and hyperlinks (OSC 8,
-//!   docs/decisions/0054-clickable-links.md): a link's target is written
+//!   decision 0054): a link's target is written
 //!   only if `md::link::clickable` accepts it, checked again here; it is
 //!   printable ASCII without ESC or BEL, so it cannot end or extend the
 //!   sequence. A link is opened where its cells start and closed where

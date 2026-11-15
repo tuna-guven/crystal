@@ -122,7 +122,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
     let mut state_dir = state_dir;
     // Each turn unlocks and runs a session; `lock` ends the session, which
     // gives back only the two directory handles, and the next turn shows
-    // the lock screen (docs/decisions/0048-lock-and-auto-lock.md).
+    // the lock screen (decision 0048).
     let mut locked: Option<app::LockReason> = None;
     loop {
         let unlocked = match locked {
@@ -278,7 +278,7 @@ fn run_unlocked(
         ""
     };
 
-    // The shell (docs/decisions/0033-shell.md).
+    // The shell (decision 0033).
     let first = if unlocked.pinned == vault::pin::Pinned::New
         || unlocked.seen == vault::generation::Seen::FirstUse
     {
@@ -360,7 +360,7 @@ fn init_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Err
     Ok(())
 }
 
-/// `crystal recover NAME` (docs/decisions/0029-recovery-code.md): the
+/// `crystal recover NAME` (decision 0029): the
 /// recovery code opens the vault's key; once the vault is checked against
 /// its pin and rollback counter, a new passphrase seals the key into a new
 /// identity.age. Nothing else changes.
@@ -431,7 +431,7 @@ fn open_with_code(
 }
 
 /// `crystal rm NAME`: delete a vault for good once its name is typed again
-/// (docs/decisions/0032-fixed-locations.md).
+/// (decision 0032).
 fn remove_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
     let home = home_dir()?;
     let data_dir = vault::DataDir::open(Some(&home))?;

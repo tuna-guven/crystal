@@ -4,27 +4,27 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 
 | Need | Crate | Notes |
 | --- | --- | --- |
-| Screen grid and widgets | Crystal's own (`ui::grid`, `ui::screen`) | No ratatui: Crystal used a fifth of it and got 28 crates ([decision 0031](../decisions/0031-own-grid.md)) |
+| Screen grid and widgets | Crystal's own (`ui::grid`, `ui::screen`) | No ratatui: Crystal used a fifth of it and got 28 crates ([decision 0031](../decisions.md#0031)) |
 | Display width | `unicode-width` =0.2.3 (no default features, so no `cjk` tables) | Columns a grapheme takes; no dependencies, `forbid(unsafe_code)` (decision 0031) |
 | Grapheme clusters | `unicode-segmentation` =1.13.3 | A character with its combining marks, or an emoji sequence, fills one cell; no dependencies (decision 0031) |
-| Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions/0031-own-grid.md)) |
+| Terminal backend | Crystal's own (`term`) | Raw mode, alternate screen and key reading already live in `term::TerminalGuard`; the frame is drawn to `/dev/tty` by Crystal, not `crossterm` ([decision 0031](../decisions.md#0031)) |
 | Editor widget | Crystal's own | Phase 4, on the grid, modeless (decision 0045); `tui-textarea` needs the full `ratatui` and `crossterm` (decision 0031) |
 | Markdown parser | `pulldown-cmark` =0.13.6 | `default-features = false`: no HTML writer, no `getopts`; Crystal writes the renderer |
-| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and files the `age` crate wrote ([decisions 0042](../decisions/0042-own-age-implementation.md) and [0043](../decisions/0043-age-checked-against-stored-files.md)). Since step C2 the program encrypts only through it; since step C3 the `age` crate is not in the tree at all |
-| AEAD | `chacha20poly1305` =0.11.0 (no default features, `alloc`, `zeroize`) | Stanza key wrapping and STREAM chunks; no `getrandom` feature, randomness comes from rustix; `zeroize` wipes the AEAD's key on drop (decisions 0042, [0051](../decisions/0051-rustcrypto-upgrade.md)) |
-| Passphrase KDF | `scrypt` =0.12.0 (no default features) | The scrypt stanza; no `password-hash` (decisions 0042, [0051](../decisions/0051-rustcrypto-upgrade.md)) |
-| X25519 | `x25519-dalek` =3.0.0 (`static_secrets`, `zeroize`, `precomputed-tables`) | The X25519 stanza; keys built from getrandom bytes, wiped on drop (decisions 0042, [0051](../decisions/0051-rustcrypto-upgrade.md)) |
-| KDF and MAC | `hkdf` =0.13.0, `hmac` =0.13.0, `sha2` =0.11.1, `subtle` =2.6.1 (no default features) | age's HKDF-SHA-256 keys, the HMAC-SHA-256 header MAC, the constant-time all-zero check (decisions 0042, [0051](../decisions/0051-rustcrypto-upgrade.md)). They bring `hybrid-array`, `ctutils` and `cmov` (RustCrypto's array and constant-time helpers) |
-| Secret types | `zeroize` =1.9.1 | `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext, passphrases and keys. `secrecy` was dropped in step C2: only the `age` crate's API needed `SecretString` ([decision 0042](../decisions/0042-own-age-implementation.md)). The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions/0013-identity-box.md)) |
+| Encryption format | Crystal's own age v1 code (`src/age_v1/`) | Ported from age 0.12.1 under its MIT license, X25519 and scrypt recipients only, checked against the C2SP/CCTV vectors and files the `age` crate wrote ([decisions 0042](../decisions.md#0042) and [0043](../decisions.md#0043)). Since step C2 the program encrypts only through it; since step C3 the `age` crate is not in the tree at all |
+| AEAD | `chacha20poly1305` =0.11.0 (no default features, `alloc`, `zeroize`) | Stanza key wrapping and STREAM chunks; no `getrandom` feature, randomness comes from rustix; `zeroize` wipes the AEAD's key on drop (decisions 0042, [0051](../decisions.md#0051)) |
+| Passphrase KDF | `scrypt` =0.12.0 (no default features) | The scrypt stanza; no `password-hash` (decisions 0042, [0051](../decisions.md#0051)) |
+| X25519 | `x25519-dalek` =3.0.0 (`static_secrets`, `zeroize`, `precomputed-tables`) | The X25519 stanza; keys built from getrandom bytes, wiped on drop (decisions 0042, [0051](../decisions.md#0051)) |
+| KDF and MAC | `hkdf` =0.13.0, `hmac` =0.13.0, `sha2` =0.11.1, `subtle` =2.6.1 (no default features) | age's HKDF-SHA-256 keys, the HMAC-SHA-256 header MAC, the constant-time all-zero check (decisions 0042, [0051](../decisions.md#0051)). They bring `hybrid-array`, `ctutils` and `cmov` (RustCrypto's array and constant-time helpers) |
+| Secret types | `zeroize` =1.9.1 | `Zeroizing<Vec<u8>>` and derive `ZeroizeOnDrop` for plaintext, passphrases and keys. `secrecy` was dropped in step C2: only the `age` crate's API needed `SecretString` ([decision 0042](../decisions.md#0042)). The vault identity is a `Box`, not a `SecretBox` ([decision 0013](../decisions.md#0013)) |
 | Serialization | `serde` + `postcard` | Compact, schema-light, small attack surface for the vault contents |
 | Syscalls | `rustix` | prctl, setrlimit, mlockall, fsync, renameat without writing `unsafe` yourself |
 | Filesystem sandbox | `landlock` | Restrict file access to the vault and state directories. Version 0.4.7 supports Landlock ABI up to 9; no raw Landlock syscalls, which would need `unsafe` ([Sandboxing](sandboxing.md) 5.1) |
 | Syscall filter | `seccompiler` | Pure Rust BPF builder from Firecracker; avoids the C libseccomp |
 | CLI args | `lexopt` | Tiny; you only parse a vault path and a few flags |
 
-**About age and rage:** Crystal's files are age files, readable by age, rage or any age implementation. Crystal implements the published format itself, ported from rage's library (the `age` crate), because that crate brought about a hundred crates for two recipient types ([decision 0042](../decisions/0042-own-age-implementation.md)). Never shell out to the `rage` or `age` binary, which would need `execve` and push plaintext through pipes.
+**About age and rage:** Crystal's files are age files, readable by age, rage or any age implementation. Crystal implements the published format itself, ported from rage's library (the `age` crate), because that crate brought about a hundred crates for two recipient types ([decision 0042](../decisions.md#0042)). Never shell out to the `rage` or `age` binary, which would need `execve` and push plaintext through pipes.
 
-**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed. None of them is in the binary. The `age` crate was one until step C3; files it wrote are kept in `tests/corpus/age-rage/` instead ([decision 0043](../decisions/0043-age-checked-against-stored-files.md)). `Cargo.lock` holds 75 crates (78 before decision 0051, 160 before C3).
+**Test-only dependencies:** `proptest` =1.12.0 (property tests); `miniz_oxide` =0.8.9 (no default features, `with-alloc`; brings `adler2`) to inflate the C2SP/CCTV age vectors CCTV ships compressed. None of them is in the binary. The `age` crate was one until step C3; files it wrote are kept in `tests/corpus/age-rage/` instead ([decision 0043](../decisions.md#0043)). `Cargo.lock` holds 75 crates (78 before decision 0051, 160 before C3).
 
 **Avoid:** `tokio` or any async runtime, HTTP clients, `clap` (large for this job), syntax highlighters (`syntect`), `tui-markdown` or other ready-made renderers, image crates, file watchers, logging crates that write files, `rpassword` (read the passphrase yourself in raw mode).
 
@@ -37,7 +37,7 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Component | Decision | Size estimate | Why |
 | --- | --- | --- | --- |
 | Encryption primitives | Reuse RustCrypto and dalek (`chacha20poly1305`, `scrypt`, `x25519-dalek`, `hkdf`, `hmac`, `sha2`) | n/a | Never roll your own crypto |
-| age v1 format | Port (age 0.12.1, MIT) | 1,200 lines | The published format, not a construction of our own; two recipient types instead of the `age` crate's hundred crates; CCTV vectors and files age wrote ([decisions 0042](../decisions/0042-own-age-implementation.md) and [0043](../decisions/0043-age-checked-against-stored-files.md)) |
+| age v1 format | Port (age 0.12.1, MIT) | 1,200 lines | The published format, not a construction of our own; two recipient types instead of the `age` crate's hundred crates; CCTV vectors and files age wrote ([decisions 0042](../decisions.md#0042) and [0043](../decisions.md#0043)) |
 | Markdown parsing | Reuse `pulldown-cmark` | n/a | Parsers are where bugs live |
 | Unicode width and graphemes | Reuse `unicode-width` + `unicode-segmentation` | n/a | Unicode tables change with each release |
 | Grid, wrapping and widgets | Build | 600 lines | Crystal uses a grid, a diff and four widgets; ratatui would bring 28 crates (decision 0031) |
@@ -45,10 +45,10 @@ Reuse anything that is hard to get right and well reviewed (crypto, parsing, ter
 | Sandbox plumbing | Reuse `landlock` + `seccompiler` | n/a | Kernel ABI details are easy to get wrong |
 | Vault format | Build | 600 lines | Defines integrity, rollback and metadata hiding |
 | Atomic writer | Build | 80 lines | Ciphertext-only, temp + fsync + rename + dir fsync |
-| Markdown renderer | Build | 450 lines | `md::render`: a small subset as styled, wrapped lines over the sanitized text, plain text for `*.txt`; one pass, no recursion, lines kept flat ([decision 0038](../decisions/0038-plain-text-notes.md)); each line knows the note line it shows, for the pager's numbers and `y` ([decision 0053](../decisions/0053-viewer-gutter-and-line-copy.md)), counting lines with text only, as the editor does; tables wider than the screen wrap inside their box ([decision 0055](../decisions/0055-line-numbers-and-narrow-tables.md)) |
-| Sanitizer | Build | 90 lines | Spells out C0, C1 (ESC, CSI) and BiDi controls, and every grapheme that hides an invisible character ([decision 0046](../decisions/0046-invisible-characters-spelled-out.md)), as dimmed `<U+XXXX>` in every rendered span; only its `SafeText` reaches a widget ([decision 0037](../decisions/0037-visible-escapes.md)) |
+| Markdown renderer | Build | 450 lines | `md::render`: a small subset as styled, wrapped lines over the sanitized text, plain text for `*.txt`; one pass, no recursion, lines kept flat ([decision 0038](../decisions.md#0038)); each line knows the note line it shows, for the pager's numbers and `y` ([decision 0053](../decisions.md#0053)), counting lines with text only, as the editor does; tables wider than the screen wrap inside their box ([decision 0055](../decisions.md#0055)) |
+| Sanitizer | Build | 90 lines | Spells out C0, C1 (ESC, CSI) and BiDi controls, and every grapheme that hides an invisible character ([decision 0046](../decisions.md#0046)), as dimmed `<U+XXXX>` in every rendered span; only its `SafeText` reaches a widget ([decision 0037](../decisions.md#0037)) |
 | Wikilink and backlink index | Build | 200 lines | Simple map over titles, rebuilt on unlock |
-| `find` and `search` | Build | 150 lines | Subsequence scorer over names, case-insensitive full-text search ([decision 0033](../decisions/0033-shell.md)) |
+| `find` and `search` | Build | 150 lines | Subsequence scorer over names, case-insensitive full-text search ([decision 0033](../decisions.md#0033)) |
 | Terminal guard | Build | 120 lines | Alt screen, raw mode, clear on exit, panic hook, signals |
 | Hardening bootstrap | Build | 150 lines | prctl, rlimits, mlockall, env scrub, tty checks |
 | Passphrase prompt | Build | 60 lines | Reads from /dev/tty in raw mode into zeroizing memory |

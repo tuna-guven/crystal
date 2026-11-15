@@ -1,4 +1,4 @@
-//! The editor's text and its undo log (docs/decisions/0045-simple-editor.md).
+//! The editor's text and its undo log (decision 0045).
 //!
 //! Note text must never be left in memory that is not wiped. The buffer
 //! therefore never lets its `String` reallocate on its own: before an

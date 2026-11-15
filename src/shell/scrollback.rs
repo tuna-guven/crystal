@@ -1,4 +1,4 @@
-//! The shell's output, in memory only (docs/decisions/0033-shell.md): at
+//! The shell's output, in memory only (decision 0033): at
 //! most `MAX_ENTRIES` entries, the oldest dropped (and wiped) first. Each
 //! entry is sanitized text with a style, wrapped when drawn, so a resize
 //! re-wraps everything. Never written to the terminal's scrollback, a file
@@ -50,7 +50,7 @@ impl Scrollback {
     }
 
     /// Draws the newest lines that fit in `area`, `scroll` lines up from
-    /// the end, from its top row down (docs/decisions/0049-shell-starts-at-the-top.md).
+    /// the end, from its top row down (decision 0049).
     /// Returns the scroll actually used (never past the oldest line) and
     /// the rows drawn, so the prompt can follow them.
     pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) -> (usize, u16) {

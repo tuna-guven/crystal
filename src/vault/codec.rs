@@ -1,5 +1,5 @@
 //! Vault contents to bytes and back (docs/design/storage.md, "Vault
-//! contents"; docs/decisions/0034-vault-format-2.md), with postcard.
+//! contents"; decision 0034), with postcard.
 //!
 //! Format 2, written (postcard: integers are varints, strings and lists
 //! carry a varint length):

@@ -13,8 +13,8 @@
 //!   continuation (width 0). Overwriting either half blanks the other, so
 //!   the grid never holds half a wide character.
 //! - Nothing panics: writes outside the grid are clipped.
-//! - A cell can belong to a clickable link (docs/decisions/0054-
-//!   clickable-links.md): it holds a number into the grid's list of the
+//! - A cell can belong to a clickable link (decision
+//!   0054): it holds a number into the grid's list of the
 //!   frame's link targets, which only takes targets `md::link::clickable`
 //!   accepts. The list is wiped with the cells.
 //!
@@ -46,7 +46,7 @@ pub const MAX_LINKS: usize = 1024;
 
 /// Drawn in place of a grapheme that must not, or cannot, be shown: plain
 /// ASCII, so every font has it (U+FFFD is missing from some terminal
-/// fonts and then shows as nothing; docs/decisions/0037-visible-escapes.md).
+/// fonts and then shows as nothing; decision 0037).
 /// Note text normally reaches the grid sanitized (`md::safe`), with hidden
 /// characters spelled out; this is the last line of defence.
 pub const REPLACEMENT: &str = "?";

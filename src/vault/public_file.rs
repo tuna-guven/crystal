@@ -1,6 +1,6 @@
 //! Reading Crystal's files that are not secret: the two small plaintext
 //! files, `VERSION` and the `*.gen` counters, both of the form "decimal
-//! number, newline" (docs/decisions/0012-public-bytes.md), and the
+//! number, newline" (decision 0012), and the
 //! ciphertext files, always with a size limit. Writing goes through the
 //! atomic writer.
 

@@ -1,4 +1,4 @@
-//! Vault pins (docs/decisions/0032-fixed-locations.md): which vault a name
+//! Vault pins (decision 0032): which vault a name
 //! stands for on this device. `~/.local/state/crystal/NAME.pin` holds the
 //! vault's `vault_id` in 64 lowercase hex digits and a newline, written
 //! through the atomic writer (`PublicBytes::pin`).

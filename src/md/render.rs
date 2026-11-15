@@ -3,11 +3,10 @@
 //!
 //! - **Markdown** (every note but `.txt`): pulldown-cmark events, a small
 //!   subset drawn as text with styles: headings (an icon and color per
-//!   level, their sections indented, docs/decisions/0052-viewer-cursor-
-//!   and-folding.md), emphasis, strong,
+//!   level, their sections indented, decision 0052), emphasis, strong,
 //!   strikethrough, inline and block code, lists (nested, numbered, task
 //!   items), block quotes, rules, tables boxed with aligned columns, links
-//!   (clickable, docs/decisions/0054-clickable-links.md, when
+//!   (clickable, decision 0054, when
 //!   `md::link::clickable` accepts the target, else with their address
 //!   dimmed after them), Obsidian `[[links]]`, images as `[image: alt]`, raw HTML
 //!   dimmed and literal. A line break in the note stays a line break, as
@@ -16,7 +15,7 @@
 //!   starts on it, from the parser's source offsets (decision 0053),
 //!   counting lines with text only (`model::lines`, decision 0055);
 //!   wrapped rows, blanks and table borders have none.
-//! - **Plain text** (`*.txt`, docs/decisions/0038-plain-text-notes.md):
+//! - **Plain text** (`*.txt`, decision 0038):
 //!   shown as written, wrapped, with no Markdown.
 //!
 //! Safety: the whole text is sanitized first (`md::safe`), then parsed.
@@ -45,7 +44,7 @@ use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
 use crate::ui::layout::Rect;
 use crate::ui::wrap::{Span, wrap_each};
 
-/// How a note is shown, from its title (docs/decisions/0038-plain-text-notes.md).
+/// How a note is shown, from its title (decision 0038).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Markdown,

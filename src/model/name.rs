@@ -1,4 +1,4 @@
-//! Note names (docs/decisions/0034-vault-format-2.md): a note's name is
+//! Note names (decision 0034): a note's name is
 //! `folder/title`, or `title` at the top level. Folders exist only as this
 //! metadata. The rules are Obsidian's, so a link `[[name]]` can always
 //! name the note, and every name is a valid file name for an export:
@@ -7,7 +7,7 @@
 //!   trailing whitespace, is not `.` or `..`, and holds none of
 //!   `[ ] # ^ | \ / : * ? " < >`, no control or BiDi character, and no
 //!   invisible character that could make two names look the same
-//!   (docs/decisions/0040-invisible-name-characters.md);
+//!   (decision 0040);
 //! - a folder is `""` or segments joined by `/`, at most 32 levels and
 //!   1 KiB;
 //! - names are unique in a vault, compared case-insensitively (as Obsidian

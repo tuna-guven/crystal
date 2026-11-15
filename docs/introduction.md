@@ -10,7 +10,7 @@ and never writes plaintext to disk.
 > auto-lock) and Crystal's own age code are done. Before real notes go in
 > comes the sandbox (Phase 6). The vault recipient stays X25519 until the
 > Rust age implementations have a hybrid post-quantum recipient
-> ([decision 0003](decisions/0003-no-post-quantum-yet.md)). See [Roadmap and status](development/roadmap.md).
+> ([decision 0003](decisions.md#0003)). See [Roadmap and status](development/roadmap.md).
 
 ## How to read this book
 

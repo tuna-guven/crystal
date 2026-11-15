@@ -157,9 +157,9 @@ impl TerminalGuard {
 
     /// After `Event::Suspend`: restore the terminal, stop, and re-engage
     /// once resumed. Ctrl+Z is a key, not a suspend
-    /// (docs/decisions/0045-simple-editor.md). An unlocked session locks
+    /// (decision 0045). An unlocked session locks
     /// before calling this, so a stopped Crystal holds no notes
-    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    /// (decision 0048).
     pub fn suspend(&mut self) -> Result<(), TermError> {
         restore_terminal();
         // SIGSTOP cannot be caught. kill() on ourselves returns only after
@@ -313,7 +313,7 @@ pub enum Event {
     /// The window changed size: read the size again and redraw everything.
     Redraw,
     /// SIGTSTP from outside: the caller locks, then calls `suspend`, which
-    /// stops the process until SIGCONT (docs/decisions/0048-lock-and-auto-lock.md).
+    /// stops the process until SIGCONT (decision 0048).
     Suspend,
     /// An exit signal, or the terminal was closed (hangup).
     Exit,

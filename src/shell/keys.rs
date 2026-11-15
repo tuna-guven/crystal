@@ -1,4 +1,4 @@
-//! Terminal input bytes to keys, for the shell (docs/decisions/0033-shell.md).
+//! Terminal input bytes to keys, for the shell (decision 0033).
 //!
 //! Raw mode delivers bytes: printable UTF-8, control bytes, and escape
 //! sequences for special keys (`ESC [ A` for Up, `ESC [ 3 ~` for Delete,
@@ -13,7 +13,7 @@
 use zeroize::{Zeroize, Zeroizing};
 
 /// The longest paste kept, in bytes: a note's body limit
-/// (docs/decisions/0045-simple-editor.md). The rest is dropped and the
+/// (decision 0045). The rest is dropped and the
 /// paste marked as cut.
 pub const MAX_PASTE: usize = crate::vault::codec::MAX_BODY_BYTES;
 /// The paste buffer's fixed size: the paste and its end marker.
@@ -41,7 +41,7 @@ pub enum Key {
     PageUp,
     PageDown,
     /// Shift and an arrow, Home or End: selecting in the editor
-    /// (docs/decisions/0045-simple-editor.md).
+    /// (decision 0045).
     ShiftLeft,
     ShiftRight,
     ShiftUp,
@@ -55,7 +55,7 @@ pub enum Key {
     /// `MAX_PASTE` and the rest was dropped; `cleaned` when the cleaning
     /// dropped a control or BiDi character or replaced broken bytes, so
     /// the text differs from what was copied
-    /// (docs/decisions/0047-paste-report.md). Line breaks turned into `\n`
+    /// (decision 0047). Line breaks turned into `\n`
     /// do not count: they are expected.
     Paste {
         text: Zeroizing<String>,

@@ -1,6 +1,6 @@
 //! Note model: notes, folders and titles in zeroizing memory, the name
 //! rules (`name`), and later the link, tag and backlink indexes built from
-//! the text (docs/decisions/0034-vault-format-2.md).
+//! the text (decision 0034).
 //!
 //! Type-level rule (docs/design/leakage.md): note
 //! content, including folders and titles, only ever exists as `NoteText`,

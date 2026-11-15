@@ -15,7 +15,7 @@ each at 60 columns, as Markdown and as plain text, and checks:
 3. every clickable link on the screen carries a target that
    `md::link::clickable` accepts (`link-target.md` puts hostile targets
    in every link form: raw, as entities, in angle brackets, as a
-   reference; docs/decisions/0054-clickable-links.md).
+   reference; decision 0054).
 
 To accept a deliberate change of the rendering, run
 `UPDATE_GOLDEN=1 cargo test escape_corpus` and review the diff.

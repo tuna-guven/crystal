@@ -1,5 +1,5 @@
 //! `crystal recover NAME` and `crystal check-code NAME`
-//! (docs/decisions/0029-recovery-code.md, 0032): the recovery code opens
+//! (decision 0029, 0032): the recovery code opens
 //! `identity.backup.age`.
 //!
 //! - `recover`: when the passphrase is forgotten (or `identity.age` is

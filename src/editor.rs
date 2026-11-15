@@ -1,4 +1,4 @@
-//! The note editor (docs/decisions/0045-simple-editor.md): modeless, with
+//! The note editor (decision 0045): modeless, with
 //! the keys most editors share.
 //!
 //! The cursor is a caret between graphemes (it may sit at the end of the
@@ -41,7 +41,7 @@ const DEFAULT_PAGE: usize = 20;
 
 const FULL: &str = "The note is at its size limit (8 MiB).";
 const PASTE_TOO_LARGE: &str = "Not pasted: it is larger than a note can hold (8 MiB).";
-/// After a paste the cleaning changed (docs/decisions/0047-paste-report.md).
+/// After a paste the cleaning changed (decision 0047).
 pub const PASTE_CLEANED: &str = "Untrusted input sanitized and pasted safely.";
 const UNSAVED: &str = "Unsaved changes: Ctrl+S saves, Ctrl+Q again discards them.";
 

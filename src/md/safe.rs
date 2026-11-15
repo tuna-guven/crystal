@@ -1,5 +1,5 @@
 //! The sanitizer (docs/design/leakage.md, threat A3;
-//! docs/decisions/0037-visible-escapes.md): note text on its way to the
+//! decision 0037): note text on its way to the
 //! screen. Everything that could act on the terminal, or hide or reorder
 //! text, is spelled out instead of passed through:
 //!

@@ -1,4 +1,4 @@
-//! The vault's recovery code (docs/decisions/0029-recovery-code.md).
+//! The vault's recovery code (decision 0029).
 //!
 //! `crystal init` generates it, shows it once to be written on paper, and
 //! seals `identity.backup.age` with it; `crystal recover` takes it back to

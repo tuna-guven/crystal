@@ -1,4 +1,4 @@
-//! The Crystal shell (docs/decisions/0033-shell.md): a prompt on the bottom
+//! The Crystal shell (decision 0033): a prompt on the bottom
 //! row, command output scrolling above it, all on the alternate screen and
 //! in memory only. The scrollback, the history and the line being typed
 //! are zeroizing and are dropped (wiped) on lock and exit.
@@ -32,7 +32,7 @@ const ECHO_STYLE: Style = Style::PLAIN.mods(Mods::DIM);
 pub const ERROR_STYLE: Style = Style::PLAIN.fg(Color::Red);
 
 /// A paste longer than the prompt line (or than any paste may be) was cut
-/// (docs/decisions/0045-simple-editor.md).
+/// (decision 0045).
 const PASTE_CUT: &str = "The paste was cut: it was longer than the line holds.";
 const CURSOR_STYLE: Style = Style::PLAIN.mods(Mods::REVERSED);
 
@@ -65,7 +65,7 @@ pub enum Action {
     Nothing,
     Quit,
     /// `lock`: the caller wipes the session and asks for the passphrase
-    /// (docs/decisions/0048-lock-and-auto-lock.md).
+    /// (decision 0048).
     Lock,
     /// A command for the caller: its words (the first is the command).
     Command(Vec<Zeroizing<String>>),
@@ -181,7 +181,7 @@ impl Shell {
                 let fits = self.line.insert(&keys::one_line(&text));
                 if cut || !fits {
                     self.print(PASTE_CUT, ERROR_STYLE);
-                // As in the editor (docs/decisions/0047-paste-report.md):
+                // As in the editor (decision 0047):
                 // only when text went in and differs from what was copied.
                 } else if cleaned && !text.is_empty() {
                     self.print(crate::editor::PASTE_CLEANED, Style::PLAIN);
@@ -300,7 +300,7 @@ impl Shell {
         }
         // Right below the output, as in a terminal: the top row in a
         // fresh or cleared shell, the bottom row once the output fills the
-        // screen (docs/decisions/0049-shell-starts-at-the-top.md).
+        // screen (decision 0049).
         let y = output.y + drawn;
         let width = prompt_row.width;
         let used = grid.put_str(0, y, &self.prompt, PROMPT_STYLE, width);

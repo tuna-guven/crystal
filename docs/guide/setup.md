@@ -117,7 +117,7 @@ exist yet. Then it asks for:
    each vault has its own (using the same one for several is your choice).
    Crystal recommends a passphrase of 8 or more random words, generated
    with KeePassDX or KeePassXC. It must have at least 20 characters
-   ([decision 0028](../decisions/0028-passphrase-minimum.md)):
+   ([decision 0028](../decisions.md#0028)):
    `identity.age` travels with the vault, so anyone with a copy of it can
    guess offline.
 2. **The recovery code.** Crystal generates a code of 7 groups of 4
@@ -125,7 +125,7 @@ exist yet. Then it asks for:
    once. Write it on paper, press Enter, and type it back to confirm; a
    mistake shows the code again. It opens `identity.backup.age`, so it
    recovers the vault if you forget the passphrase
-   ([decision 0029](../decisions/0029-recovery-code.md)). Keep the paper
+   ([decision 0029](../decisions.md#0029)). Keep the paper
    like a house key: off the computer, and away from where the vault is
    synced or backed up, because the code and a copy of the vault together
    open your notes. Run `crystal check-code diary` once afterwards to make
@@ -161,9 +161,9 @@ Crystal did not make are left alone, and so is the directory then.
 ### Opening a vault
 
 `crystal NAME` asks for the passphrase once and unlocks the vault into the
-Crystal shell ([decision 0033](../decisions/0033-shell.md)): like a
+Crystal shell ([decision 0033](../decisions.md#0033)): like a
 terminal, it starts at the top, and the prompt follows the output down
-the screen ([decision 0049](../decisions/0049-shell-starts-at-the-top.md));
+the screen ([decision 0049](../decisions.md#0049));
 `clear` or Ctrl+L brings it back to the top. Nothing you see there stays in
 the terminal's scrollback. The shell knows:
 
@@ -173,9 +173,9 @@ the terminal's scrollback. The shell knows:
 | `ls #TAG`, `tags` | The notes with a tag; every tag with its count |
 | `find TEXT` | Names holding TEXT's letters in order, best match first |
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
-| `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A line break in the note stays one. Tables are boxed; in a narrow window their cells wrap inside the box. A gutter on the left shows the line numbers, counting only lines with text (blank lines and wrapped rows have none; the editor shows the same numbers), and a bold orange `>` and number on the cursor's line: j/k, the arrows and the mouse wheel move it from one numbered line to the next, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. Web and mail links (`[text](https://…)`, `<https://…>`, `mailto:`) are clickable: Ctrl+click in Ptyxis opens them, and their address is not shown; other links show their address and are not clickable. A link's text can name another site than the one it opens: in a note you did not write, read the target in the editor before clicking ([decision 0054](../decisions/0054-clickable-links.md)). n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; y copies the cursor's line and Y the whole note into Crystal's clipboard; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions/0052-viewer-cursor-and-folding.md), [decision 0053](../decisions/0053-viewer-gutter-and-line-copy.md), [decision 0055](../decisions/0055-line-numbers-and-narrow-tables.md)) |
+| `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A line break in the note stays one. Tables are boxed; in a narrow window their cells wrap inside the box. A gutter on the left shows the line numbers, counting only lines with text (blank lines and wrapped rows have none; the editor shows the same numbers), and a bold orange `>` and number on the cursor's line: j/k, the arrows and the mouse wheel move it from one numbered line to the next, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. Web and mail links (`[text](https://…)`, `<https://…>`, `mailto:`) are clickable: Ctrl+click in Ptyxis opens them, and their address is not shown; other links show their address and are not clickable. A link's text can name another site than the one it opens: in a note you did not write, read the target in the editor before clicking ([decision 0054](../decisions.md#0054)). n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; y copies the cursor's line and Y the whole note into Crystal's clipboard; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions.md#0052), [decision 0053](../decisions.md#0053), [decision 0055](../decisions.md#0055)) |
 | `links` | Every `[[link]]` that leads nowhere, and why |
-| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions/0048-lock-and-auto-lock.md)) |
+| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
 Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the
@@ -209,13 +209,13 @@ yourself; otherwise someone may have put back an old copy.
 
 `y` in the pager copies the line the `>` is on, as written, and `Y` the
 whole note, into Crystal's own clipboard, which never leaves Crystal
-([decision 0053](../decisions/0053-viewer-gutter-and-line-copy.md)); in
+([decision 0053](../decisions.md#0053)); in
 the editor, Ctrl+C and Ctrl+X copy
 the selection into it and Ctrl+V pastes from it. The terminal's own
 Ctrl+Shift+C and Ctrl+Shift+V work with the system clipboard
-([decision 0045](../decisions/0045-simple-editor.md)). Crystal
+([decision 0045](../decisions.md#0045)). Crystal
 never writes to the system clipboard
-([decision 0041](../decisions/0041-internal-clipboard-only.md)).
+([decision 0041](../decisions.md#0041)).
 
 Text pasted with Ctrl+Shift+V is untrusted and arrives as plain text:
 control characters and BiDi overrides are removed and broken bytes
@@ -223,7 +223,7 @@ replaced, and invisible characters are shown as `<U+XXXX>`. When anything
 was removed or replaced, the editor and the shell say "Untrusted input sanitized and
 pasted safely."; Ctrl+Z undoes the paste. Formatting (HTML) is never
 kept; convert it to Markdown before copying if you need it
-([decision 0047](../decisions/0047-paste-report.md)).
+([decision 0047](../decisions.md#0047)).
 
 To copy into another program, select the text with the mouse and use the
 terminal's copy key (Ctrl+Shift+C in Ptyxis). That copies what is shown,
@@ -288,7 +288,7 @@ does not let anything read Crystal's memory.
 a lot of memory, and that memory is locked too. Crystal writes every
 passphrase file at the same factor on every device, log N 18 (256 MiB),
 which is half the 512 MiB floor, so any device that starts Crystal opens
-any vault ([decision 0027](../decisions/0027-scrypt-fixed.md)). A larger
+any vault ([decision 0027](../decisions.md#0027)). A larger
 limit, up to what your machine can spare (for example 16777216 KiB =
 16 GiB), is fine and changes nothing else. A passphrase file that needs
 more than your limit allows is refused with a message pointing here,

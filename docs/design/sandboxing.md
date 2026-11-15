@@ -27,7 +27,7 @@ Matches the [startup order](startup.md).
 
 1. Process hardening (section 4; [startup](startup.md) steps 1 to 4).
 2. Open `/dev/tty` directly and require a real terminal (step 5).
-3. Parse arguments (step 6): a vault name, not a path. Open `~/.local/share/crystal` and then `NAME` relative to it ([decision 0032](../decisions/0032-fixed-locations.md)), and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
+3. Parse arguments (step 6): a vault name, not a path. Open `~/.local/share/crystal` and then `NAME` relative to it ([decision 0032](../decisions.md#0032)), and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
 5. Unlock: decrypt `identity.age` with the passphrase (read in raw mode from `/dev/tty`) or an age plugin (step 8). Plugins are separate binaries, so this is the last moment `execve` works. Only the identity is decrypted here, not the vault.
 6. Apply Landlock (section 5; step 9).
@@ -35,7 +35,7 @@ Matches the [startup order](startup.md).
 8. Decrypt the vault, build the indexes, start the shell (step 11).
 
 Rules:
-- Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions/0036-backups-external.md)), never by Crystal.
+- Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
 - MUST NOT continue to step 8 if steps 1, 6 or 7 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
 - All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(&SandboxConfig) -> Result<SandboxReport, SandboxError>`.
 
@@ -49,8 +49,8 @@ Module: `harden` ([startup](startup.md) steps 1 to 4; already implemented in Pha
 - `prctl(PR_SET_NO_NEW_PRIVS, 1)`: set this early, so Landlock and seccomp need nothing more.
 - `umask(0o077)`.
 - Environment read only through `harden::env_var` (allowlist; enforced by clippy).
-- `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` is mandatory, with a 512 MiB `RLIMIT_MEMLOCK` floor ([decision 0026](../decisions/0026-memlock-floor-512.md)); Crystal refuses to start without it.
-- Secrets: note text only in `NoteText` (`Zeroizing<String>`); the vault identity in a `Box` whose key wipes itself on drop ([decision 0013](../decisions/0013-identity-box.md)); the `zalloc` global allocator zeroes every freed block.
+- `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` is mandatory, with a 512 MiB `RLIMIT_MEMLOCK` floor ([decision 0026](../decisions.md#0026)); Crystal refuses to start without it.
+- Secrets: note text only in `NoteText` (`Zeroizing<String>`); the vault identity in a `Box` whose key wipes itself on drop ([decision 0013](../decisions.md#0013)); the `zalloc` global allocator zeroes every freed block.
 
 ## 5. Landlock
 
@@ -113,8 +113,8 @@ Module: `src/harden/seccomp.rs`. Crate: `seccompiler`.
 - Mode: allowlist. Default action `KillProcess` in release builds, `Log` when built with the cargo feature `sandbox-audit`. CI checks that release builds never enable `sandbox-audit`.
 - Build the allowlist from a full session (open vault, view, search, copy, edit, save, quit) in `sandbox-audit` mode, collecting logged syscalls with `run0 ausearch -m SECCOMP -c crystal`. This works with secureblue's `deny_ptrace` on; `strace -f -c` also works where ptrace is allowed (CI, or `deny_ptrace` off temporarily, see [Setup](../guide/setup.md)). Every allowed syscall gets a row in [Syscalls](../reference/syscalls.md).
 - MUST deny (the allowlist omits them; tests cover each): `socket`, `socketpair`, `connect`, `bind`, `execve`, `execveat`, `ptrace`, `process_vm_readv`, `process_vm_writev`, `bpf`, `io_uring_setup`, `io_uring_enter`, `io_uring_register`, `userfaultfd`, `perf_event_open`, `keyctl`, `add_key`, `mount`, `unshare`, `setns`, `personality`, `memfd_create`, `clone`, `clone3`.
-- `ioctl`: allow only by argument: `TCGETS2`, `TCSETS2`, `TCSETSF2` (the termios requests rustix actually uses; its fallback to `TCGETS` happens only on an error return, which a seccomp kill never gives), `TIOCGWINSZ`, `TCFLSH` (the lock screen's prompt discards keys typed before it appeared, inside the sandbox; [0048](../decisions/0048-lock-and-auto-lock.md)), and `FIONREAD` only if log mode proves it necessary. `TIOCSTI` and `TIOCLINUX` MUST be denied (defense in depth, even though modern kernels require `CAP_SYS_ADMIN` for them).
-- `kill`: own pid only and `SIGSTOP` only (suspend on `SIGTSTP`; Ctrl+Z is a key since [decision 0045](../decisions/0045-simple-editor.md): Crystal restores the terminal, then stops itself). `getpid` is allowed for the same reason.
+- `ioctl`: allow only by argument: `TCGETS2`, `TCSETS2`, `TCSETSF2` (the termios requests rustix actually uses; its fallback to `TCGETS` happens only on an error return, which a seccomp kill never gives), `TIOCGWINSZ`, `TCFLSH` (the lock screen's prompt discards keys typed before it appeared, inside the sandbox; [0048](../decisions.md#0048)), and `FIONREAD` only if log mode proves it necessary. `TIOCSTI` and `TIOCLINUX` MUST be denied (defense in depth, even though modern kernels require `CAP_SYS_ADMIN` for them).
+- `kill`: own pid only and `SIGSTOP` only (suspend on `SIGTSTP`; Ctrl+Z is a key since [decision 0045](../decisions.md#0045): Crystal restores the terminal, then stops itself). `getpid` is allowed for the same reason.
 - `clone` and `clone3`: denied. Crystal is single-threaded.
 - Apply with `apply_filter_all_threads` even though no threads exist.
 

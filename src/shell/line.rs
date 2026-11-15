@@ -2,7 +2,7 @@
 //!
 //! The text is held in a zeroizing buffer of fixed capacity that never
 //! grows (growing would leave unwiped copies), like the passphrase prompt
-//! (docs/decisions/0016-passphrase-prompt.md). The cursor moves by
+//! (decision 0016). The cursor moves by
 //! grapheme, so a character with its accents, or an emoji, is one step.
 
 use unicode_segmentation::UnicodeSegmentation;

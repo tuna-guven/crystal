@@ -21,7 +21,7 @@ concurrency:
 env:
   # The official release binary, pinned by version and SHA-256 (checked
   # against GitHub's recorded asset digest and a local download). No
-  # third-party installer action (docs/decisions/0017-mdbook-docs.md).
+  # third-party installer action (decision 0017).
   MDBOOK_VERSION: 0.5.4
   MDBOOK_SHA256: 5222beabd3e37dc5be0d18ff99b79058469354db5c220153a1b92db5ba12be89
 

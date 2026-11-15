@@ -1,4 +1,4 @@
-//! `view NAME`: a note, rendered full screen (docs/decisions/0033-shell.md).
+//! `view NAME`: a note, rendered full screen (decision 0033).
 //!
 //! The title on the top row, the note below, a key line at the bottom.
 //! A `>` in the gutter on the left marks the cursor's line; the cursor
@@ -13,10 +13,10 @@
 //! a jump or a link selected inside a fold opens it. b lists the notes
 //! linking here. y copies the note line the cursor is on, as written
 //! (Markdown included), into Crystal's own clipboard, Y the whole note
-//! (docs/decisions/0041-internal-clipboard-only.md); the editor's Ctrl+V
+//! (decision 0041); the editor's Ctrl+V
 //! pastes it. q or Esc
 //! returns to the shell. Ctrl+E asks to edit the note shown
-//! (docs/decisions/0045-simple-editor.md).
+//! (decision 0045).
 //!
 //! From the editor, Ctrl+E opens a preview: the editor's current text,
 //! unsaved changes included, rendered in place of the saved note and

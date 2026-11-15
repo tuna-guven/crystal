@@ -102,7 +102,7 @@ approved before it starts.
 ## Steps C1 to C3 (done, before Phase 4)
 
 Replace the `age` crate with Crystal's own implementation of the age v1
-format ([0042](../decisions/0042-own-age-implementation.md)), approved
+format ([0042](../decisions.md#0042)), approved
 2026-11-09. Each step ends in a commit with passing checks and is approved
 before it starts.
 
@@ -120,13 +120,13 @@ starts.
 | Step | What | Why |
 | --- | --- | --- |
 | D1 (done) | Decisions 0032 to 0036 and the book (docs only) | Fix the design before the code changes, so every step has a written target |
-| L1 (done) | Fixed locations ([0032](../decisions/0032-fixed-locations.md)), with syscalls.md and the startup chapter's as-built notes updated: `crystal init NAME`, `crystal NAME`, `crystal recover NAME`, `crystal check-code NAME`, `crystal rm NAME`; remove `add`, `remove`, `--at`, DIR, `config.age` and the configured-path walk; `NAME.pin` and the counter in the state directory | Removes about 1,200 lines and the largest untrusted-path surface before anything new is built |
-| L2 (done) | Vault format 2 ([0034](../decisions/0034-vault-format-2.md)): folders, name rules, no tags field (tags live in the text), reading format 1, the `VERSION` rule | The shell addresses notes by name; the format must be settled before notes can be created |
-| L3 (done) | Restore acceptance at unlock ([0036](../decisions/0036-backups-external.md)) | Makes restores from restic work; small, and it touches the unlock code L1 just simplified |
-| L4 (done) | Sanitizer and `SafeText` ([0037](../decisions/0037-visible-escapes.md)); the Markdown renderer and plain text notes ([0038](../decisions/0038-plain-text-notes.md)), with bounded nesting, golden and property tests | `view` needs it; the main defence against hostile note content (A3) |
-| L5 (done) | Shell core ([0033](../decisions/0033-shell.md)): prompt line in zeroizing memory, quoting, scrollback and history in memory | The frame every command runs in |
-| L6 (done) | L6a: indexes (names, `#tags`, `[[links]]`) and `ls`, `tags`, `find`, `search`. L6b: `view` (the pager: links with `#heading` and `#^id`, backlinks) and `links`. L6c: Crystal's own clipboard (`y`); no system clipboard ([0041](../decisions/0041-internal-clipboard-only.md)) | A usable read-only Crystal |
-| L7 (done) | Tab completion; the escape-injection corpus with golden files; long property-test runs (`scripts/long-tests.sh`, weekly in CI); invisible characters refused in names ([0040](../decisions/0040-invisible-name-characters.md)) | Ends Phase 3 with its acceptance tests |
+| L1 (done) | Fixed locations ([0032](../decisions.md#0032)), with syscalls.md and the startup chapter's as-built notes updated: `crystal init NAME`, `crystal NAME`, `crystal recover NAME`, `crystal check-code NAME`, `crystal rm NAME`; remove `add`, `remove`, `--at`, DIR, `config.age` and the configured-path walk; `NAME.pin` and the counter in the state directory | Removes about 1,200 lines and the largest untrusted-path surface before anything new is built |
+| L2 (done) | Vault format 2 ([0034](../decisions.md#0034)): folders, name rules, no tags field (tags live in the text), reading format 1, the `VERSION` rule | The shell addresses notes by name; the format must be settled before notes can be created |
+| L3 (done) | Restore acceptance at unlock ([0036](../decisions.md#0036)) | Makes restores from restic work; small, and it touches the unlock code L1 just simplified |
+| L4 (done) | Sanitizer and `SafeText` ([0037](../decisions.md#0037)); the Markdown renderer and plain text notes ([0038](../decisions.md#0038)), with bounded nesting, golden and property tests | `view` needs it; the main defence against hostile note content (A3) |
+| L5 (done) | Shell core ([0033](../decisions.md#0033)): prompt line in zeroizing memory, quoting, scrollback and history in memory | The frame every command runs in |
+| L6 (done) | L6a: indexes (names, `#tags`, `[[links]]`) and `ls`, `tags`, `find`, `search`. L6b: `view` (the pager: links with `#heading` and `#^id`, backlinks) and `links`. L6c: Crystal's own clipboard (`y`); no system clipboard ([0041](../decisions.md#0041)) | A usable read-only Crystal |
+| L7 (done) | Tab completion; the escape-injection corpus with golden files; long property-test runs (`scripts/long-tests.sh`, weekly in CI); invisible characters refused in names ([0040](../decisions.md#0040)) | Ends Phase 3 with its acceptance tests |
 
 ## Plan
 
@@ -140,7 +140,7 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: round-trip property tests; tamper suite refuses swapped, truncated and bit-flipped vaults; an older vault needs `restore`.
 4. **Phase 3: Shell and viewer.** Own screen grid (decision 0031), the Crystal shell (decision 0033), vault format 2 (decision 0034), renderer and sanitizer, the pager with Obsidian links and backlinks, full-text search, Crystal's own clipboard (decision 0041), completion. Steps above.
    - Accept: the escape-injection corpus renders as inert text; the renderer and sanitizer property tests run clean for a million cases each; no note text reaches the terminal's scrollback, stdout or disk. The shell's `lock` command moves to Phase 5, with auto-lock.
-5. **Phase 4: Editor** (done; the strace check runs in CI). A simple modeless editor on the grid ([decision 0045](../decisions/0045-simple-editor.md)): arrows, Home/End, PgUp/PgDn, selection with Shift, Ctrl+C/X/V with Crystal's own clipboard (the system clipboard is the terminal's Ctrl+Shift+C/V), Ctrl+Z/Y undo and redo, Ctrl+S save, Ctrl+E to the viewer and back, Ctrl+Q close; about 850 lines. Then `edit`, `new`, `mv` (rewriting links), `rm` (confirmed, final), save (writing `VERSION` before the first format-2 `vault.age`, decision 0034), Syncthing conflicts detected, never merged: a conflict copy is refused at unlock and a save over a changed `vault.age` is refused (decision 0045). Steps E0 to E7 above.
+5. **Phase 4: Editor** (done; the strace check runs in CI). A simple modeless editor on the grid ([decision 0045](../decisions.md#0045)): arrows, Home/End, PgUp/PgDn, selection with Shift, Ctrl+C/X/V with Crystal's own clipboard (the system clipboard is the terminal's Ctrl+Shift+C/V), Ctrl+Z/Y undo and redo, Ctrl+S save, Ctrl+E to the viewer and back, Ctrl+Q close; about 850 lines. Then `edit`, `new`, `mv` (rewriting links), `rm` (confirmed, final), save (writing `VERSION` before the first format-2 `vault.age`, decision 0034), Syncthing conflicts detected, never merged: a conflict copy is refused at unlock and a save over a changed `vault.age` is refused (decision 0045). Steps E0 to E7 above.
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock after 5 minutes and the shell's `lock` command, lock on suspend (decision 0048), the shell starting at the top (decision 0049). No settings and no vault format change. Steps M0 to M6 above.
    - Accept (passed 2026-11-14): the canary scan finds no plaintext after lock.

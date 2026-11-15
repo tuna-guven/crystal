@@ -67,7 +67,7 @@ pub struct RunArgs {
     #[cfg(debug_assertions)]
     pub demo_notes_for_test: bool,
     /// Debug builds only: auto-lock after this many seconds instead of 5
-    /// minutes, so a pty test sees it (docs/decisions/0048-lock-and-auto-lock.md).
+    /// minutes, so a pty test sees it (decision 0048).
     #[cfg(debug_assertions)]
     pub lock_after_for_test: Option<u64>,
 }

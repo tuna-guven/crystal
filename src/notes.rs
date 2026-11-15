@@ -1,5 +1,5 @@
 //! An unlocked vault's notes and the indexes built from them
-//! (docs/decisions/0034-vault-format-2.md): built at unlock, never stored,
+//! (decision 0034): built at unlock, never stored,
 //! all in zeroizing memory.
 //!
 //! - names: each note's full name (`folder/title`), and a case-insensitive
@@ -206,7 +206,7 @@ impl Notes {
         }
     }
 
-    /// For `mv` (docs/decisions/0034-vault-format-2.md, "Renames rewrite
+    /// For `mv` (decision 0034, "Renames rewrite
     /// links"): the new text of every note whose `[[links]]` must change
     /// when `moved` becomes `folder/title`, so each link leads where it did.
     /// For `new`, `moved` is `len()`, the index the new note gets: no link
@@ -488,7 +488,7 @@ fn scan(body: &str) -> Scan {
             Event::Text(text) if !in_code => tags_in(&text, &mut tags),
             // An embed, `![[name]]`, is parsed as an image; as in Obsidian
             // it is a link too (backlinks, `links`), shown as a plain link
-            // (docs/decisions/0034-vault-format-2.md).
+            // (decision 0034).
             Event::Start(
                 Tag::Link {
                     link_type: LinkType::WikiLink { .. },

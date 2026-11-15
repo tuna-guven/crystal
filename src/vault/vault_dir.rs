@@ -1,5 +1,5 @@
 //! Opening a vault directory, `~/.local/share/crystal/NAME`
-//! (docs/decisions/0032-fixed-locations.md, docs/design/storage.md, "Vault
+//! (decision 0032, docs/design/storage.md, "Vault
 //! directory"). The data directory was reached from HOME one component at
 //! a time without following symlinks (`DataDir`); the vault is one more
 //! such step. NAME is a `VaultName`, so it can never be a path.

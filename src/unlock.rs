@@ -36,7 +36,7 @@ pub enum UnlockError {
     Pin(PinError),
     Generation(GenError),
     /// A sync conflict copy of `vault.age` is present. Crystal never
-    /// merges (docs/decisions/0045-simple-editor.md): the user keeps one.
+    /// merges (decision 0045): the user keeps one.
     SyncConflict,
     ListDir(Errno),
     /// An older vault was not accepted with `restore`.
@@ -79,7 +79,7 @@ pub struct Unlocked {
     /// For saving; the identity itself is wiped before `unlock` returns.
     pub recipient: VaultRecipient,
     /// The `vault.age` that was decrypted: a save refuses to replace a
-    /// different one (docs/decisions/0045-simple-editor.md).
+    /// different one (decision 0045).
     pub stamp: FileStamp,
     /// `New` on the first unlock of this vault on this device.
     pub pinned: Pinned,
@@ -93,7 +93,7 @@ pub struct Unlocked {
 /// What must be typed to accept an older vault.
 pub const RESTORE_WORD: &str = "restore";
 
-/// The question for an older vault (docs/decisions/0036-backups-external.md):
+/// The question for an older vault (decision 0036):
 /// fixed text and two generation numbers.
 pub fn restore_prompt(older: Older) -> String {
     format!(

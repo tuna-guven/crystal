@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manual check of clickable links (docs/decisions/0054-clickable-links.md,
+# Manual check of clickable links (decision 0054,
 # docs/development/testing.md): what CI cannot do is click. CI already
 # checks, through the binary, that only the good target reaches the
 # terminal inside OSC 8 (tests/vault.rs,

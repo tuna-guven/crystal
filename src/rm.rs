@@ -1,6 +1,6 @@
-//! `crystal rm NAME` (docs/decisions/0032-fixed-locations.md): delete a
+//! `crystal rm NAME` (decision 0032): delete a
 //! vault for good, after its name is typed again. There is no trash; only
-//! a backup brings it back (docs/decisions/0036-backups-external.md).
+//! a backup brings it back (decision 0036).
 //!
 //! Only Crystal's own files are removed: `VERSION`, `identity.age`,
 //! `identity.backup.age`, `vault.age`, Syncthing conflict copies of

@@ -1,8 +1,8 @@
 # Backups
 
-Crystal has no backup code. Back up `~/.local/share/crystal` with a dedicated tool, such as restic or borg ([decision 0036](../decisions/0036-backups-external.md)). They already do deduplication, encrypted repositories, retention and verification, and do them well; Crystal stays small.
+Crystal has no backup code. Back up `~/.local/share/crystal` with a dedicated tool, such as restic or borg ([decision 0036](../decisions.md#0036)). They already do deduplication, encrypted repositories, retention and verification, and do them well; Crystal stays small.
 
-Deleting a note or a vault is final ([decision 0032](../decisions/0032-fixed-locations.md)), so a backup is part of setting up Crystal, not an extra.
+Deleting a note or a vault is final ([decision 0032](../decisions.md#0032)), so a backup is part of setting up Crystal, not an extra.
 
 ## What to back up
 
