@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 use crate::commands::{self, Open};
 use crate::editor::view::View;
 use crate::editor::{Editor, EditorAction};
+use crate::md::render::{Kind, shown};
 use crate::model::{NoteText, lines};
 use crate::notes::Notes;
 use crate::pager::{Pager, PagerAction};
@@ -78,13 +79,122 @@ enum Mode {
 /// The note being edited.
 enum Target {
     Note(usize),
-    /// From `new`: not in the vault until the first save.
+    /// Created by `edit` (decision 0038): not in the vault until the
+    /// first save. `title` is the stored one, `.txt` for text.
     New {
         folder: Zeroizing<String>,
         title: Zeroizing<String>,
         /// `folder/title`, for the top row.
         name: Zeroizing<String>,
     },
+}
+
+/// A question the shell asked; the next line answers it.
+enum Question {
+    /// `rm`: "Delete … for good?" Only `y` deletes.
+    Remove(usize),
+    /// `edit` of a missing note: "Create it?" Only `y` goes on.
+    Create {
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+    },
+    /// Then its type: `m` or a blank line for Markdown, `t` for text.
+    Kind {
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+    },
+}
+
+/// The line typed after a question.
+#[derive(Clone, Copy)]
+enum Answer<'a> {
+    /// Enter on a blank line.
+    Blank,
+    /// A line of one word.
+    Word(&'a str),
+    /// Any other line, `help` and `clear` too.
+    Other,
+}
+
+/// What an answer does.
+enum Reply {
+    Delete(usize),
+    AskKind {
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+    },
+    Create {
+        folder: Zeroizing<String>,
+        title: Zeroizing<String>,
+        kind: Kind,
+    },
+    /// Nothing is done, and this is said.
+    Declined(&'static str),
+}
+
+const CREATE_QUESTION: &str = " does not exist. Create it? Type y and Enter.";
+const KIND_QUESTION: &str =
+    "Markdown or text? Type m or t and Enter (Enter alone: Markdown). It cannot change later.";
+
+/// The answer to `question`. A blank line keeps its meaning only for the
+/// type, where it is the default; elsewhere it says no.
+fn reply(question: Question, answer: Answer<'_>) -> Reply {
+    match (question, answer) {
+        (Question::Remove(note), Answer::Word("y")) => Reply::Delete(note),
+        (Question::Remove(_), _) => Reply::Declined("Not deleted."),
+        (Question::Create { folder, title }, Answer::Word("y")) => Reply::AskKind { folder, title },
+        (Question::Kind { folder, title }, Answer::Blank | Answer::Word("m")) => Reply::Create {
+            folder,
+            title,
+            kind: Kind::Markdown,
+        },
+        (Question::Kind { folder, title }, Answer::Word("t")) => Reply::Create {
+            folder,
+            title,
+            kind: Kind::Plain,
+        },
+        (Question::Create { .. } | Question::Kind { .. }, _) => Reply::Declined("Not created."),
+    }
+}
+
+/// Carries out `reply`. True when it asked a new question: the answer must
+/// come from a later read, typed after the question was seen, so the
+/// caller drops the rest of the keys (a pasted "edit NAME⏎y⏎").
+fn act(
+    reply: Reply,
+    mode: &mut Mode,
+    question: &mut Option<Question>,
+    session: &mut Session,
+    shell: &mut Shell,
+    demo: bool,
+) -> bool {
+    match reply {
+        Reply::Delete(note) => {
+            save_from_shell(session, Change::Remove { note }, shell, demo, "Deleted.");
+        }
+        Reply::AskKind { folder, title } => {
+            shell.print(KIND_QUESTION, Style::PLAIN);
+            *question = Some(Question::Kind { folder, title });
+            return true;
+        }
+        Reply::Create {
+            folder,
+            title,
+            kind,
+        } => {
+            if let Some(title) = commands::stored_title(&title, kind, shell) {
+                let name = full_name(&folder, &title);
+                let target = Target::New {
+                    folder,
+                    title,
+                    name,
+                };
+                *mode = edit(session.notes(), target, shell);
+            }
+        }
+        Reply::Declined(said) => shell.print(said, Style::PLAIN),
+    }
+    false
 }
 
 /// The editor, its screen and, while Ctrl+E shows it, its preview.
@@ -167,9 +277,9 @@ fn run_loop(
     let mut input = Zeroizing::new([0u8; 256]);
     let mut keys = Vec::new();
     let mut mode = Mode::Shell;
-    // `rm` asked "Delete … for good?": the note, until the next line.
+    // A question `rm` or `edit` asked, until the next line.
     // `keys.drain(..)` drops the keys left when the loop breaks.
-    let mut confirm_rm: Option<usize> = None;
+    let mut question: Option<Question> = None;
     // The last key or paste; a resize does not count. Sleep counts, and a
     // changed system time cannot delay auto-lock (decision 0050).
     let mut last_input = LastInput::now();
@@ -184,11 +294,11 @@ fn run_loop(
                 Mode::Edit(e) => match &mut e.preview {
                     Some(pager) => pager.draw(grid, notes, Some(e.editor.text())),
                     None => {
-                        let name = match &e.target {
+                        let (name, kind) = shown(match &e.target {
                             Target::Note(note) => notes.name(*note),
                             Target::New { name, .. } => name.as_str(),
-                        };
-                        e.view.draw(grid, &mut e.editor, name);
+                        });
+                        e.view.draw(grid, &mut e.editor, name, kind.label());
                     }
                 },
             }
@@ -216,12 +326,20 @@ fn run_loop(
                         Mode::Shell => {
                             let submitted = key == Key::Enter;
                             match shell.key(key) {
-                                // Enter on an empty line, help, clear or a
+                                // Enter on a blank line, help, clear or a
                                 // line that does not parse: the shell handled
-                                // it, but it still answers rm, and not with y.
-                                shell::Action::Nothing => {
-                                    if submitted && confirm_rm.take().is_some() {
-                                        shell.print("Not deleted.", Style::PLAIN);
+                                // it, but it still answers a question.
+                                action @ (shell::Action::Nothing | shell::Action::Empty) => {
+                                    if submitted && let Some(asked) = question.take() {
+                                        let answer = match action {
+                                            shell::Action::Empty => Answer::Blank,
+                                            _ => Answer::Other,
+                                        };
+                                        let reply = reply(asked, answer);
+                                        let (m, q) = (&mut mode, &mut question);
+                                        if act(reply, m, q, session, shell, demo) {
+                                            break;
+                                        }
                                     }
                                 }
                                 shell::Action::Quit => return Ok(Outcome::Quit),
@@ -229,23 +347,21 @@ fn run_loop(
                                     return Ok(Outcome::Lock(LockReason::Command));
                                 }
                                 shell::Action::Command(words) => {
-                                    // The line after `rm`'s question: only `y`
-                                    // deletes. `n` or `no` just answers; any
-                                    // other line is a command and still runs.
-                                    if let Some(note) = confirm_rm.take() {
+                                    // The line after a question answers it. A
+                                    // declined line other than `n` or `no` is a
+                                    // command and still runs.
+                                    if let Some(asked) = question.take() {
                                         let answer = match &words[..] {
-                                            [word] => word.as_str(),
-                                            _ => "",
+                                            [word] => Answer::Word(word.as_str()),
+                                            _ => Answer::Other,
                                         };
-                                        if answer == "y" {
-                                            let change = Change::Remove { note };
-                                            save_from_shell(
-                                                session, change, shell, demo, "Deleted.",
-                                            );
-                                            continue;
+                                        let reply = reply(asked, answer);
+                                        let declined = matches!(reply, Reply::Declined(_));
+                                        let (m, q) = (&mut mode, &mut question);
+                                        if act(reply, m, q, session, shell, demo) {
+                                            break;
                                         }
-                                        shell.print("Not deleted.", Style::PLAIN);
-                                        if matches!(answer, "n" | "no") {
+                                        if !declined || matches!(answer, Answer::Word("n" | "no")) {
                                             continue;
                                         }
                                     }
@@ -256,14 +372,15 @@ fn run_loop(
                                         Some(Open::Edit(note)) => {
                                             mode = edit(session.notes(), Target::Note(note), shell);
                                         }
-                                        Some(Open::New { folder, title }) => {
+                                        Some(Open::Create { folder, title }) => {
                                             let name = full_name(&folder, &title);
-                                            let target = Target::New {
-                                                folder,
-                                                title,
-                                                name,
-                                            };
-                                            mode = edit(session.notes(), target, shell);
+                                            shell.print(
+                                                &joined(&[&name, CREATE_QUESTION]),
+                                                Style::PLAIN,
+                                            );
+                                            question = Some(Question::Create { folder, title });
+                                            // As for rm: the answer comes later.
+                                            break;
                                         }
                                         Some(Open::Move {
                                             note,
@@ -278,14 +395,14 @@ fn run_loop(
                                             save_from_shell(session, change, shell, demo, "Moved.");
                                         }
                                         Some(Open::Remove(note)) => {
-                                            let question = [
+                                            let asked = [
                                                 "Delete ",
                                                 session.notes().name(note),
                                                 " for good? There is no trash: only a backup brings \
                                              it back. Type y and Enter to delete.",
                                             ];
-                                            shell.print(&joined(&question), Style::PLAIN);
-                                            confirm_rm = Some(note);
+                                            shell.print(&joined(&asked), Style::PLAIN);
+                                            question = Some(Question::Remove(note));
                                             // The answer must come from a later
                                             // read, typed after the question was
                                             // seen: drop the rest of this batch
@@ -501,16 +618,86 @@ fn full_name(folder: &str, title: &str) -> Zeroizing<String> {
     name
 }
 
-/// Every note's name, for the shell's completion.
+/// Every note's shown name (a text note's without its `.txt`, decision
+/// 0038), for the shell's completion.
 pub fn names(notes: &Notes) -> Vec<Zeroizing<String>> {
     (0..notes.len())
-        .map(|i| Zeroizing::new(notes.name(i).to_owned()))
+        .map(|i| Zeroizing::new(shown(notes.name(i)).0.to_owned()))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Completion offers the shown names (decision 0038).
+    #[test]
+    fn completion_names_are_shown_names() {
+        use crate::notes::tests::{note, notes};
+        let n = notes(vec![
+            note(1, "work", "todo.txt", ""),
+            note(2, "", "plan", ""),
+        ]);
+        let names: Vec<String> = names(&n).iter().map(|s| s.to_string()).collect();
+        assert_eq!(names, ["work/todo", "plan"]);
+    }
+
+    fn create() -> Question {
+        Question::Create {
+            folder: Zeroizing::new("work".to_owned()),
+            title: Zeroizing::new("plan".to_owned()),
+        }
+    }
+
+    fn kind() -> Question {
+        Question::Kind {
+            folder: Zeroizing::new("work".to_owned()),
+            title: Zeroizing::new("plan".to_owned()),
+        }
+    }
+
+    /// Only `y` deletes or goes on to the type; at the type, a blank line
+    /// or `m` is Markdown and `t` text; everything else declines
+    /// (decisions 0038 and 0045).
+    #[test]
+    fn answers_to_questions() {
+        use Answer::{Blank, Other, Word};
+        assert!(matches!(
+            reply(Question::Remove(3), Word("y")),
+            Reply::Delete(3)
+        ));
+        for no in [Blank, Other, Word("n"), Word("Y"), Word("yes")] {
+            assert!(matches!(
+                reply(Question::Remove(3), no),
+                Reply::Declined("Not deleted.")
+            ));
+        }
+        match reply(create(), Word("y")) {
+            Reply::AskKind { folder, title } => {
+                assert_eq!((folder.as_str(), title.as_str()), ("work", "plan"));
+            }
+            _ => panic!("y did not ask for the type"),
+        }
+        for no in [Blank, Other, Word("n"), Word("m")] {
+            assert!(matches!(
+                reply(create(), no),
+                Reply::Declined("Not created.")
+            ));
+        }
+        for (answer, want) in [
+            (Blank, Kind::Markdown),
+            (Word("m"), Kind::Markdown),
+            (Word("t"), Kind::Plain),
+        ] {
+            match reply(kind(), answer) {
+                Reply::Create { kind, .. } => assert_eq!(kind, want),
+                _ => panic!("no note created"),
+            }
+        }
+        for no in [Other, Word("n"), Word("y"), Word("text")] {
+            assert!(matches!(reply(kind(), no), Reply::Declined("Not created.")));
+        }
+    }
 
     /// Decision 0050: sleep counts (the wall clock ran on), and a clock set
     /// back cannot delay a lock (the monotonic clock still counts).

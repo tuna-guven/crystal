@@ -9,7 +9,7 @@
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
-| 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new`, `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
+| 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
 | 6 to 8 | Not started; Phase 7 dropped (decision 0036) |
@@ -19,11 +19,28 @@ What runs today: `crystal init NAME` creates a vault in
 with the recovery code, `crystal check-code NAME` checks the code,
 `crystal rm NAME` deletes a vault, and `crystal unlock NAME` unlocks the vault
 into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
-`view`, `links`, `edit`, `new`, `mv`, `rm`, `help`, `clear`, `lock` and
+`view`, `links`, `edit`, `mv`, `rm`, `help`, `clear`, `lock` and
 `quit`. Crystal locks by itself after 5 minutes without a key, and when
 suspended.
-`edit` and `new` open the editor (Ctrl+S saves, Ctrl+E shows the note
-rendered, Ctrl+Q closes).
+`edit` opens the editor (Ctrl+S saves, Ctrl+E shows the note
+rendered, Ctrl+Q closes), creating a missing note after asking for its
+type (Markdown or text), shown dimmed after every name.
+
+## Steps N1 to N5 (note types shown, not typed; done)
+
+Asked 2026-11-15: a note's type (Markdown or text) is chosen when it is
+created and shown dimmed after its name (`Linux Kernel · markdown`),
+never as an extension; `mv` cannot change it; `edit` creates a missing
+note after asking, and `new` goes. The vault format stays: a title ending
+in `.txt` still marks plain text (decision 0038), only hidden.
+
+| Step | What | Why |
+| --- | --- | --- |
+| N1 (done) | `md::render::shown`: a name without its `.txt`, and its kind; `view`, `edit`, `rm` and `mv` find `todo` stored as `todo.txt` | The shown name must be the one you type |
+| N2 (done) | `edit NAME` with no such note asks "Create it?" (y), then the type (m or Enter: Markdown, t: text); `new` removed | User's request: one command opens or creates |
+| N3 (done) | `mv` keeps the type: a text note keeps its hidden `.txt`; a typed `.txt` is refused | User's request |
+| N4 (done) | `ls`, tag lists, `find`, `search`, `links`, the pager's and editor's title bars and backlinks show `NAME · markdown` or `NAME · text` (the type dimmed); completion offers the shown names | User's request |
+| N5 (done) | Decision 0038 brought up to date (no new decision: the change is not security related), 0033 and 0045 command lists, overview, storage, setup guide, roadmap status; all checks | The log states only what is in force |
 
 ## Steps A1 to A3 (`crystal unlock NAME`)
 

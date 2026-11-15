@@ -7,14 +7,19 @@
 use std::collections::VecDeque;
 
 use crate::md::safe::{SafeText, sanitize};
-use crate::ui::grid::{Grid, Style};
+use crate::ui::grid::{Grid, Mods, Style};
 use crate::ui::layout::Rect;
 use crate::ui::wrap::{Line, Span, draw_line, wrap_each};
 
 pub const MAX_ENTRIES: usize = 10_000;
 
+/// One entry: sanitized text, its style, and a fixed label drawn dimmed
+/// after it (a note's type, decision 0038; `""` for none). The label is
+/// one of Crystal's own strings, never note text.
+type Entry = (SafeText, Style, &'static str);
+
 pub struct Scrollback {
-    entries: VecDeque<(SafeText, Style)>,
+    entries: VecDeque<Entry>,
 }
 
 impl Default for Scrollback {
@@ -32,11 +37,16 @@ impl Scrollback {
 
     /// Adds `text` (sanitized here) as one entry; it may hold line breaks.
     pub fn push(&mut self, text: &str, style: Style) {
+        self.push_labeled(text, style, "");
+    }
+
+    /// `push`, with `label` drawn dimmed after the text.
+    pub fn push_labeled(&mut self, text: &str, style: Style, label: &'static str) {
         if self.entries.len() == MAX_ENTRIES {
             // SafeText wipes itself when dropped.
             self.entries.pop_front();
         }
-        self.entries.push_back((sanitize(text), style));
+        self.entries.push_back((sanitize(text), style, label));
     }
 
     /// Drops every entry (each wipes itself).
@@ -62,9 +72,9 @@ impl Scrollback {
         // entry's lines in order.
         let mut blocks: Vec<(usize, Vec<Line>)> = Vec::new();
         let mut collected = 0;
-        for (index, (text, style)) in self.entries.iter().enumerate().rev() {
+        for (index, entry) in self.entries.iter().enumerate().rev() {
             let mut lines = Vec::new();
-            let spans = text.spans(*style);
+            let spans = spans(entry);
             wrap_each(&spans, area.width, |line| lines.push(line.to_vec()));
             collected += lines.len();
             blocks.push((index, lines));
@@ -83,14 +93,25 @@ impl Scrollback {
         let start = end.saturating_sub(usize::from(area.height));
         let shown = &all[start..end];
         for (row, (index, line)) in (area.y..).zip(shown) {
-            let (text, style) = &self.entries[*index];
-            let spans: Vec<Span<'_>> = text.spans(*style);
+            let spans = spans(&self.entries[*index]);
             draw_line(grid, area.x, row, area.width, line, &spans);
         }
         // At most `area.height` lines are shown.
         let drawn = u16::try_from(shown.len()).unwrap_or(area.height);
         (scroll, drawn)
     }
+}
+
+/// An entry's spans: its text, escapes dimmed, then its label dimmed.
+fn spans((text, style, label): &Entry) -> Vec<Span<'_>> {
+    let mut spans = text.spans(*style);
+    if !label.is_empty() {
+        spans.push(Span {
+            text: label,
+            style: Style::PLAIN.mods(Mods::DIM),
+        });
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -151,5 +172,19 @@ mod tests {
         assert_eq!(rows(&back, 10, 1, 0).0, [(MAX_ENTRIES + 4).to_string()]);
         back.clear();
         assert_eq!(back.len(), 0);
+    }
+
+    /// A label is drawn dimmed after the text, and wraps with it.
+    #[test]
+    fn labels_are_dimmed() {
+        let mut back = Scrollback::new();
+        back.push_labeled("todo", Style::PLAIN, " · text");
+        let mut grid = Grid::new(20, 2);
+        let area = grid.area();
+        back.draw(&mut grid, area, 0);
+        let dim = |x: u16| grid.cell(x, 0).unwrap().style().mods.contains(Mods::DIM);
+        assert!(!dim(0) && !dim(3), "the name");
+        assert!(dim(4) && dim(10), "the label");
+        assert_eq!(rows(&back, 8, 2, 0).0, ["todo ·", "text"]);
     }
 }

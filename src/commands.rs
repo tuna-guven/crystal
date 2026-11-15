@@ -1,12 +1,13 @@
 //! The shell's vault commands (decision 0033): `ls`,
 //! `tags`, `find`, `search`, `links`, and the ones that leave the shell:
-//! `view` (the pager), `edit` and `new` (the editor,
-//! decision 0045). Each writes its answer into the
+//! `view` (the pager) and `edit` (the editor, decision 0045, which also
+//! creates a missing note, decision 0038). Each writes its answer into the
 //! shell's scrollback, which sanitizes it; every line holding note text is
 //! built in a zeroizing buffer of its final size.
 
 use zeroize::Zeroizing;
 
+use crate::md::render::{Kind, shown};
 use crate::model::name::{check_folder, check_segment, unique_key};
 use crate::notes::{Found, Notes, cmp_ci};
 use crate::shell::{ERROR_STYLE, Shell};
@@ -30,8 +31,9 @@ const SNIPPET: usize = 100;
 pub enum Open {
     View(usize),
     Edit(usize),
-    /// A note that does not exist yet; its name passed the vault's rules.
-    New {
+    /// `edit` of a note that does not exist yet: its name passed the
+    /// vault's rules. The caller asks "Create it?" and the type.
+    Create {
         folder: Zeroizing<String>,
         title: Zeroizing<String>,
     },
@@ -46,7 +48,7 @@ pub enum Open {
 }
 
 /// Runs `words` (the first is the command); unknown commands are reported.
-/// Returns where to go when the command was `view`, `edit` or `new`.
+/// Returns where to go when the command was `view`, `edit`, `mv` or `rm`.
 pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Option<Open> {
     let args: Vec<&str> = words.iter().skip(1).map(|w| w.as_str()).collect();
     let rest = joined(&args);
@@ -57,8 +59,7 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
         Some("search") => search(notes, &rest, shell),
         Some("links") => links(notes, shell),
         Some("view") => return view(notes, &rest, shell).map(Open::View),
-        Some("edit") => return view(notes, &rest, shell).map(Open::Edit),
-        Some("new") => return new(notes, &rest, shell),
+        Some("edit") => return edit(notes, &rest, shell),
         Some("mv") => return mv(notes, &args, shell),
         Some("rm") => return view(notes, &rest, shell).map(Open::Remove),
         Some(other) => say(
@@ -71,16 +72,54 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
     None
 }
 
-/// `new NAME`: a name that follows the vault's rules (`FOLDER/TITLE` or
-/// `TITLE`) and no note has yet, ignoring case. The note exists once the
-/// editor saves it.
-fn new(notes: &Notes, name: &str, shell: &mut Shell) -> Option<Open> {
+/// `edit NAME`: the note NAME names; when there is none, a name that
+/// follows the vault's rules (`FOLDER/TITLE` or `TITLE`) for a note to
+/// create, once the user answers (decision 0038). It is typed without
+/// `.txt`: the type is asked, not typed. A bare title that one note has
+/// opens that note, so a new top-level note cannot take a title that a
+/// note in a folder has alone (create it under another name, then `mv`).
+fn edit(notes: &Notes, name: &str, shell: &mut Shell) -> Option<Open> {
     if name.is_empty() {
-        shell.print("new what? (new NAME, or new FOLDER/NAME)", ERROR_STYLE);
+        shell.print(
+            "Which note? (edit NAME; a missing one is created)",
+            ERROR_STYLE,
+        );
         return None;
     }
-    let (folder, title) = free_name(notes, name, None, shell)?;
-    Some(Open::New { folder, title })
+    match find_shown(notes, name) {
+        Found::One(index) => Some(Open::Edit(index)),
+        Found::Ambiguous(list) => {
+            ambiguous(notes, list, shell);
+            None
+        }
+        Found::None if shown(name).1 == Kind::Plain => {
+            shell.print(
+                "No note with that name. Leave out .txt: Crystal asks for the type.",
+                ERROR_STYLE,
+            );
+            None
+        }
+        Found::None => {
+            let (folder, title) = free_name(notes, name, None, shell)?;
+            Some(Open::Create { folder, title })
+        }
+    }
+}
+
+/// The title a new note is stored under: `title` itself for Markdown, with
+/// `.txt` for text (decision 0038). `None`, said
+/// in the shell, when the `.txt` makes it too long.
+pub fn stored_title(title: &str, kind: Kind, shell: &mut Shell) -> Option<Zeroizing<String>> {
+    let mut stored = Zeroizing::new(String::with_capacity(title.len() + 4));
+    stored.push_str(title);
+    if kind == Kind::Plain {
+        stored.push_str(".txt");
+    }
+    if let Err(e) = check_segment(&stored) {
+        say(shell, &["Not a valid name: ", &e.to_string()], ERROR_STYLE);
+        return None;
+    }
+    Some(stored)
 }
 
 /// `mv OLD NEW`: the note OLD names, and a free name NEW (the same note in
@@ -94,11 +133,39 @@ fn mv(notes: &Notes, args: &[&str], shell: &mut Shell) -> Option<Open> {
         return None;
     };
     let note = view(notes, old, shell)?;
-    if notes.name(note) == *new {
+    // The type stays (decision 0038): NEW is a shown name, and a text
+    // note keeps its hidden `.txt`.
+    if shown(new).1 == Kind::Plain {
+        shell.print(
+            "Leave out .txt: mv cannot change a note's type.",
+            ERROR_STYLE,
+        );
+        return None;
+    }
+    let kind = shown(notes.name(note)).1;
+    let mut stored = Zeroizing::new(String::with_capacity(new.len() + 4));
+    stored.push_str(new);
+    if kind == Kind::Plain {
+        stored.push_str(".txt");
+    }
+    if notes.name(note) == stored.as_str() {
         shell.print("That is its name already.", ERROR_STYLE);
         return None;
     }
-    let (folder, title) = free_name(notes, new, Some(note), shell)?;
+    let (folder, title) = free_name(notes, &stored, Some(note), shell)?;
+    // No two notes may show the same name: `todo` beside `todo.txt`.
+    let mut twin = Zeroizing::new(String::with_capacity(title.len() + 4));
+    match kind {
+        Kind::Plain => twin.push_str(shown(&title).0),
+        Kind::Markdown => {
+            twin.push_str(&title);
+            twin.push_str(".txt");
+        }
+    }
+    if notes.exists(&folder, &twin) {
+        shell.print("A note with that name exists already.", ERROR_STYLE);
+        return None;
+    }
     Some(Open::Move {
         note,
         folder,
@@ -146,19 +213,40 @@ fn view(notes: &Notes, name: &str, shell: &mut Shell) -> Option<usize> {
         shell.print("Which note? (view NAME, edit NAME)", ERROR_STYLE);
         return None;
     }
-    match notes.find(name) {
+    match find_shown(notes, name) {
         Found::One(index) => Some(index),
         Found::None => {
             shell.print("No note with that name (try find).", ERROR_STYLE);
             None
         }
         Found::Ambiguous(list) => {
-            shell.print("More than one note has that title; which one?", ERROR_STYLE);
-            for index in list {
-                say(shell, &["  ", notes.name(index)], Style::PLAIN);
-            }
+            ambiguous(notes, list, shell);
             None
         }
+    }
+}
+
+/// The notes a bare title could mean.
+fn ambiguous(notes: &Notes, list: Vec<usize>, shell: &mut Shell) {
+    shell.print("More than one note has that title; which one?", ERROR_STYLE);
+    for index in list {
+        named(shell, "  ", notes.name(index), Style::PLAIN);
+    }
+}
+
+/// A note by the name the shell shows (decision 0038): `todo` also finds
+/// the text note stored as `todo.txt`, when no note is named `todo`.
+/// Typing `.txt` still works. Links keep Obsidian's rule (`[[todo.txt]]`),
+/// so `Notes::find` is not changed.
+fn find_shown(notes: &Notes, name: &str) -> Found {
+    match notes.find(name) {
+        Found::None if shown(name).1 == Kind::Markdown => {
+            let mut stored = Zeroizing::new(String::with_capacity(name.len() + 4));
+            stored.push_str(name);
+            stored.push_str(".txt");
+            notes.find(&stored)
+        }
+        found => found,
     }
 }
 
@@ -171,7 +259,13 @@ fn links(notes: &Notes, shell: &mut Shell) {
     for (from, target, why) in broken {
         say(
             shell,
-            &[notes.name(from), ": [[", target, "]] ", why.describe()],
+            &[
+                shown(notes.name(from)).0,
+                ": [[",
+                target,
+                "]] ",
+                why.describe(),
+            ],
             Style::PLAIN,
         );
     }
@@ -184,6 +278,21 @@ fn say(shell: &mut Shell, parts: &[&str], style: Style) {
         line.push_str(part);
     }
     shell.print(&line, style);
+}
+
+/// `prefix` and a note's shown name (without the `.txt` of a text note),
+/// its type dimmed after it: `Linux Kernel · markdown` (decision 0038).
+fn named(shell: &mut Shell, prefix: &str, name: &str, style: Style) {
+    let (name, kind) = shown(name);
+    let mut line = Zeroizing::new(String::with_capacity(prefix.len() + name.len()));
+    line.push_str(prefix);
+    line.push_str(name);
+    shell.print_labeled(&line, style, kind.label());
+}
+
+/// Orders notes by shown name, ignoring case.
+fn cmp_shown(a: &str, b: &str) -> std::cmp::Ordering {
+    cmp_ci(shown(a).0, shown(b).0)
 }
 
 /// A folder in the tree `ls` shows.
@@ -224,7 +333,7 @@ impl<'a> Dir<'a> {
 
     fn sort(&mut self) {
         self.dirs.sort_by(|a, b| cmp_ci(a.name, b.name));
-        self.notes.sort_by(|a, b| cmp_ci(a, b));
+        self.notes.sort_by(|a, b| cmp_shown(a, b));
         for dir in &mut self.dirs {
             dir.sort();
         }
@@ -254,7 +363,7 @@ impl<'a> Dir<'a> {
             dir.print(depth + 1, shell);
         }
         for note in &self.notes {
-            say(shell, &[indent, note], Style::PLAIN);
+            named(shell, indent, note, Style::PLAIN);
         }
     }
 }
@@ -270,9 +379,9 @@ fn ls(notes: &Notes, args: &[&str], shell: &mut Shell) {
         if names.is_empty() {
             shell.print("No note has that tag.", QUIET);
         }
-        names.sort_by(|a, b| cmp_ci(a, b));
+        names.sort_by(|a, b| cmp_shown(a, b));
         for name in names {
-            say(shell, &[name], Style::PLAIN);
+            named(shell, "", name, Style::PLAIN);
         }
         return;
     }
@@ -372,17 +481,17 @@ fn find(notes: &Notes, query: &str, shell: &mut Shell) {
         return;
     }
     let mut found: Vec<(i64, usize)> = (0..notes.len())
-        .filter_map(|i| fuzzy(notes.name(i), &query).map(|score| (score, i)))
+        .filter_map(|i| fuzzy(shown(notes.name(i)).0, &query).map(|score| (score, i)))
         .collect();
     found.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| cmp_ci(notes.name(a.1), notes.name(b.1)))
+            .then_with(|| cmp_shown(notes.name(a.1), notes.name(b.1)))
     });
     if found.is_empty() {
         shell.print("No matching names.", QUIET);
     }
     for &(_, index) in found.iter().take(MAX_FOUND) {
-        say(shell, &[notes.name(index)], Style::PLAIN);
+        named(shell, "", notes.name(index), Style::PLAIN);
     }
     if found.len() > MAX_FOUND {
         let more = (found.len() - MAX_FOUND).to_string();
@@ -434,7 +543,7 @@ fn search(notes: &Notes, query: &str, shell: &mut Shell) {
             break;
         }
         let name = notes.name(index);
-        let named = find_ci(name, &needle).is_some();
+        let name_hit = find_ci(shown(name).0, &needle).is_some();
         let mut lines = notes
             .note(index)
             .body
@@ -443,11 +552,11 @@ fn search(notes: &Notes, query: &str, shell: &mut Shell) {
             .filter_map(|line| find_ci(line, &needle).map(|at| snippet(line, at)))
             .take(MAX_HITS_PER_NOTE.min(MAX_HITS - hits))
             .peekable();
-        if !named && lines.peek().is_none() {
+        if !name_hit && lines.peek().is_none() {
             continue;
         }
         notes_hit += 1;
-        say(shell, &[name], NAME_STYLE);
+        named(shell, "", name, NAME_STYLE);
         for line in lines {
             say(shell, &["  ", line.trim()], Style::PLAIN);
             hits += 1;
@@ -496,20 +605,27 @@ mod tests {
             output(&sample(), "ls"),
             [
                 "home/",
-                "  ideas",
+                "  ideas · markdown",
                 "work/",
                 "  projects/",
-                "    Roadmap",
-                "  meeting 2026-11-07",
-                "ideas",
-                "todo.txt"
+                "    Roadmap · markdown",
+                "  meeting 2026-11-07 · markdown",
+                "ideas · markdown",
+                "todo · text"
             ]
         );
         assert_eq!(
             output(&sample(), "ls WORK"),
-            ["projects/", "  Roadmap", "meeting 2026-11-07"]
+            [
+                "projects/",
+                "  Roadmap · markdown",
+                "meeting 2026-11-07 · markdown"
+            ]
         );
-        assert_eq!(output(&sample(), "ls work/projects/"), ["Roadmap"]);
+        assert_eq!(
+            output(&sample(), "ls work/projects/"),
+            ["Roadmap · markdown"]
+        );
         assert_eq!(
             output(&sample(), "ls nowhere"),
             ["No folder with that name."]
@@ -521,7 +637,10 @@ mod tests {
     fn ls_by_tag_and_tags() {
         assert_eq!(
             output(&sample(), "ls #work"),
-            ["work/meeting 2026-11-07", "work/projects/Roadmap"]
+            [
+                "work/meeting 2026-11-07 · markdown",
+                "work/projects/Roadmap · markdown"
+            ]
         );
         assert_eq!(output(&sample(), "ls #nope"), ["No note has that tag."]);
         assert_eq!(
@@ -533,9 +652,16 @@ mod tests {
     #[test]
     fn find_is_fuzzy_and_ranked() {
         let found = output(&sample(), "find rdmp");
-        assert_eq!(found, ["work/projects/Roadmap"]);
+        assert_eq!(found, ["work/projects/Roadmap · markdown"]);
         let found = output(&sample(), "find ideas");
-        assert_eq!(found, ["ideas", "home/ideas"], "the closer match first");
+        assert_eq!(
+            found,
+            ["ideas · markdown", "home/ideas · markdown"],
+            "the closer match first"
+        );
+        // The hidden `.txt` is not matched (decision 0038).
+        assert_eq!(output(&sample(), "find todo"), ["todo · text"]);
+        assert_eq!(output(&sample(), "find txt"), ["No matching names."]);
         assert_eq!(output(&sample(), "find zzz"), ["No matching names."]);
         assert_eq!(output(&sample(), "find"), ["find what? (find TEXT)"]);
     }
@@ -545,16 +671,19 @@ mod tests {
         let found = output(&sample(), "search \"plan FOR\"");
         assert_eq!(
             found,
-            ["work/projects/Roadmap", "  Plan for #Work and #crystal."]
+            [
+                "work/projects/Roadmap · markdown",
+                "  Plan for #Work and #crystal."
+            ]
         );
         let found = output(&sample(), "search IDEAS");
         assert_eq!(
             found,
             [
-                "work/projects/Roadmap",
+                "work/projects/Roadmap · markdown",
                 "  See [[ideas]].",
-                "ideas",
-                "home/ideas",
+                "ideas · markdown",
+                "home/ideas · markdown",
                 "  Other ideas, #Home."
             ]
         );
@@ -598,49 +727,90 @@ mod tests {
         assert_eq!(fuzzy("abc", &lowercase_chars("cba")), None);
     }
 
-    /// `edit` finds a note as `view` does; `new` checks the name and that
-    /// no note has it yet (ignoring case).
+    /// The shown name finds a text note without its `.txt`; a Markdown
+    /// note of that name comes first, and `.txt` typed still works
+    /// (decision 0038).
     #[test]
-    fn edit_and_new_check_their_names() {
+    fn shown_names_find_text_notes() {
+        let n = notes(vec![
+            note(1, "work", "todo.txt", ""),
+            note(2, "", "plan", ""),
+            note(3, "", "plan.txt", ""),
+        ]);
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        assert!(matches!(open("view work/todo"), Some(Open::View(0))));
+        assert!(matches!(open("view TODO"), Some(Open::View(0))));
+        assert!(matches!(open("view work/todo.txt"), Some(Open::View(0))));
+        assert!(matches!(open("view plan"), Some(Open::View(1))));
+        assert!(matches!(open("view plan.txt"), Some(Open::View(2))));
+        assert!(open("view work/todo.txt.txt").is_none());
+    }
+
+    /// `edit` finds a note as `view` does; a missing one is offered for
+    /// creation when its name follows the rules and no note has it, typed
+    /// without `.txt` (decision 0038).
+    #[test]
+    fn edit_opens_or_offers_to_create() {
         let n = sample();
         let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
         let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
         assert!(matches!(open("edit roadmap"), Some(Open::Edit(0))));
-        assert!(open("edit nope").is_none());
-        match open("new work/fresh idea") {
-            Some(Open::New { folder, title }) => {
+        match open("edit work/fresh idea") {
+            Some(Open::Create { folder, title }) => {
                 assert_eq!((folder.as_str(), title.as_str()), ("work", "fresh idea"));
             }
-            _ => panic!("new refused a good name"),
+            _ => panic!("edit refused a good name"),
         }
-        assert!(matches!(open("new plain.txt"), Some(Open::New { .. })));
+        assert!(matches!(
+            open("edit Linux Kernel"),
+            Some(Open::Create { .. })
+        ));
         assert_eq!(
-            output(&sample(), "new work/projects/ROADMAP"),
-            ["A note with that name exists already."]
+            output(&sample(), "edit plain.txt"),
+            ["No note with that name. Leave out .txt: Crystal asks for the type."]
         );
-        assert!(output(&sample(), "new a:b")[0].starts_with("Not a valid name: "));
-        assert!(output(&sample(), "new bad/")[0].starts_with("Not a valid name: "));
+        assert!(output(&sample(), "edit a:b")[0].starts_with("Not a valid name: "));
+        assert!(output(&sample(), "edit bad/")[0].starts_with("Not a valid name: "));
         // A leading `/` is an empty folder, not the top level.
-        for line in ["new /x", "new //x", "mv roadmap /x"] {
+        for line in ["edit /x", "edit //x", "mv roadmap /x"] {
             assert!(
                 output(&sample(), line)[0].starts_with("Not a valid name: "),
                 "{line}"
             );
         }
         assert_eq!(
-            output(&sample(), "new"),
-            ["new what? (new NAME, or new FOLDER/NAME)"]
+            output(&sample(), "edit"),
+            ["Which note? (edit NAME; a missing one is created)"]
+        );
+        assert_eq!(
+            output(&sample(), "new x"),
+            ["unknown command: new (type help)"]
         );
     }
 
+    /// The stored title: `.txt` only for text, and refused when the
+    /// `.txt` makes it longer than 255 bytes.
+    #[test]
+    fn stored_titles() {
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let plain = stored_title("todo", Kind::Plain, &mut shell).unwrap();
+        assert_eq!(plain.as_str(), "todo.txt");
+        let md = stored_title("todo", Kind::Markdown, &mut shell).unwrap();
+        assert_eq!(md.as_str(), "todo");
+        let long = "x".repeat(252);
+        assert!(stored_title(&long, Kind::Markdown, &mut shell).is_some());
+        assert!(stored_title(&long, Kind::Plain, &mut shell).is_none());
+    }
+
     proptest::proptest! {
-        /// A name `new` accepts is the name typed: folder and title join
-        /// back to it exactly (found by review: `/x` became `x`).
+        /// A name `edit` offers to create is the name typed: folder and
+        /// title join back to it exactly (found by review: `/x` became `x`).
         #[test]
-        fn new_keeps_the_name_as_typed(name in "[a/ .]{1,12}") {
+        fn edit_keeps_the_name_as_typed(name in "[a/ .]{1,12}") {
             let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
-            let words = [Zeroizing::new("new".to_owned()), Zeroizing::new(name.clone())];
-            if let Some(Open::New { folder, title }) = run(&sample(), &words, &mut shell) {
+            let words = [Zeroizing::new("edit".to_owned()), Zeroizing::new(name.clone())];
+            if let Some(Open::Create { folder, title }) = run(&sample(), &words, &mut shell) {
                 let joined = if folder.is_empty() {
                     title.to_string()
                 } else {
@@ -688,6 +858,61 @@ mod tests {
         assert!(output(&sample(), "mv roadmap")[0].starts_with("mv OLD NEW"));
     }
 
+    /// `mv` keeps the type (decision 0038): a text note keeps its hidden
+    /// `.txt`, a typed `.txt` is refused, and no rename makes two notes
+    /// show the same name.
+    #[test]
+    fn mv_keeps_the_type() {
+        let n = || {
+            notes(vec![
+                note(1, "", "todo.txt", ""),
+                note(2, "", "plan", ""),
+                note(3, "work", "ideas", ""),
+            ])
+        };
+        let moved = |line: &str| {
+            let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+            match run(&n(), &crate::shell::parse::words(line).unwrap(), &mut shell) {
+                Some(Open::Move {
+                    note,
+                    folder,
+                    title,
+                }) => Some((note, format!("{}|{}", folder.as_str(), title.as_str()))),
+                _ => None,
+            }
+        };
+        assert_eq!(moved("mv todo done"), Some((0, "|done.txt".to_owned())));
+        assert_eq!(
+            moved("mv todo work/Todo"),
+            Some((0, "work|Todo.txt".to_owned()))
+        );
+        assert_eq!(moved("mv todo TODO"), Some((0, "|TODO.txt".to_owned())));
+        assert_eq!(
+            moved("mv plan \"my plan\""),
+            Some((1, "|my plan".to_owned()))
+        );
+        let said = |line: &str| output(&n(), line);
+        assert_eq!(
+            said("mv todo done.txt"),
+            ["Leave out .txt: mv cannot change a note's type."]
+        );
+        assert_eq!(
+            said("mv plan plan.txt"),
+            ["Leave out .txt: mv cannot change a note's type."]
+        );
+        assert_eq!(said("mv todo todo"), ["That is its name already."]);
+        // A Markdown `todo` beside the text `todo`, and the reverse.
+        assert_eq!(
+            said("mv plan todo"),
+            ["A note with that name exists already."]
+        );
+        assert_eq!(
+            said("mv todo plan"),
+            ["A note with that name exists already."]
+        );
+        assert!(said(&format!("mv todo {}", "x".repeat(252)))[0].starts_with("Not a valid name: "));
+    }
+
     #[test]
     fn view_resolves_names_and_links_lists_broken_ones() {
         let n = sample();
@@ -711,8 +936,8 @@ mod tests {
             output(&twice, "view x"),
             [
                 "More than one note has that title; which one?",
-                "  a/x",
-                "  b/x"
+                "  a/x · markdown",
+                "  b/x · markdown"
             ]
         );
         assert_eq!(output(&sample(), "links"), ["No broken links."]);

@@ -874,7 +874,10 @@ fn shell_help_unknown_and_quit() {
 fn lock_asks_again_and_starts_a_new_shell() {
     let (home, _) = home_with_vault("lock");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    // Enter alone: Markdown (decision 0038).
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"# Plan\x13".to_vec()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"help\r".to_vec()));
@@ -1036,7 +1039,10 @@ fn keys_restart_the_idle_time() {
 fn auto_lock_saves_unsaved_edits_first() {
     let (home, _) = home_with_vault("auto_lock_save");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    // A text note, opened again below by its shown name (decision 0038).
+    steps.push(("Markdown", b"t\r".to_vec()));
     steps.push(("Ctrl+S save", b"draft-line".to_vec()));
     steps.push((
         "your unsaved edits were saved first",
@@ -1090,7 +1096,9 @@ fn suspend_locks_first_then_stops() {
          kill -CONT $p ) & wait $p"
     );
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     // Unsaved text in the editor when SIGTSTP comes.
     steps.push(("Ctrl+S save", b"draft-line".to_vec()));
     steps.push((
@@ -1303,7 +1311,9 @@ fn vault_files(vault: &Path) -> Vec<String> {
 fn new_note_is_saved_and_opens_again() {
     let (home, vault) = home_with_vault("editor_new");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new work/plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit work/plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", format!("hello {CANARY}\x13").into_bytes()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
@@ -1349,7 +1359,9 @@ fn new_note_is_saved_and_opens_again() {
 fn edit_previews_saves_and_guards_unsaved_changes() {
     let (home, _) = home_with_vault("editor_edit");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
     steps.push((SHELL_READY, b"edit plan\r".to_vec()));
     // End of the text, a new line, unsaved; then the preview.
@@ -1494,7 +1506,9 @@ fn kill_9_during_saves_never_corrupts_the_vault() {
     const MAX_ROUNDS: u64 = 60;
     let (home, vault) = home_with_vault("kill_during_saves");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new n\r".to_vec()));
+    steps.push((SHELL_READY, b"edit n\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"start\x13".to_vec()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
@@ -1640,7 +1654,9 @@ fn strace_shows_only_ciphertext_written() {
         trace.display()
     );
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, format!("new {TITLE_CANARY}\r").into_bytes()));
+    steps.push((SHELL_READY, format!("edit {TITLE_CANARY}\r").into_bytes()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", format!("{CANARY}\x13").into_bytes()));
     steps.push(("Saved.", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
@@ -1781,9 +1797,17 @@ fn strace_shows_only_ciphertext_written() {
 fn mv_rewrites_links_and_rm_asks_first() {
     let (home, _) = home_with_vault("mv_rm");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
-    steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
-    steps.push((SHELL_READY, b"new index\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\x13".to_vec()));
+    // Closing the editor draws the shell again, the first questions too:
+    // wait past them ("later." ends the type question), so "Create"
+    // below is the second note's question.
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push(("later.", b"edit index\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"See [[plan|the plan]].\x13\x11".to_vec()));
     steps.push((SHELL_READY, b"mv plan work/goals\r".to_vec()));
     steps.push(("Moved.", b"rm index\r".to_vec()));
@@ -1825,7 +1849,9 @@ fn mv_rewrites_links_and_rm_asks_first() {
 fn rm_ignores_a_typed_ahead_answer() {
     let (home, _) = home_with_vault("rm_typed_ahead");
     let mut steps = pass_step(PASS);
-    steps.push((SHELL_READY, b"new plan\r".to_vec()));
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
     // One write, so one read: the `y` is dropped with the rest of it.
     steps.push((SHELL_READY, b"rm plan\ry\r".to_vec()));

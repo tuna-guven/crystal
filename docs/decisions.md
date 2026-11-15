@@ -300,8 +300,8 @@ note content, so no note text reaches stdout, pipes, logs or the
 terminal's scrollback. The output (at most 10 000 entries) and the
 history (at most 200) live in zeroizing memory, wiped on quit and lock.
 Commands: `ls [FOLDER]`, `ls #TAG`, `tags`, `view`, `search`, `find`,
-`links` (broken links), `edit`, `new`, `mv` (rewriting links to the
-note), `rm` (asks for `y`; final), `help`, `clear`, `lock`, `quit`. A
+`links` (broken links), `edit` (creating a missing note after asking),
+`mv` (rewriting links to the note), `rm` (asks for `y`; final), `help`, `clear`, `lock`, `quit`. A
 line splits on spaces, with double quotes and a backslash before a quote;
 no pipes, redirection, globbing, variables or substitution, and nothing
 ever runs outside Crystal. The input line is a fixed-size zeroizing
@@ -355,14 +355,18 @@ columns or longer than 16 bytes). U+FFFD is missing from some fonts, and
 dropping characters silently would make a Trojan Source note look
 harmless.
 
-## 0038 Plain text notes: titles ending in `.txt` {#0038}
+## 0038 Plain text notes: chosen at creation, stored as a `.txt` title {#0038}
 
-*2026-11-08.* A note whose title ends in `.txt` (any case) is plain text;
-every other note is Markdown. The title is the only marker, so the vault
-format is unchanged and `mv` switches the kind. Plain text is shown as
+*2026-11-08.* A note is Markdown or plain text, chosen when `edit` creates
+it (Markdown by default) and never changed after. In the vault a text
+note's title ends in `.txt` (any case): the title is the only marker, so
+the vault format is unchanged. The shell and the title bars never show
+the `.txt`; they show the type dimmed after the name (`todo · text`),
+`view todo` finds `todo.txt`, `mv` keeps the type (a typed `.txt` is
+refused), and no two notes show the same name. Plain text is shown as
 written, sanitized and wrapped, with no links or tags read from it, as in
-Obsidian; other notes can link to it as `[[todo.txt]]`. Other extensions
-are not plain text, so titles with a dot do not change kind by accident.
+Obsidian; other notes link to it as `[[todo.txt]]`. Other extensions are
+not plain text, so titles with a dot do not change kind by accident.
 
 ## 0040 Invisible characters are not allowed in note names {#0040}
 
@@ -438,7 +442,7 @@ added, since that would be a construction outside age ([0042](#0042)).
 
 ## 0045 A simple modeless editor with common Ctrl keys {#0045}
 
-*2026-11-10.* `edit` and `new` open Crystal's own editor on its grid,
+*2026-11-10.* `edit` opens Crystal's own editor on its grid,
 because an external `$EDITOR` writes temp, swap and undo files in
 plaintext. It has one mode and the keys most editors share: arrows,
 Home, End, PgUp and PgDn move, with Shift they select, Ctrl+A selects all,

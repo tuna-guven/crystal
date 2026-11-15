@@ -932,7 +932,7 @@ mod tests {
             }
             editor.key(Key::Ctrl('a'), &mut clipboard);
             editor.key(Key::Ctrl('c'), &mut clipboard);
-            view.draw(&mut grid, &mut editor, "plan");
+            view.draw(&mut grid, &mut editor, "plan", " · markdown");
             assert!(
                 in_memory(&CANARY_MASKED).is_some(),
                 "the scan finds a live canary"

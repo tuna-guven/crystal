@@ -6,9 +6,9 @@
 use zeroize::Zeroizing;
 
 /// Every command word, for completing the first word.
-pub const COMMANDS: [&str; 15] = [
-    "clear", "edit", "exit", "find", "help", "links", "lock", "ls", "mv", "new", "quit", "rm",
-    "search", "tags", "view",
+pub const COMMANDS: [&str; 14] = [
+    "clear", "edit", "exit", "find", "help", "links", "lock", "ls", "mv", "quit", "rm", "search",
+    "tags", "view",
 ];
 
 /// The word the cursor is at the end of.

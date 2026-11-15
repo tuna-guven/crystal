@@ -189,9 +189,10 @@ pub struct View {
 }
 
 impl View {
-    /// Draws `editor` on `grid`, with `name` on the top row, and tells the
-    /// editor how many rows a page is.
-    pub fn draw(&mut self, grid: &mut Grid, editor: &mut Editor, name: &str) {
+    /// Draws `editor` on `grid`, with `name` and its type `label` (dimmed,
+    /// decision 0038) on the top row, and tells the editor how many rows a
+    /// page is.
+    pub fn draw(&mut self, grid: &mut Grid, editor: &mut Editor, name: &str, label: &str) {
         let area = grid.area();
         let (title, rest) = area.split_top(1);
         let (body, bottom) = rest.split_bottom(1);
@@ -200,7 +201,7 @@ impl View {
 
         // `[+]` stays visible however long the name.
         let unsaved = if editor.is_dirty() { "[+]" } else { "" };
-        status_line(grid, title, name, unsaved, TITLE);
+        status_line(grid, title, name, label, unsaved, TITLE);
         match editor.notice() {
             Some(notice) => grid.put_str(bottom.x, bottom.y, notice, NOTICE, bottom.width),
             None => grid.put_str(bottom.x, bottom.y, HINTS, HINT, bottom.width),
@@ -406,7 +407,7 @@ mod tests {
 
     fn drawn(ed: &mut Editor, view: &mut View, width: u16, height: u16) -> Grid {
         let mut grid = Grid::new(width, height);
-        view.draw(&mut grid, ed, "work/plan");
+        view.draw(&mut grid, ed, "work/plan", " · markdown");
         grid
     }
 

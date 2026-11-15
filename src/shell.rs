@@ -46,9 +46,9 @@ Commands:
   view NAME     the note, full screen: Tab folds a heading, n/N and Enter
                 follow [[links]], Backspace back, b backlinks, q returns here
   edit NAME     the note in the editor: Ctrl+S saves, Ctrl+E shows it
-                rendered, Ctrl+Q closes
-  new NAME      a new note (new FOLDER/NAME in a folder), in the editor;
-                it exists once Ctrl+S saves it
+                rendered, Ctrl+Q closes. A missing NAME (FOLDER/NAME in
+                a folder) is created after you type y, as Markdown or
+                text; it exists once Ctrl+S saves it
   mv OLD NEW    rename or move a note; [[links]] to it follow
   rm NAME       delete a note for good, after you type y
   links         every [[link]] that leads nowhere
@@ -63,6 +63,9 @@ recall commands; PgUp and PgDn scroll; Ctrl+C clears the line.";
 /// What the caller should do after a key.
 pub enum Action {
     Nothing,
+    /// Enter on a blank line: an answer of its own to a question (the
+    /// type question takes it as Markdown, decision 0038).
+    Empty,
     Quit,
     /// `lock`: the caller wipes the session and asks for the passphrase
     /// (decision 0048).
@@ -164,6 +167,13 @@ impl Shell {
         self.scroll = 0;
     }
 
+    /// `print`, with `label` (a note's type, decision 0038) dimmed after
+    /// the text.
+    pub fn print_labeled(&mut self, text: &str, style: Style, label: &'static str) {
+        self.output.push_labeled(text, style, label);
+        self.scroll = 0;
+    }
+
     pub fn key(&mut self, key: Key) -> Action {
         let key = key.without_shift();
         if key != Key::Tab {
@@ -257,7 +267,7 @@ impl Shell {
         echo.push_str(&typed);
         self.print(&echo, ECHO_STYLE);
         if typed.trim().is_empty() {
-            return Action::Nothing;
+            return Action::Empty;
         }
         if self.history.back().map(|h| h.as_str()) != Some(typed.as_str()) {
             if self.history.len() == MAX_HISTORY {
@@ -383,6 +393,17 @@ mod tests {
             prompt < rows.len() - 1,
             "not pushed to the bottom: {rows:?}"
         );
+    }
+
+    /// A blank line is `Empty`, an answer of its own; `help`, `clear` and
+    /// a line that does not parse are `Nothing` (decision 0038).
+    #[test]
+    fn a_blank_line_is_empty() {
+        let mut s = shell();
+        assert!(matches!(s.key(Key::Enter), Action::Empty));
+        assert!(matches!(type_text(&mut s, "   \r"), Action::Empty));
+        assert!(matches!(type_text(&mut s, "clear\r"), Action::Nothing));
+        assert!(matches!(type_text(&mut s, "\"open\r"), Action::Nothing));
     }
 
     #[test]

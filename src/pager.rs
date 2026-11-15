@@ -29,7 +29,7 @@
 
 use zeroize::Zeroizing;
 
-use crate::md::render::{Page, Section, kind_of, render};
+use crate::md::render::{Page, Section, kind_of, render, shown};
 use crate::notes::{Fragment, Notes};
 use crate::shell::keys::Key;
 use crate::ui::grid::{Color, Grid, Mods, Style};
@@ -490,7 +490,8 @@ impl Pager {
         grid.fill(top, TITLE);
         let marker = if previewing { "preview " } else { "" };
         let title = Rect::new(top.x + 1, top.y, top.width.saturating_sub(1), 1);
-        status_line(grid, title, notes.name(self.note), marker, TITLE);
+        let (name, kind) = shown(notes.name(self.note));
+        status_line(grid, title, name, kind.label(), marker, TITLE);
         if let Some(list) = &self.backlinks {
             grid.put_str(
                 body.x,
@@ -507,13 +508,12 @@ impl Pager {
                     Style::PLAIN
                 };
                 grid.fill(Rect::new(body.x, row, body.width, 1), style);
-                grid.put_str(
-                    body.x + 1,
-                    row,
-                    notes.name(note),
-                    style,
-                    body.width.saturating_sub(1),
-                );
+                // The shown name, its type dimmed after it (decision 0038).
+                let (name, kind) = shown(notes.name(note));
+                let room = body.width.saturating_sub(1);
+                let used = grid.put_str(body.x + 1, row, name, style, room);
+                let dim = style.mods(style.mods | Mods::DIM);
+                grid.put_str(body.x + 1 + used, row, kind.label(), dim, room - used);
             }
         } else if let Some(page) = &self.page {
             // The gutter on the left, the note in the rest.
@@ -587,7 +587,7 @@ mod tests {
         let n = sample();
         let mut p = Pager::open(0);
         let shown = rows(&mut p, &n, 60, 6);
-        assert_eq!(shown[0], " home");
+        assert_eq!(shown[0], " home · markdown");
         assert_eq!(shown[1], "> Start at b or b#Second or b#^k.");
         assert!(shown[5].starts_with("q shell · j/k move · Tab fold"));
     }
@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(p.selected, Some(1));
         p.key(Key::Enter, &n);
         let shown = rows(&mut p, &n, 60, 10);
-        assert_eq!(shown[0], " b");
+        assert_eq!(shown[0], " b · markdown");
         // Near the end the page cannot scroll further, so the heading is
         // shown lower down, not on the first row.
         assert!(
@@ -717,7 +717,7 @@ mod tests {
         assert_eq!(p.scroll, p.max_scroll());
         p.key(Key::Backspace, &n);
         let shown = rows(&mut p, &n, 60, 10);
-        assert_eq!(shown[0], " home");
+        assert_eq!(shown[0], " home · markdown");
         // The block link: the last one on the cursor's line, which came
         // back with the note.
         assert_eq!(p.cursor, 0);
@@ -839,6 +839,20 @@ mod tests {
         assert_eq!(shown[1..4], ["", "      c1", ">"]);
     }
 
+    /// A text note's title bar shows its name without `.txt`, the type
+    /// dimmed after it (decision 0038).
+    #[test]
+    fn title_shows_the_type() {
+        let n = notes(vec![note(1, "work", "todo.txt", "milk")]);
+        let mut p = Pager::open(0);
+        let shown = rows(&mut p, &n, 40, 4);
+        assert_eq!(shown[0], " work/todo · text");
+        let mut grid = Grid::new(40, 4);
+        p.draw(&mut grid, &n, None);
+        assert!(!grid.cell(9, 0).unwrap().style().mods.contains(Mods::DIM));
+        assert!(grid.cell(11, 0).unwrap().style().mods.contains(Mods::DIM));
+    }
+
     #[test]
     fn backlinks_list_opens_a_note() {
         let n = sample();
@@ -847,9 +861,9 @@ mod tests {
         p.key(Key::Char('b'), &n);
         let shown = rows(&mut p, &n, 60, 10);
         assert!(shown[1].starts_with("Linked from"));
-        assert_eq!(shown[2], " c");
+        assert_eq!(shown[2], " c · markdown");
         p.key(Key::Enter, &n);
-        assert_eq!(rows(&mut p, &n, 60, 10)[0], " c");
+        assert_eq!(rows(&mut p, &n, 60, 10)[0], " c · markdown");
         let mut p = Pager::open(2);
         rows(&mut p, &n, 60, 10);
         p.key(Key::Char('b'), &n);

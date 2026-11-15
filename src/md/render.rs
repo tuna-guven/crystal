@@ -51,6 +51,16 @@ pub enum Kind {
     Plain,
 }
 
+impl Kind {
+    /// The type as it is shown after a name, dimmed (decision 0038).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Markdown => " · markdown",
+            Self::Plain => " · text",
+        }
+    }
+}
+
 /// A title ending in `.txt` (any case) is plain text; every other note is
 /// Markdown.
 pub fn kind_of(title: &str) -> Kind {
@@ -59,6 +69,19 @@ pub fn kind_of(title: &str) -> Kind {
         Kind::Plain
     } else {
         Kind::Markdown
+    }
+}
+
+/// A name (`folder/title`) or title as it is shown and typed: without the
+/// `.txt` that marks plain text in the vault, and its kind (decision
+/// 0038). Only the title decides, so `work/.txt` stays Markdown.
+pub fn shown(name: &str) -> (&str, Kind) {
+    let title = name.rsplit_once('/').map_or(name, |(_, title)| title);
+    match kind_of(title) {
+        // kind_of saw more than 4 bytes ending in ASCII `.txt`: the cut
+        // is a char boundary and leaves a non-empty title.
+        Kind::Plain => (&name[..name.len() - 4], Kind::Plain),
+        Kind::Markdown => (name, Kind::Markdown),
     }
 }
 
@@ -1293,6 +1316,19 @@ mod tests {
         assert_eq!(kind_of("v1.2 plan"), Kind::Markdown);
         assert_eq!(kind_of("roadmap"), Kind::Markdown);
         assert_eq!(kind_of("日本.txt"), Kind::Plain);
+    }
+
+    /// The shown name drops only the title's `.txt`.
+    #[test]
+    fn shown_names() {
+        assert_eq!(shown("todo.txt"), ("todo", Kind::Plain));
+        assert_eq!(shown("work/Notes.TXT"), ("work/Notes", Kind::Plain));
+        assert_eq!(shown("work/日本.txt"), ("work/日本", Kind::Plain));
+        assert_eq!(shown("work/.txt"), ("work/.txt", Kind::Markdown));
+        assert_eq!(shown("a.txt/plan"), ("a.txt/plan", Kind::Markdown));
+        assert_eq!(shown("Linux Kernel"), ("Linux Kernel", Kind::Markdown));
+        assert_eq!(Kind::Plain.label(), " · text");
+        assert_eq!(Kind::Markdown.label(), " · markdown");
     }
 
     #[test]
