@@ -33,6 +33,7 @@ mod unlock;
 mod vault;
 
 use std::error::Error;
+use std::os::fd::AsFd;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -87,7 +88,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
     };
     let home = harden::env_var(harden::EnvVar::Home);
     // Step 7. Opening never creates the data directory (only `crystal
-    // init` does); the vault itself is opened at unlock (step 8).
+    // init` does); the vault itself is opened below, still in step 7.
     let data_dir = vault::DataDir::open(home.as_deref())?;
     let state_dir = vault::StateDir::open_or_create(home.as_deref())?;
     // Last, so every earlier error prints on the normal screen. Dropped when
@@ -115,10 +116,15 @@ fn startup() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Step 8: unlock. The vault directory is checked before the prompt, so
-    // a mistyped name fails at once.
+    // Step 7, last part: the vault directory, checked before the prompt
+    // so a mistyped name fails at once. Closing the data directory leaves
+    // no fd to the other vaults.
     let mut vault_dir = unlock::open_vault_dir(&data_dir, &args.name)?;
     drop(data_dir);
+    // Steps 8 and 9 (decision 0059): from here on Crystal reaches only
+    // this vault and the state directory, before any passphrase is read.
+    harden::enter_sandbox(vault_dir.fd().as_fd(), state_dir.fd().as_fd())?;
+    // Steps 10 and 11: unlock, inside the sandbox.
     let mut state_dir = state_dir;
     // Each turn unlocks and runs a session; `lock` ends the session, which
     // gives back only the two directory handles, and the next turn shows

@@ -89,7 +89,8 @@ plaintext to disk.
 *2026-11-06.* The Landlock ruleset is built with the `landlock` crate in
 hard-requirement mode. Below ABI 9 (whose `RESOLVE_UNIX` blocks pathname
 UNIX sockets such as D-Bus and Wayland), or without Landlock, Crystal
-refuses to start and names the running and the required ABI. There is no
+refuses to start and names the required ABI (the crate does not report the
+running one, and asking the kernel directly would need `unsafe`). There is no
 best-effort mode, which would run a partial sandbox without saying so, no
 override flag, and no raw Landlock syscall (it would need `unsafe`).
 Crystal therefore needs a recent kernel, and CI a runner with ABI 9

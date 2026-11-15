@@ -55,7 +55,7 @@ pub struct RunArgs {
     /// screen and print only the resulting length. Not in release builds.
     #[cfg(debug_assertions)]
     pub prompt_for_test: Option<PromptKind>,
-    /// Debug builds only: skip unlock (step 8) and wait for a key at once,
+    /// Debug builds only: skip the sandbox and unlock (steps 8 to 11) and wait for a key at once,
     /// for the tests of steps 1 to 7, signals and the terminal guard,
     /// which need no vault. Not in release builds.
     #[cfg(debug_assertions)]

@@ -1,4 +1,4 @@
-//! Acceptance through the real binary: unlock (startup step 8), the tamper
+//! Acceptance through the real binary: unlock (startup steps 10 and 11), the tamper
 //! suite, and the vault commands (`init`, `recover`, `check-code`, `rm`).
 //! Each test makes its own vault with `crystal init` in a fresh HOME,
 //! damages one thing, and checks that Crystal refuses it with a fixed

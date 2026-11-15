@@ -37,7 +37,7 @@ Matches the [startup order](startup.md).
 Rules:
 - Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
 - MUST NOT continue to step 7 if steps 1, 5 or 6 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
-- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(&SandboxConfig) -> Result<SandboxReport, SandboxError>`.
+- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3. *As built (step S3):* Landlock only; seccomp joins in step S5.
 
 ## 4. Process hardening
 
@@ -93,16 +93,18 @@ Notes:
 
 ### 5.3 Enforcement
 
-- Flags: `TSYNC` (the crate's "all threads"). Crystal is single-threaded, so this is defense in depth only.
-- no_new_privs is already set by section 4; Landlock requires it and needs nothing more.
+- Flags: `TSYNC` (the crate's `all_threads`). Crystal is single-threaded, so this is defense in depth only.
+- no_new_privs is already set by section 4; Landlock requires it and needs nothing more (the crate sets it once more, harmlessly).
 - Do not set `LOG_SAME_EXEC_OFF`. Denials must reach the audit log.
+- After `restrict_self`, Crystal checks the crate's status: fully enforced on all threads, or it refuses to run, so a crate bug cannot leave it unconfined.
+- *As built (step S3, `src/harden/landlock.rs`):* the rules above, from the vault and state fds; called in `main` right after the vault directory is opened, before the passphrase prompt ([decision 0059](../decisions.md#0059)). A mutation check (no `MAKE_REG`) made every saving pty test fail, so the ruleset is enforced in the test suite.
 
 ### 5.4 Fallback policy
 
 | Running ABI | Behavior |
 |-------------|----------|
 | >= 9 | Full policy as above |
-| < 9, unavailable or disabled | Refuse to start, naming the running and the required ABI |
+| < 9, unavailable or disabled | Refuse to start, naming the required ABI (the crate does not report the running one) |
 
 There is no weaker mode and no flag to allow one: Crystal never runs with a partial sandbox. ABI 9 is required because `RESOLVE_UNIX` arrives there; the scopes need ABI 6. `SandboxReport` records the ABI.
 

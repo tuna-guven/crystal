@@ -1,4 +1,4 @@
-//! Startup step 8, unlock (docs/design/startup.md): the vault's passphrase
+//! Startup steps 10 and 11, unlock (docs/design/startup.md): the vault's passphrase
 //! opens its `identity.age`, which opens `vault.age`. The vault must be the
 //! one pinned to its name on this device, and not older than the newest
 //! version seen here. Every check fails closed; no message names a note, a
@@ -127,7 +127,7 @@ pub fn open_vault_dir(data: &DataDir, name: &VaultName) -> Result<VaultDir, Unlo
     Ok(vault_dir)
 }
 
-/// Step 8: open `identity.age` with `pass`, then wipe the passphrase;
+/// Steps 10 and 11: open `identity.age` with `pass`, then wipe the passphrase;
 /// decrypt `vault.age`; require the pinned `vault_id` (or pin it); check
 /// and update the vault's counter. An older vault is not refused here: it
 /// comes back with `older` set and the counter unchanged, for the user to

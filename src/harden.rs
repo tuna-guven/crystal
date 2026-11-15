@@ -1,9 +1,12 @@
 //! Process hardening and sandbox: rlimits, prctl, mlockall, env allowlist,
 //! tty checks, Landlock and seccomp, applied in the order docs/design/startup.md fixes.
 
+mod landlock;
+
 use std::fmt;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::fd::BorrowedFd;
 use std::panic::{self, Location};
 
 use rustix::fs::{CWD, Dir, Mode, OFlags, openat};
@@ -38,6 +41,14 @@ pub enum HardenError {
         lowest: i32,
         count: usize,
     },
+    /// The kernel has no Landlock, has it turned off, or is below ABI 9
+    /// (decision 0010). The crate cannot tell which without `unsafe`.
+    LandlockTooOld,
+    /// Creating, filling or enforcing the ruleset failed. The crate's
+    /// error names only rights and errnos: Crystal passes fds, no paths.
+    Landlock(::landlock::RulesetError),
+    /// The kernel took the ruleset but reports it as not fully enforced.
+    LandlockNotEnforced,
 }
 
 impl fmt::Display for HardenError {
@@ -58,6 +69,17 @@ impl fmt::Display for HardenError {
                  the sandbox. Start Crystal from a plain shell, or close them \
                  (for example: crystal unlock NAME {lowest}>&-)"
             ),
+            Self::LandlockTooOld => write!(
+                f,
+                "this kernel has no Landlock ABI {} or newer (or Landlock is turned \
+                 off); Crystal never runs without its full sandbox; see \
+                 docs/design/sandboxing.md, section 5.4",
+                landlock::REQUIRED_ABI
+            ),
+            Self::Landlock(e) => write!(f, "Landlock failed: {e}"),
+            Self::LandlockNotEnforced => {
+                write!(f, "Landlock is not fully enforced; Crystal refuses to run")
+            }
         }
     }
 }
@@ -136,6 +158,13 @@ fn stray_fds<'a>(names: impl Iterator<Item = &'a [u8]>, own: i32) -> Vec<i32> {
         .filter_map(|name| std::str::from_utf8(name).ok()?.parse::<i32>().ok())
         .filter(|&fd| fd > 2 && fd != own)
         .collect()
+}
+
+/// Startup steps 8 and 9 (decision 0059): confine the process for good,
+/// before the passphrase prompt. `vault` and `state` are the directory fds
+/// of startup step 7. Fails closed: on any error the caller must exit.
+pub fn enter_sandbox(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), HardenError> {
+    landlock::restrict(vault, state)
 }
 
 /// Environment variables Crystal may read (startup step 3). Add a variant
