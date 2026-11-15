@@ -18,22 +18,22 @@ process. The tables below give each use in detail. Collected on this
 machine (step S4): the full debug and release test suites ran with the
 filter in log mode and the audit log was read, then with
 `mprotect`, `mremap`, `madvise`, `futex`, `rt_sigprocmask`,
-`sigaltstack` and `exit` left out, which nothing logged. Argument
-restrictions come with step S5.
+`sigaltstack` and `exit` left out, which nothing logged. Five syscalls
+are allowed only with certain arguments (step S5, last column).
 
-| Syscall | Who, after the sandbox | Why |
-| --- | --- | --- |
-| `openat`, `read`, `write`, `close`, `fstat`, `newfstatat`, `getdents64`, `renameat2`, `unlinkat`, `fsync` | `unlock`, `vault::atomic_write`, `public_file`, `generation`, `pin`; the terminal | Read and save the vault's files beneath the vault and state directories (Landlock allows nothing else); read keys from and draw to `/dev/tty` |
-| `ppoll` | `term::TerminalGuard::wait`, the prompts | Wait for a key, a signal pipe or a time limit |
-| `ioctl` | `term` (rustix termios) | Raw mode on and off, window size, discarding typed-ahead keys at a prompt |
-| `fcntl` | `term::TerminalGuard::engage` on resume after a suspend (`File::try_clone`); in debug builds also std's `debug_assert_fd_is_open` on every fd close | `F_DUPFD_CLOEXEC`: a second terminal fd for the panic hook's restore. `F_GETFD`: a debug-only check in std, never in release |
-| `getpid`, `kill` | `term::TerminalGuard::suspend` | Stop ourselves with `SIGSTOP` after restoring the terminal |
-| `rt_sigreturn` | kernel, after signal-hook's handler | Return from a signal handler |
-| `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces |
-| `clock_gettime` | `session::now`, `term::Idle` | Timestamps and auto-lock (usually answered by the vDSO; the syscall is the fallback) |
-| `prlimit64` | `crypto::scrypt_policy`, before the first passphrase is used | Read the memlock hard limit, to refuse an scrypt work factor that cannot fit |
-| `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 256 MiB |
-| `exit_group` | std, at the end of `main` | Exit |
+| Syscall | Who, after the sandbox | Why | Arguments allowed |
+| --- | --- | --- | --- |
+| `openat`, `read`, `write`, `close`, `fstat`, `newfstatat`, `getdents64`, `renameat2`, `unlinkat`, `fsync` | `unlock`, `vault::atomic_write`, `public_file`, `generation`, `pin`; the terminal | Read and save the vault's files beneath the vault and state directories (Landlock allows nothing else); read keys from and draw to `/dev/tty` | any (Landlock limits the paths) |
+| `ppoll` | `term::TerminalGuard::wait`, the prompts | Wait for a key, a signal pipe or a time limit | any |
+| `ioctl` | `term` (rustix termios) | Raw mode on and off, window size, discarding typed-ahead keys at a prompt | request `TCGETS2`, `TCSETS2`, `TCSETSF2`, `TIOCGWINSZ` or `TCFLSH` (low 32 bits) |
+| `fcntl` | `term::TerminalGuard::engage` on resume after a suspend (`File::try_clone`, through musl's `fcntl()`); in debug builds also std's `debug_assert_fd_is_open` on every fd close | `F_DUPFD_CLOEXEC`: a second terminal fd for the panic hook's restore; musl then sets `FD_CLOEXEC` on it once more. `F_GETFD`: a debug-only check in std, never in release | `F_DUPFD_CLOEXEC`; `F_SETFD` with `FD_CLOEXEC`; debug builds also `F_GETFD` |
+| `getpid`, `kill` | `term::TerminalGuard::suspend` | Stop ourselves with `SIGSTOP` after restoring the terminal | `getpid`: none. `kill`: our own pid (taken when the filter is built) and `SIGSTOP` only |
+| `rt_sigreturn` | kernel, after signal-hook's handler | Return from a signal handler | none |
+| `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces | any |
+| `clock_gettime` | `session::now`, `term::Idle` | Timestamps and auto-lock (usually answered by the vDSO; the syscall is the fallback) | any |
+| `prlimit64` | `crypto::scrypt_policy`, before the first passphrase is used | Read the memlock hard limit, to refuse an scrypt work factor that cannot fit | pid 0, `RLIMIT_MEMLOCK`, new limit NULL (read only) |
+| `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 256 MiB | `mmap`: no `PROT_EXEC`. `brk`, `munmap`: any |
+| `exit_group` | std, at the end of `main` | Exit | any |
 
 | Syscall | Used by | Why | Restriction |
 | --- | --- | --- | --- |
