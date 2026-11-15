@@ -7,7 +7,7 @@ Target platform: secureblue (Fedora Atomic, SELinux enforcing). Verified 2026-10
 ## 1. Threat model summary
 
 - Crystal handles decrypted notes and age identities in memory.
-- Crystal never needs network access or IPC with other processes. The only `execve` is the age plugin (YubiKey or TPM, Phase 8) during unlock, before the sandbox; after that, exec is denied.
+- Crystal never needs network access or IPC with other processes, and never calls `execve`: the sandbox is entered before the passphrase prompt ([decision 0059](../decisions.md#0059)), so exec is denied for the whole unlock and session. An age plugin (YubiKey or TPM, Phase 8) would need exec; how such a vault unlocks is decided then, without weakening the sandbox.
 - Goal: a memory-safety bug, malicious Markdown, or a compromised dependency must not be able to read files outside the vault, exfiltrate data, or affect other processes.
 - Defense in depth: every layer below must stand on its own. No layer may assume another one is active.
 
@@ -27,16 +27,16 @@ Matches the [startup order](startup.md).
 
 1. Process hardening (section 4; [startup](startup.md) steps 1 to 4).
 2. Open `/dev/tty` directly and require a real terminal (step 5).
-3. Parse arguments (step 6): a vault name, not a path. Open `~/.local/share/crystal` and then `NAME` relative to it ([decision 0032](../decisions.md#0032)), and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
+3. Parse arguments (step 6): a vault name, not a path. Open `~/.local/share/crystal` and then `NAME` relative to it ([decision 0032](../decisions.md#0032)), and the state directory, as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC` fds, and read `VERSION` (step 7). Paths are not canonicalized: the fds are what Crystal uses, and the vault and state fds are reused as the Landlock rule fds.
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
-5. Unlock: decrypt `identity.age` with the passphrase (read in raw mode from `/dev/tty`) or an age plugin (step 8). Plugins are separate binaries, so this is the last moment `execve` works. Only the identity is decrypted here, not the vault.
-6. Apply Landlock (section 5; step 9).
-7. Apply the seccomp filter (section 6; step 10). Requires no_new_privs, which step 1 already set.
+5. Apply Landlock (section 5; step 8).
+6. Apply the seccomp filter (section 6; step 9). Requires no_new_privs, which step 1 already set.
+7. Unlock, inside the sandbox ([decision 0059](../decisions.md#0059)): read the passphrase in raw mode from `/dev/tty` and decrypt `identity.age` (step 10). `crystal recover` and `crystal check-code` enter the sandbox the same way before their prompt; `init` and `rm` never do.
 8. Decrypt the vault, build the indexes, start the shell (step 11).
 
 Rules:
 - Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
-- MUST NOT continue to step 8 if steps 1, 6 or 7 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
+- MUST NOT continue to step 7 if steps 1, 5 or 6 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
 - All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(&SandboxConfig) -> Result<SandboxReport, SandboxError>`.
 
 ## 4. Process hardening
@@ -104,7 +104,7 @@ Notes:
 | >= 9 | Full policy as above |
 | < 9, unavailable or disabled | Refuse to start, naming the running and the required ABI |
 
-There is no weaker mode and no flag to allow one: Crystal never runs with a partial sandbox. ABI 9 is required because `RESOLVE_UNIX` arrives there; the scopes need ABI 6. `SandboxReport` records the ABI. `crystal --sandbox-status` prints it.
+There is no weaker mode and no flag to allow one: Crystal never runs with a partial sandbox. ABI 9 is required because `RESOLVE_UNIX` arrives there; the scopes need ABI 6. `SandboxReport` records the ABI.
 
 ## 6. seccomp-bpf
 

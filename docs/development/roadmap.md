@@ -26,6 +26,37 @@ suspended.
 rendered, Ctrl+Q closes), creating a missing note after asking for its
 type (Markdown or text), shown dimmed after every name.
 
+## Steps S0 to S12 (Phase 6, the sandbox)
+
+Approved 2026-11-15, every step; S10 (bubblewrap) stays, not urgent, last. Testing
+is local (this machine: kernel 7.3.3, Landlock ABI 11): CI comes later
+(S0), and until then CI may fail from S3 on if its runner has no ABI 9.
+Security first: Landlock and seccomp go in before anything else in this
+phase, then the tests that prove them, then the outer layers. Every
+step ends with fmt, clippy, tests, deny and audit green, and leaves
+Crystal working.
+
+| Step | What | Why | Size |
+| --- | --- | --- | --- |
+| S0 (later) | CI: a runner or VM with Landlock ABI 9 or newer, never a weaker mode (sandboxing section 9); first a probe printing the runner's kernel and ABI | From S3 on, Crystal refuses to start below ABI 9, so every pty test fails on an older runner. Deferred by the user: the sandbox is tested locally first | ~10 lines YAML, then the fix |
+| S1 (done) | Decision 0059 and the book: the sandbox is entered **before the first passphrase prompt**, not after the identity is decrypted; startup steps 8 to 11 and sandboxing sections 1 and 3 reordered. Code comments naming step 8 as unlock follow in S3, with the code | The lock screen already re-unlocks inside the sandbox (0048), so the first unlock needs no syscall the sandbox lacks; moving it in puts the parsers of `identity.age` and `vault.age` (hostile input, A1) and scrypt inside Landlock and seccomp | docs only |
+| S2 | Dependencies: `landlock` 0.4.7 (MIT/Apache-2.0; brings `enumflags2`, reuses `libc` and `thiserror`) and `seccompiler` 0.5.0 (Apache-2.0/BSD-3; no default features, so no serde). Exact pins, `deny.toml` checked | Both already chosen in [Dependencies](../design/dependencies.md); Landlock and BPF by hand would need `unsafe` in the crystal crate | Cargo.toml, lock |
+| S3 | `src/harden/landlock.rs`: ABI 9 hard requirement, rules from the vault and state fds already open (vault and state: read, write, truncate, make and remove files; no `REFER`, `EXECUTE`, `MAKE_DIR`, `REMOVE_DIR`, `IOCTL_DEV`), TCP bind and connect handled with no rule, signal and abstract-socket scopes. Called from `harden::enter_sandbox` at the point S1 fixes | The file layer: a bug or a bad crate can no longer read `~/.ssh` or other vaults, nor reach D-Bus or Wayland sockets | ~150 lines |
+| S4 | Collect the syscall set locally: the allowlist starts from [Syscalls](../reference/syscalls.md), then the pty suite (view, search, edit, save, lock, re-unlock, restore, suspend, resize) runs with the kill filter; each `SIGSYS` death names its syscall in the kernel's audit record (`journalctl -k`, or `run0 ausearch -m SECCOMP` only if the journal is not readable). Every syscall gets its row. No `sandbox-audit` log build (sandboxing section 6 changes in S5), so no build that only logs can ever ship | The allowlist must come from what Crystal really calls, including musl and std, not from memory; strace is not used locally (`deny_ptrace` stays on) | syscalls.md |
+| S5 | `src/harden/seccomp.rs`: the allowlist with kill-process default, argument rules (`ioctl` by request, `kill` own pid and `SIGSTOP` only, `mmap` and `mprotect` without `PROT_EXEC`, `openat` without `O_CREAT` outside `atomic_write`'s flags where the filter can check them), applied right after Landlock | The syscall layer: no `socket`, `execve`, `ptrace`, `io_uring`, `clone` and no `TIOCSTI`, even if Landlock had a hole | ~250 lines |
+| S6 | Debug-only `--sandbox-selftest CHECK NAME` (like `--crash-for-test`) and `tests/sandbox.rs`: the section 9 checks, one process per check; seccomp kills asserted as `SIGSYS`; `NoNewPrivs` and `Seccomp: 2` read from `/proc/PID/status` outside; a release test that the flag is refused | Proof that each layer stands alone, and that save and atomic rename still work inside | ~150 + ~250 lines |
+| S7 | The ABI refusal: the function choosing "refuse" from an ABI number is unit-tested at 0 (no Landlock), 8 and 9; the refusal message names both ABIs | A kernel below 9 cannot be produced in a normal test; the decision is tested, the real kernel check stays the crate's hard requirement | ~40 lines |
+| S8 | `recover` and `check-code` enter the same sandbox before their prompt (they parse `identity.backup.age`, hostile input too). `init` and `rm` stay outside: they create and remove directories | Same protection for the other decrypting commands, at the cost of one extra call each | ~30 lines |
+| S9 | SELinux module in `packaging/selinux/` (`crystal.te`, `.fc`, `.if`) per section 7, developed permissive then enforcing; `run0` only for `semodule`, `restorecon`, `semanage` and `ausearch`, where it is strictly needed | A layer Crystal cannot switch off itself: it holds even if Crystal's own sandbox code has a bug | ~150 lines policy, manual check |
+| S10 (last) | Bubblewrap launcher `packaging/crystal-sandboxed.sh` (sandboxing section 8), checked by hand on this machine, including the bwrap-to-`crystal_t` transition (S9) | An outer layer Crystal does not set up itself: mount and PID namespaces hide the rest of the system even if Landlock had a hole. Not urgent: S3, S5 and S9 come first | ~30 lines script, docs |
+| S11 | Fuzzing in a separate `fuzz/` crate: renderer, sanitizer, vault and identity decoders, one hour clean. Needs `libfuzzer-sys` (compiles C++ libFuzzer) and a nightly toolchain, which were removed in Phase 5 | Finds parser bugs property tests miss; the sandbox limits what such a bug can do, fuzzing removes the bug. Weekly CI job only | ~100 lines, new deps |
+| S12 | Book and log: sandboxing sections 3, 5, 6, 9 (checkboxes), startup steps 8 to 11, syscalls.md "Pre-sandbox only" cut to what still runs before, threat model A4 and A6, leakage (seccomp kill row), setup guide (kernel requirement), this table; then a security review of the Phase 6 diff before Phase 8 | The book matches the code; the review mirrors Phases 4 and 5 | docs |
+
+Order of work: S1, S2, then S3 to S7 one per turn, then S8, S9, S11,
+S12, then S10; S0 when the user asks. Phase 6 acceptance: every check in
+[Sandboxing](../design/sandboxing.md) section 9 passes locally; the CI
+check follows with S0.
+
 ## Steps N1 to N5 (note types shown, not typed; done)
 
 Asked 2026-11-15: a note's type (Markdown or text) is chosen when it is
@@ -205,7 +236,7 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock after 5 minutes and the shell's `lock` command, lock on suspend (decision 0048), the shell starting at the top (decision 0049). No settings and no vault format change. Steps M0 to M6 above.
    - Accept (passed 2026-11-14): the canary scan finds no plaintext after lock.
-7. **Phase 6: Sandbox.** Coverage-guided fuzzing of the renderer, sanitizer and vault decoder in a separate `fuzz/` crate (`cargo-fuzz`; the dependency approved then), run for an hour clean. Landlock and seccomp in log mode, collect syscalls, then switch to kill. SELinux policy module and optional bubblewrap launcher. Debug-only `--sandbox-selftest CHECK` and `--sandbox-status` ([Sandboxing](../design/sandboxing.md)).
+7. **Phase 6: Sandbox.** Coverage-guided fuzzing of the renderer, sanitizer and vault decoder in a separate `fuzz/` crate (`cargo-fuzz`; the dependency approved then), run for an hour clean. Landlock and seccomp in log mode, collect syscalls, then switch to kill. SELinux policy module and optional bubblewrap launcher. Debug-only `--sandbox-selftest CHECK` ([Sandboxing](../design/sandboxing.md)).
    - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied.
 8. ~~**Phase 7: Backups.**~~ Dropped (decision 0036): backups are left to restic, borg or any file-level tool; Crystal only accepts a restored, older vault after the word `restore` (step L3), and `crystal check-code NAME` checks the recovery code (step L1).
 9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), optionally a hardware key as a further recovery method (never required; decision 0029), passphrase change, a new recovery code, and key rotation (with an optional stronger scrypt setting, see Storage, Open questions), explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`, per-user install to `~/.local/bin` with the optional immutable flag ([Installation](../guide/installation.md)).

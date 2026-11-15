@@ -37,7 +37,7 @@ age specification, with an approved ML-KEM implementation, and re-encrypts
 the vault on the next save. Rejected for now: age's `tagpq` (decryption
 needs a hardware tag through a plugin, and it pulled in a crate with a
 timing advisory), unaudited third-party crates, and plugins (they need
-`execve`, which the sandbox denies after unlock). Recorded in
+`execve`, which the sandbox denies, [0059](#0059)). Recorded in
 [Storage, Open questions](design/storage.md#open-questions).
 
 ## 0004 Two identity files {#0004}
@@ -635,3 +635,20 @@ while a prompt is open draws nothing again; the keys typed so far are
 kept. A passphrase box, a large braille drawing beside the prompt and a
 centered, redrawn prompt were dropped: layout code with no security
 benefit.
+
+## 0059 The sandbox is entered before the first passphrase prompt {#0059}
+
+*2026-11-15.* `crystal unlock NAME` applies Landlock and seccomp
+([Sandboxing](design/sandboxing.md)) as soon as the terminal, the vault
+directory (with `VERSION`) and the state directory are open, before the
+passphrase is asked. The passphrase, scrypt, the parsing of
+`identity.age` and `vault.age` (files a storage attacker can change,
+A1), the pin and counter checks, the `restore` question and the whole
+session then run confined. The lock screen's unlock ([0048](#0048)) runs
+inside the sandbox anyway, so the first unlock needs no syscall the
+sandbox would not allow already. `crystal recover` and
+`crystal check-code` enter the same sandbox before their prompt, since
+they parse `identity.backup.age`; `init` and `rm` create and remove
+directories, so they stay outside and exit. Nothing Crystal does needs
+`execve`. A hardware-key plugin (Phase 8) would; how such a vault
+unlocks is decided then, and the sandbox is never weakened for it.
