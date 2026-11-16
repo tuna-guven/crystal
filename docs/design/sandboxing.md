@@ -214,20 +214,21 @@ exec bwrap \
 
 Sandbox enforcement is irreversible, so tests MUST run the binary as a subprocess.
 
-Add a hidden `crystal --sandbox-selftest CHECK VAULT_NAME` mode, compiled into debug builds only (like `--crash-for-test`). It enters the sandbox, attempts the one forbidden action named by `CHECK`, and prints one line, `CHECK: PASS` or `CHECK: FAIL <errno>`. One check per process, because a seccomp kill ends the process; for those checks the test asserts death by `SIGSYS` instead of a line. No JSON: that would need a new dependency for no gain. `tests/sandbox.rs` asserts on the result.
+The hidden option `crystal unlock --sandbox-check-for-test CHECK NAME` is compiled into debug builds only, like the other `*-for-test` options (release builds refuse it; `cli::tests::release_refuses_the_test_hooks`). Crystal enters the sandbox exactly as before a real unlock, attempts the one forbidden action `CHECK` names, and prints one line, `sandbox-check: denied errno=N` or `sandbox-check: ALLOWED`. One check per process, because a seccomp kill ends the process; for those checks the test asserts death by `SIGSYS` instead of a line. No JSON: that would need a new dependency for no gain. `tests/sandbox.rs` asserts on the result; its vault is a directory holding only `VERSION`, so no passphrase or scrypt is needed. The checks open files with rustix's `openat`, as Crystal does everywhere: std's `File::open` makes musl call the old `open` syscall, which seccomp kills before Landlock could answer (so any `std::fs` call added later dies in the pty tests).
 
 Status checks are made by the test process from outside, through `/proc/<pid>/status` while the child waits, because Landlock denies `/proc` inside the sandbox.
 
-- [ ] Reading `$HOME/.ssh/id_ed25519` (a fixture in the test's temporary HOME) fails with `EACCES`
-- [ ] Writing outside the vault and state dirs fails with `EACCES`
+- [x] Reading `$HOME/.ssh/id_ed25519` (a fixture in the test's temporary HOME) fails with `EACCES` (`reading_outside_the_vault_is_denied`)
+- [x] Writing outside the vault and state dirs fails with `EACCES`, and nothing appears (`writing_outside_the_vault_is_denied`)
+- [x] Another vault in the same `~/.local/share/crystal` is unreachable (`another_vault_is_unreachable`). Mutation-checked: without Landlock all three report `ALLOWED`
 - [ ] `socket(AF_INET, ...)` is killed or denied
 - [ ] Connecting to a pathname UNIX socket (a fixture socket in the test directory) fails
 - [ ] `execve("/usr/bin/true")` is killed or denied
 - [ ] `kill(<parent pid>, SIGTERM)` fails (Landlock signal scope)
 - [ ] `ioctl(tty, TIOCSTI, ...)` is killed or denied
-- [ ] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`
-- [ ] `cat /proc/<crystal pid>/mem` from another shell fails
-- [ ] Save and atomic rename still work inside the sandbox
+- [x] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`, `Seccomp_filters: 1` (`running_sandbox_shows_in_proc_status`)
+- [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
+- [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
 - [ ] `ps -eZ` shows `crystal_t` (when policy installed; manual check)
 - [ ] A kernel below ABI 9 makes Crystal refuse to start (test on a kernel or VM without it, or with Landlock disabled)
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode

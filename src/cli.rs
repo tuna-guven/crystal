@@ -70,6 +70,11 @@ pub struct RunArgs {
     /// minutes, so a pty test sees it (decision 0048).
     #[cfg(debug_assertions)]
     pub lock_after_for_test: Option<u64>,
+    /// Debug builds only: enter the sandbox, try the one forbidden action
+    /// `--sandbox-check-for-test CHECK` names, print the outcome and exit
+    /// (docs/design/sandboxing.md, section 9). Not in release builds.
+    #[cfg(debug_assertions)]
+    pub sandbox_check_for_test: Option<SandboxCheck>,
 }
 
 /// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
@@ -80,6 +85,23 @@ pub enum PromptKind {
     Read,
     /// `confirm`: two entries that must match, as for `crystal init`.
     Confirm,
+}
+
+/// What `--sandbox-check-for-test CHECK` tries inside the sandbox. One
+/// check per process: a seccomp kill ends it. Debug builds only.
+#[cfg(debug_assertions)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxCheck {
+    /// `read-outside`: read `$HOME/.ssh/id_ed25519`.
+    ReadOutside,
+    /// `write-outside`: create `$HOME/outside` (not beneath the vault or
+    /// the state directory).
+    WriteOutside,
+    /// `other-vault`: read another vault's `VERSION`.
+    OtherVault,
+    /// `wait`: do nothing, wait for a key or a signal, so the test can
+    /// read `/proc/PID/status` from outside.
+    Wait,
 }
 
 /// How `--crash-for-test KIND` ends the process. Debug builds only.
@@ -154,6 +176,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut demo_notes_for_test = false;
     #[cfg(debug_assertions)]
     let mut lock_after_for_test = None;
+    #[cfg(debug_assertions)]
+    let mut sandbox_check_for_test = None;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
@@ -188,6 +212,17 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                 let seconds = seconds.and_then(|s| s.parse().ok());
                 lock_after_for_test = Some(seconds.ok_or(CliError::UnknownArgument)?);
             }
+            #[cfg(debug_assertions)]
+            Arg::Long("sandbox-check-for-test") => {
+                let check = match parser.value().ok().as_deref().and_then(OsStr::to_str) {
+                    Some("read-outside") => SandboxCheck::ReadOutside,
+                    Some("write-outside") => SandboxCheck::WriteOutside,
+                    Some("other-vault") => SandboxCheck::OtherVault,
+                    Some("wait") => SandboxCheck::Wait,
+                    _ => return Err(CliError::UnknownArgument),
+                };
+                sandbox_check_for_test = Some(check);
+            }
             // The first word is always the command; anything else there,
             // such as a bare vault name, is refused without echoing it.
             Arg::Value(value) if mode.is_none() => match value.as_bytes() {
@@ -212,7 +247,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
         || prompt_for_test.is_some()
         || skip_unlock_for_test
         || demo_notes_for_test
-        || lock_after_for_test.is_some())
+        || lock_after_for_test.is_some()
+        || sandbox_check_for_test.is_some())
         && mode != Mode::Unlock
     {
         return Err(CliError::UnknownArgument);
@@ -233,6 +269,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             demo_notes_for_test,
             #[cfg(debug_assertions)]
             lock_after_for_test,
+            #[cfg(debug_assertions)]
+            sandbox_check_for_test,
         }),
         Mode::Init => Command::Init { name },
         Mode::Recover => Command::Recover { name },
@@ -266,6 +304,8 @@ mod tests {
             demo_notes_for_test: false,
             #[cfg(debug_assertions)]
             lock_after_for_test: None,
+            #[cfg(debug_assertions)]
+            sandbox_check_for_test: None,
         })
     }
 
@@ -352,6 +392,7 @@ mod tests {
             &["--demo-notes-for-test", "unlock", "v"],
             &["--lock-after-for-test", "2", "unlock", "v"],
             &["--lock-after", "2", "unlock", "v"],
+            &["--sandbox-check-for-test", "wait", "unlock", "v"],
         ] {
             assert_eq!(parse_strs(hook), Err(CliError::UnknownArgument), "{hook:?}");
         }

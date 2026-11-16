@@ -124,6 +124,18 @@ fn startup() -> Result<(), Box<dyn Error>> {
     // Steps 8 and 9 (decision 0059): from here on Crystal reaches only
     // this vault and the state directory, before any passphrase is read.
     harden::enter_sandbox(vault_dir.fd().as_fd(), state_dir.fd().as_fd())?;
+    #[cfg(debug_assertions)]
+    if let Some(check) = args.sandbox_check_for_test {
+        if check == cli::SandboxCheck::Wait {
+            terminal.run_until_exit(&signals)?;
+            return Ok(());
+        }
+        let outcome = sandbox_check_for_test(check);
+        // Leave the alternate screen first, so the line stays visible.
+        drop(terminal);
+        print_sandbox_check_for_test(&outcome);
+        return Ok(());
+    }
     // Steps 10 and 11: unlock, inside the sandbox.
     let mut state_dir = state_dir;
     // Each turn unlocks and runs a session; `lock` ends the session, which
@@ -536,6 +548,43 @@ fn demo_notes_for_test(contents: &mut vault::codec::VaultContents) {
 #[expect(clippy::disallowed_macros, reason = "debug-only test output, a number")]
 fn print_len_for_test(len: usize) {
     println!("len={len}");
+}
+
+/// Debug builds only: one forbidden action inside the sandbox, for
+/// tests/sandbox.rs (docs/design/sandboxing.md, section 9). `Ok` means
+/// the sandbox allowed it, which the tests treat as a failure. Files are
+/// opened with rustix's `openat`, as everywhere in Crystal: std's
+/// `File::open` makes musl call the old `open` syscall, which seccomp
+/// kills before Landlock could answer.
+#[cfg(debug_assertions)]
+fn sandbox_check_for_test(check: cli::SandboxCheck) -> Result<(), rustix::io::Errno> {
+    use rustix::fs::{CWD, Mode, OFlags, openat};
+    let home = std::path::PathBuf::from(harden::env_var(harden::EnvVar::Home).unwrap_or_default());
+    let read = OFlags::RDONLY | OFlags::CLOEXEC;
+    let create = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC;
+    let path = match check {
+        cli::SandboxCheck::ReadOutside => home.join(".ssh/id_ed25519"),
+        cli::SandboxCheck::WriteOutside => home.join("outside"),
+        cli::SandboxCheck::OtherVault => home.join(".local/share/crystal/other/VERSION"),
+        // Handled by the caller: it needs the terminal.
+        cli::SandboxCheck::Wait => return Ok(()),
+    };
+    let flags = if check == cli::SandboxCheck::WriteOutside {
+        create
+    } else {
+        read
+    };
+    openat(CWD, &path, flags, Mode::RUSR | Mode::WUSR).map(drop)
+}
+
+/// Debug builds only: the outcome of a sandbox check, an errno at most.
+#[cfg(debug_assertions)]
+#[expect(clippy::disallowed_macros, reason = "debug-only test output, an errno")]
+fn print_sandbox_check_for_test(outcome: &Result<(), rustix::io::Errno>) {
+    match outcome {
+        Ok(()) => println!("sandbox-check: ALLOWED"),
+        Err(errno) => println!("sandbox-check: denied errno={}", errno.raw_os_error()),
+    }
 }
 
 /// Debug builds only: the abrupt exits tests/startup.rs checks. Every
