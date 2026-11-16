@@ -124,6 +124,10 @@ fn startup() -> Result<(), Box<dyn Error>> {
     // Steps 8 and 9 (decision 0059): from here on Crystal reaches only
     // this vault and the state directory, before any passphrase is read.
     #[cfg(debug_assertions)]
+    if args.hide_landlock_for_test {
+        harden::hide_landlock_for_test()?;
+    }
+    #[cfg(debug_assertions)]
     if let Some(check) = args.sandbox_check_for_test {
         return sandbox_check_for_test(check, &vault_dir, &state_dir, terminal, &signals);
     }

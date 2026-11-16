@@ -75,6 +75,10 @@ pub struct RunArgs {
     /// (docs/design/sandboxing.md, section 9). Not in release builds.
     #[cfg(debug_assertions)]
     pub sandbox_check_for_test: Option<SandboxCheck>,
+    /// Debug builds only: make Landlock look absent before the sandbox,
+    /// so startup must refuse (decision 0010). Not in release builds.
+    #[cfg(debug_assertions)]
+    pub hide_landlock_for_test: bool,
 }
 
 /// Which prompt `--prompt-for-test KIND` runs. Debug builds only.
@@ -251,6 +255,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
     let mut lock_after_for_test = None;
     #[cfg(debug_assertions)]
     let mut sandbox_check_for_test = None;
+    #[cfg(debug_assertions)]
+    let mut hide_landlock_for_test = false;
 
     while let Some(arg) = parser.next().map_err(|_| CliError::UnknownArgument)? {
         match arg {
@@ -286,6 +292,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
                 lock_after_for_test = Some(seconds.ok_or(CliError::UnknownArgument)?);
             }
             #[cfg(debug_assertions)]
+            Arg::Long("hide-landlock-for-test") => hide_landlock_for_test = true,
+            #[cfg(debug_assertions)]
             Arg::Long("sandbox-check-for-test") => {
                 let value = parser.value().ok();
                 let check = value.as_deref().and_then(OsStr::to_str);
@@ -317,7 +325,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
         || skip_unlock_for_test
         || demo_notes_for_test
         || lock_after_for_test.is_some()
-        || sandbox_check_for_test.is_some())
+        || sandbox_check_for_test.is_some()
+        || hide_landlock_for_test)
         && mode != Mode::Unlock
     {
         return Err(CliError::UnknownArgument);
@@ -340,6 +349,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             lock_after_for_test,
             #[cfg(debug_assertions)]
             sandbox_check_for_test,
+            #[cfg(debug_assertions)]
+            hide_landlock_for_test,
         }),
         Mode::Init => Command::Init { name },
         Mode::Recover => Command::Recover { name },
@@ -375,6 +386,8 @@ mod tests {
             lock_after_for_test: None,
             #[cfg(debug_assertions)]
             sandbox_check_for_test: None,
+            #[cfg(debug_assertions)]
+            hide_landlock_for_test: false,
         })
     }
 
@@ -462,6 +475,7 @@ mod tests {
             &["--lock-after-for-test", "2", "unlock", "v"],
             &["--lock-after", "2", "unlock", "v"],
             &["--sandbox-check-for-test", "wait", "unlock", "v"],
+            &["--hide-landlock-for-test", "unlock", "v"],
         ] {
             assert_eq!(parse_strs(hook), Err(CliError::UnknownArgument), "{hook:?}");
         }

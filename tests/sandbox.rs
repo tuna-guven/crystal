@@ -177,3 +177,28 @@ fn landlock_alone_stops_network_signals_and_exec() {
     }
     assert!(!home.join(".local/share/crystal/diary/sub").exists());
 }
+
+/// Decision 0010: without Landlock ABI 9, Crystal refuses to start, before
+/// any passphrase is asked, and names the ABI it needs. The debug-only
+/// `--hide-landlock-for-test` makes the kernel answer the crate's ABI
+/// query with ENOSYS, as a kernel without Landlock does, so the real
+/// refusal path runs. Positive control: the same vault without the option
+/// reaches the prompt.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn refuses_to_start_without_landlock() {
+    let home = home_with_vault("sandbox_no_landlock");
+    let cmd = format!("'{BIN}' unlock --hide-landlock-for-test diary; echo exit=$?");
+    let (ok, output) = pty_dialog(&cmd, &home, &[]);
+    assert!(ok, "{output:?}");
+    assert!(output.contains("exit=1"), "{output:?}");
+    assert!(
+        output.contains("no Landlock ABI 9 or newer") && output.contains("section 5.4"),
+        "{output:?}"
+    );
+    assert!(!output.contains(PROMPT), "asked anyway: {output:?}");
+
+    let cmd = format!("'{BIN}' unlock diary");
+    let (_, output) = pty_dialog(&cmd, &home, &[(PROMPT, b"\x1b")]);
+    assert!(output.contains(PROMPT), "{output:?}");
+}

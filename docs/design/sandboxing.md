@@ -233,7 +233,7 @@ The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_
 - [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
 - [ ] `ps -eZ` shows `crystal_t` (when policy installed; manual check)
-- [ ] A kernel below ABI 9 makes Crystal refuse to start (test on a kernel or VM without it, or with Landlock disabled)
+- [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 9 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 8 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
 
 ## 10. References

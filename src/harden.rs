@@ -173,6 +173,10 @@ pub fn enter_sandbox(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(),
     seccomp::restrict()
 }
 
+/// Debug builds only: see `seccomp::hide_landlock_for_test`.
+#[cfg(debug_assertions)]
+pub use seccomp::hide_landlock_for_test;
+
 /// Debug builds only: Landlock without seccomp, for the `landlock-*`
 /// sandbox checks (tests/sandbox.rs), which show that Landlock holds on
 /// its own. Never called outside `--sandbox-check-for-test`.

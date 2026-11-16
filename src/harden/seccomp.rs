@@ -141,6 +141,23 @@ pub fn restrict() -> Result<(), HardenError> {
     seccompiler::apply_filter_all_threads(&program).map_err(HardenError::Seccomp)
 }
 
+/// Debug builds only: make the kernel look as if it had no Landlock, for
+/// tests/sandbox.rs. A one-rule filter answers `landlock_create_ruleset`
+/// with `ENOSYS`, as a kernel built without Landlock does, and allows
+/// everything else; the real sandbox must then refuse to start
+/// (decision 0010). Never called outside `--hide-landlock-for-test`.
+#[cfg(debug_assertions)]
+pub fn hide_landlock_for_test() -> Result<(), HardenError> {
+    let enosys = SeccompAction::Errno(libc::ENOSYS as u32);
+    let rules = [(libc::SYS_landlock_create_ruleset, Vec::new())]
+        .into_iter()
+        .collect();
+    let filter = SeccompFilter::new(rules, SeccompAction::Allow, enosys, TargetArch::x86_64)
+        .map_err(|e| HardenError::Seccomp(e.into()))?;
+    let program = BpfProgram::try_from(filter).map_err(|e| HardenError::Seccomp(e.into()))?;
+    seccompiler::apply_filter_all_threads(&program).map_err(HardenError::Seccomp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
