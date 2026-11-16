@@ -30,8 +30,8 @@ jobs:
       # The same memlock floor and fd cleanup as ci.yml's Test step.
       - name: Long property tests
         run: |
-          sudo prlimit --pid $$ --memlock=536870912:536870912
-          test "$(ulimit -l)" -eq 524288
+          sudo prlimit --pid $$ --memlock=2147483648:2147483648
+          test "$(ulimit -l)" -eq 2097152
           for fd in $(ls /proc/$$/fd); do
             if [ "$fd" -gt 2 ] && [ "$fd" -ne 255 ]; then
               exec {fd}>&-

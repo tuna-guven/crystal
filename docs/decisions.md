@@ -832,3 +832,19 @@ a public release, since whoever controls the repository could replace
 tool, a keyring and a large attack surface for one signature),
 minisign (another program), and an unsigned hash alone.
 
+## 0070 CI runs only what needs no Landlock {#0070}
+
+*2026-11-16.* GitHub's `ubuntu-latest` kernel has no Landlock ABI 9, and
+Crystal refuses to start without it ([0010](#0010)); there is no weaker
+mode for CI. So the CI workflow runs fmt, clippy, the unit tests
+(`cargo test --workspace --lib`, debug and release, with
+`RLIMIT_MEMLOCK` at the 2 GiB floor), `cargo deny`, `cargo audit` and the
+static release build; every test that starts the binary (`tests/*.rs`)
+runs locally before every commit, on a kernel with ABI 9 or newer. A
+runner or VM with such a kernel was set aside by the user (roadmap S0).
+The cost: the Phase 4 strace check, which needs ptrace capabilities that
+secureblue's `deny_ptrace` withholds locally, now runs nowhere; it last
+passed on 2026-11-14. The weekly long property tests run the library
+(`--lib`; with `--bin crystal`, since the library split of step S11a,
+they had run nothing and passed).
+

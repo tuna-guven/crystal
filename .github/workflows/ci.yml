@@ -33,47 +33,22 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # Raise this shell's memlock limit to exactly the floor Crystal
-      # requires (harden::MEMLOCK_FLOOR, docs/guide/setup.md), so the test locks
-      # memory for real instead of only checking the refusal path.
-      # Crystal is non-dumpable, so strace reads the bytes it writes only
-      # with CAP_SYS_PTRACE, and the paths of its fds (-yy) only with
-      # CAP_DAC_READ_SEARCH: a non-dumpable process's /proc/PID/fd belongs
-      # to root, mode 0500. Crystal itself gets no capability (file
-      # capabilities are not passed on across exec).
-      - name: Install strace
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes strace
-          sudo setcap cap_sys_ptrace,cap_dac_read_search+ep "$(readlink -f "$(command -v strace)")"
-
+      # Unit tests only (the library: src/, crates/zalloc). Every test that
+      # starts the real binary (tests/*.rs: pty, vault, sandbox, the strace
+      # check) needs Landlock ABI 9, which GitHub's runner kernel lacks,
+      # and Crystal never runs without its full sandbox (decision 0010).
+      # Those run locally before every commit (docs/development/testing.md).
+      # The memlock limit is raised to Crystal's floor
+      # (harden::MEMLOCK_FLOOR) anyway, so the floor's own unit test locks
+      # memory for real.
       - name: Test
         run: |
-          sudo prlimit --pid $$ --memlock=536870912:536870912
-          # Fail here if the raise didn't apply; otherwise the test would
-          # silently take its refusal branch and still pass.
-          test "$(ulimit -l)" -eq 524288
-          # The runner leaks open fds (142 and up) into every step; GitHub
-          # treats this as by design (actions/runner-images#3391). Crystal
-          # refuses to start with any inherited fd above 2 (docs/design/startup.md,
-          # startup step 2), so close them here rather than weaken that
-          # check. 255 is bash's own handle on this script (close-on-exec).
-          for fd in $(ls /proc/$$/fd); do
-            if [ "$fd" -gt 2 ] && [ "$fd" -ne 255 ]; then
-              exec {fd}>&-
-            fi
-          done
-          cargo test --locked
-          # Phase 4 acceptance: strace shows only ciphertext written inside
-          # the vault. Ignored in a plain run, since it needs strace with
-          # CAP_SYS_PTRACE (installed above).
-          cargo test --locked --test vault strace -- --ignored
-          # The release binary too, at the same memlock floor: an optimized
-          # build stretches passphrases far harder (scrypt), and only this
-          # run shows whether that fits in locked memory
-          # (decision 0027). Tests that need a
-          # debug-only hook are reported as ignored here.
-          cargo test --release --locked
+          sudo prlimit --pid $$ --memlock=2147483648:2147483648
+          # Fail here if the raise didn't apply.
+          test "$(ulimit -l)" -eq 2097152
+          cargo test --locked --workspace --lib
+          # The release build too: optimized code, the same tests.
+          cargo test --release --locked --workspace --lib
 
       - name: Install cargo-deny and cargo-audit
         run: |

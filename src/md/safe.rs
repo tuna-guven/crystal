@@ -285,9 +285,14 @@ mod tests {
         }
 
         // Text without hidden characters, tabs or carriage returns is not
-        // changed at all.
+        // changed at all. Graphemes that hide something are dropped from
+        // the input rather than the input rejected: random text holds one
+        // often enough that a million cases ran out of rejects. Dropping
+        // one can join its neighbours into a new one that hides something;
+        // only that rare case is rejected.
         #[test]
         fn safe_text_is_untouched(raw in "[^\\p{Cc}\\u{061C}\\u{200E}\\u{200F}\\u{202A}-\\u{202E}\\u{2066}-\\u{2069}]*") {
+            let raw: String = raw.graphemes(true).filter(|g| !hides_something(g)).collect();
             prop_assume!(!raw.graphemes(true).any(hides_something));
             prop_assert_eq!(shown(&raw), raw);
         }

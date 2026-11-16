@@ -358,10 +358,11 @@ Side effects for development:
   "`gdb -p` fails" proves nothing on such a host. Crystal's own test
   (`harden::tests::lock_down_process_applies_every_setting`) reads the
   kernel's dumpable flag instead.
-- The strace test (Phase 4: only ciphertext is written) runs in CI only:
+- The strace test (Phase 4: only ciphertext is written) cannot run here:
   Crystal is non-dumpable, so strace needs `CAP_SYS_PTRACE` to read what
-  it writes and `CAP_DAC_READ_SEARCH` to name the files it writes to,
-  which CI gives it. There is nothing to run locally.
+  it writes and `CAP_DAC_READ_SEARCH` to name the files it writes to. It
+  passed in CI on 2026-11-14; CI no longer starts the binary, since its
+  kernel has no Landlock ABI 9 ([decision 0070](../decisions.md#0070)).
 
 Check its state with `getsebool deny_ptrace`.
 
