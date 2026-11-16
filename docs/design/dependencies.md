@@ -29,7 +29,7 @@ As few direct dependencies as possible (Crystal is meant to be minimal and audit
 
 **Avoid:** `tokio` or any async runtime, HTTP clients, `clap` (large for this job), syntax highlighters (`syntect`), `tui-markdown` or other ready-made renderers, image crates, file watchers, logging crates that write files, `rpassword` (read the passphrase yourself in raw mode).
 
-**Release profile:** `lto = true`, `codegen-units = 1`, `strip = true`, `overflow-checks = true`, keep `panic = "unwind"` so `Drop` zeroizes on panic. Target `x86_64-unknown-linux-musl` for a static binary. Put `#![forbid(unsafe_code)]` on the crate. The zeroizing allocator, the only `unsafe` code, lives in a separate workspace crate `crates/zalloc` (no dependencies, `no_std`); the `sys` module only installs it, which needs no `unsafe`. Debug builds optimize it (`[profile.dev.package.zalloc]`), as they do scrypt, since every free runs its wipe.
+**Release profile:** `lto = true`, `codegen-units = 1`, `strip = true`, `overflow-checks = true`, keep `panic = "unwind"` so `Drop` zeroizes on panic. Target `x86_64-unknown-linux-musl` for a static binary. Put `#![forbid(unsafe_code)]` on the crate: on the library `src/lib.rs`, which holds the whole program and exports only `run` (so its modules stay private and dead code is still reported; it exists for the fuzz targets, step S11), and on the five-line `src/main.rs` that calls it. The zeroizing allocator, the only `unsafe` code, lives in a separate workspace crate `crates/zalloc` (no dependencies, `no_std`); the `sys` module only installs it, which needs no `unsafe`. Debug builds optimize it (`[profile.dev.package.zalloc]`), as they do scrypt, since every free runs its wipe.
 
 # Build vs reuse
 

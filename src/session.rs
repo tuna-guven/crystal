@@ -861,7 +861,7 @@ mod tests {
     /// `search CANARY` typed into the shell (line, history, output); the
     /// pager's rendering; the editor, typed into, and Crystal's clipboard
     /// filled from it. Then what `lock` does (decision 0048), step by step
-    /// as `app::run` and `main.rs` do it: the editor, pager and grid
+    /// as `app::run` and `crystal::run` (src/lib.rs) do it: the editor, pager and grid
     /// dropped, the clipboard wiped, the shell dropped, the session ended
     /// with only its directory handles kept. Afterwards no writable byte
     /// of the process holds the canary, nor the vault key's text form.
@@ -904,7 +904,7 @@ mod tests {
             // names hold the canary.
             session.save(new_note(&canary, &body)).unwrap();
 
-            // The shell as in main.rs: the names for completion, then
+            // The shell as in crystal::run (src/lib.rs): the names for completion, then
             // `search CANARY` typed key by key, so the line editor, the
             // history and the command's words hold it; Up recalls it into
             // the line again.

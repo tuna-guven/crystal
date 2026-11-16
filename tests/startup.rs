@@ -578,7 +578,7 @@ fn forced_panic_leaves_clean_terminal() {
         .find("\x1b[2J\x1b[?1049l")
         .expect("never left the alternate screen");
     let report = output
-        .find("crystal: internal error at src/main.rs:")
+        .find("crystal: internal error at src/lib.rs:")
         .expect("no location report");
     assert!(
         leave < report,

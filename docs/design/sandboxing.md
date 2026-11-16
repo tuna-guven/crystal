@@ -97,7 +97,7 @@ Notes:
 - no_new_privs is already set by section 4; Landlock requires it and needs nothing more (the crate sets it once more, harmlessly).
 - Do not set `LOG_SAME_EXEC_OFF`. Denials must reach the audit log.
 - After `restrict_self`, Crystal checks the crate's status: fully enforced on all threads, or it refuses to run, so a crate bug cannot leave it unconfined.
-- *As built (step S3, `src/harden/landlock.rs`):* the rules above, from the vault and state fds; called in `main` right after the vault directory is opened, before the passphrase prompt ([decision 0059](../decisions.md#0059)). A mutation check (no `MAKE_REG`) made every saving pty test fail, so the ruleset is enforced in the test suite.
+- *As built (step S3, `src/harden/landlock.rs`):* the rules above, from the vault and state fds; called in `crystal::run` (src/lib.rs) right after the vault directory is opened, before the passphrase prompt ([decision 0059](../decisions.md#0059)). A mutation check (no `MAKE_REG`) made every saving pty test fail, so the ruleset is enforced in the test suite.
 
 ### 5.4 Fallback policy
 
