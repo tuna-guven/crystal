@@ -15,8 +15,30 @@ need no root ([Installation](installation.md)).
 ```sh
 cargo build --locked --release
 install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
-restorecon -v ~/.local/bin/crystal    # once the SELinux module exists; run0 if relabeling is denied
+restorecon -Fv ~/.local/bin/crystal   # SELinux: must show crystal_exec_t
 ```
+
+Check the label with `ls -Z ~/.local/bin/crystal`: it must read
+`crystal_exec_t`, or Crystal runs outside its SELinux domain. `-F` is
+needed: the default label of `~/.local/bin`, `home_bin_t`, is a
+*customizable type*, which a plain `restorecon` silently leaves alone.
+
+**The SELinux module** (once, and after each change to
+`packaging/selinux/`; [Sandboxing, section 7](../design/sandboxing.md)).
+Build it as yourself in a scratch directory, install it as root, then
+relabel:
+
+```sh
+mkdir -p /tmp/crystal-selinux && cp packaging/selinux/crystal.{te,fc,if} /tmp/crystal-selinux/
+make -C /tmp/crystal-selinux -f /usr/share/selinux/devel/Makefile crystal.pp
+run0 semodule -i /tmp/crystal-selinux/crystal.pp
+restorecon -RFv ~/.local/bin/crystal ~/.local/share/crystal ~/.local/state/crystal
+```
+
+While a vault is open, `ps -eZ | grep crystal` shows `crystal_t`. The
+policy creates `~/.local/share/crystal` and `~/.local/state/crystal`
+itself, but not missing parents: `~/.local/share` and `~/.local/state`
+must exist (a normal desktop session has both).
 
 **Trade-off.** Any program running as you can write to `~/.local/bin`, so
 it could replace Crystal with a fake that asks for your passphrase. Every

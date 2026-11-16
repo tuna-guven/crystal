@@ -126,52 +126,63 @@ Module: `src/harden/seccomp.rs`. Crate: `seccompiler`.
 
 ## 7. SELinux policy module
 
-Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.if`.
+Directory: `packaging/selinux/` containing `crystal.te`, `crystal.fc`, `crystal.if` ([decision 0061](../decisions.md#0061)). A layer Crystal cannot switch off itself: it holds even if Crystal's own Landlock and seccomp code had a bug, and it confines the process from `exec` on, before Crystal's own sandbox exists. It also stops what only seccomp stops otherwise (section 9: `socketpair`, threads, `memfd_create`) from reaching anything: no network class, no other file, no IPC is allowed.
 
 ### 7.1 Types
 
-- `crystal_t`: process domain.
-- `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install ([Installation](../guide/installation.md)). Installing a new build creates a new file with the default label, so every install MUST be followed by `restorecon ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` ([Setup, Installing](../guide/setup.md#installing)). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
+- `crystal_t`: process domain (`userdom_user_application_domain`).
+- `crystal_exec_t`: label for `~/.local/bin/crystal`, a per-user install ([Installation](../guide/installation.md)). GNU `install` labels a new file from the loaded policy, so an install after the module is loaded gets `crystal_exec_t`; one made before keeps `home_bin_t`. `home_bin_t` is a *customizable type*, which a plain `restorecon` never changes, so every install MUST be followed by `restorecon -F ~/.local/bin/crystal`, before the optional `chattr +i` (an immutable file cannot be relabeled); otherwise Crystal silently runs outside `crystal_t` ([Setup, Installing](../guide/setup.md#installing)). The label is not an integrity check: a same-user process that can relabel files can also label a fake binary `crystal_exec_t`. That fake then runs confined in `crystal_t`, which limits it but does not stop it asking for the passphrase. Integrity comes from the optional immutable flag.
 - `crystal_vault_t`: label for `~/.local/share/crystal` and everything under it.
 - `crystal_state_t`: label for `~/.local/state/crystal`.
-- `crystal_config_t`: label for `~/.config/crystal` (plain-text settings, if a later decision puts settings there). `crystal_t` reads it before the sandbox and never writes it.
+- No config type: Crystal has no config file ([decision 0032](../decisions.md#0032)). One is added with the decision that adds settings.
 
-### 7.2 Policy intent
+### 7.2 Policy (as built)
 
-- Domain transition `unconfined_t` -> `crystal_t` on exec of `crystal_exec_t`.
-- Allow: manage files and dirs of `crystal_vault_t` and `crystal_state_t`; create `crystal_vault_t` dirs under `~/.local/share` and `crystal_state_t` dirs under `~/.local/state`; read `crystal_config_t`; read/write the user TTY/PTY (`user_tty_device_t`, `user_devpts_t`); read locale and timezone files.
-- Phase 8 only: execute the age plugin binary for hardware-key unlock, as narrowly as possible (one plugin type, no transition to anything broader). Crystal sets `PR_SET_NO_NEW_PRIVS` in startup step 2, before the plugin runs, so a transition from `crystal_t` to a plugin domain needs `allow crystal_t <plugin>_t:process2 nnp_transition;` or a bounded plugin domain. Otherwise run the plugin in `crystal_t` with no transition.
-- Deny by omission: all network classes, `execute` on anything else, access to other `user_home_t` content, D-Bus, X11/Wayland sockets, `ptrace`, `userns_create`.
-- Do not use `unconfined_domain()` or broad `*_home_t` manage macros.
+Every rule was checked against what the code does; `audit2allow` output was never pasted in.
+
+- Domain transition `unconfined_t` -> `crystal_t` on exec of `crystal_exec_t` (`unconfined_run_to`), with use of the user's terminals (`/dev/tty`, `user_devpts_t`) and the shell's inherited fds.
+- The process: `setrlimit` (core and memlock limits), `sigstop` and `signal` to itself (the suspend), its own signal pipes, and listing its own `/proc/self/fd` (the inherited-fd check before the sandbox).
+- The walk from `HOME`: `search` and `getattr` only on `user_home_dir_t`, `gconf_home_t` (`~/.local`, `~/.local/state`) and `data_home_t` (`~/.local/share`). Crystal opens these with `O_PATH` and never lists them, so no `read` is granted: `crystal_t` cannot list anything outside its two trees.
+- Manage dirs and files of `crystal_vault_t` and `crystal_state_t` (reads, atomic writes, `crystal init` and `crystal rm`).
+- Creating `~/.local/share/crystal` and `~/.local/state/crystal`: `write` and `add_name` on the parent plus a named `type_transition` to `crystal_vault_t` or `crystal_state_t`. Creating anything else there needs `create` on another type, which `crystal_t` lacks; there is no `read` or `remove_name`, so nothing there can be listed, renamed or removed. `filetrans_pattern` is not used: it grants full read and write on the parent. Missing parents (`~/.local`, `share`, `state`) are not created under this policy.
+- Deny by omission: all network classes, `execute` on anything (no plugin until Phase 8), every other file in the home directory, D-Bus, X11/Wayland sockets, `ptrace`, `userns_create`, `execmem`. No `unconfined_domain()` and no broad `*_home_t` macros.
+- Phase 8 only: executing the age plugin for hardware-key unlock, as narrowly as possible (one plugin type, no transition to anything broader). Crystal sets `PR_SET_NO_NEW_PRIVS` in startup step 2, so a transition to a plugin domain needs `nnp_transition` or a bounded plugin domain.
 
 ### 7.3 File contexts (`crystal.fc`)
 
 ```
 HOME_DIR/\.local/bin/crystal              --  gen_context(system_u:object_r:crystal_exec_t,s0)
-HOME_DIR/\.config/crystal(/.*)?               gen_context(system_u:object_r:crystal_config_t,s0)
 HOME_DIR/\.local/share/crystal(/.*)?          gen_context(system_u:object_r:crystal_vault_t,s0)
 HOME_DIR/\.local/state/crystal(/.*)?          gen_context(system_u:object_r:crystal_state_t,s0)
 ```
 
 Vaults exist only in `~/.local/share/crystal`, so the static rule covers every vault; no per-vault `semanage` rule is ever needed.
 
-### 7.4 Development workflow
+### 7.4 Building, installing, checking
+
+Building needs no root (`selinux-policy-devel`; build in a scratch directory, since the Makefile writes a `tmp/` beside the sources):
 
 ```sh
-sepolicy generate --application ~/.local/bin/crystal -n crystal    # starting template only
 make -f /usr/share/selinux/devel/Makefile crystal.pp
-run0 semodule -i crystal.pp
-run0 restorecon -Rv ~/.local/bin/crystal ~/.config/crystal ~/.local/state/crystal ~/.local/share/crystal
-run0 semanage permissive -a crystal_t           # domain-level permissive while developing
-# exercise a full session, then:
-run0 ausearch -m AVC -c crystal | audit2allow -R
-run0 semanage permissive -d crystal_t           # MUST remove before release
+```
+
+Installing and checking need root (`run0`, or a root shell):
+
+```sh
+semodule -i crystal.pp
+restorecon -RFv ~/.local/bin/crystal ~/.local/share/crystal ~/.local/state/crystal
+semanage permissive -a crystal_t     # while developing only
+# exercise a full session, then list each distinct denial once:
+ausearch -m AVC,USER_AVC -c crystal -i -ts <start time>
+semanage permissive -d crystal_t     # MUST be removed again
 ```
 
 Rules:
-- Every `audit2allow` suggestion is reviewed by hand. Never apply its output blindly.
+- Every denial is explained from the code before a rule is added; prefer changing the code so the permission is not needed (as with `O_PATH` above). Never apply `audit2allow` output blindly.
+- In permissive mode each distinct denial is logged once; loading the module flushes the cache, so a fresh session after `semodule -i` shows everything.
 - Verify: `ps -eZ | grep crystal` shows `crystal_t`.
-- Test both launch paths: direct and via the bwrap launcher. Launching through bwrap runs Crystal under bwrap's domain context; confirm the transition to `crystal_t` happens or add the needed transition rule.
+- *As checked (step S9, 2026-11-16, Fedora 45 policy 45.24):* a full session through a pty (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock again, an outside `SIGTSTP` and resume, `check-code`, `rm`) ran in `crystal_t`, permissive first: the only denial, `read` on the home directory, was removed by opening the walk with `O_PATH`, after which the same session logged none, and then passed in enforcing mode.
+- The bubblewrap launcher (section 8, step S10) runs Crystal under bwrap's domain and with no_new_privs set by bwrap; it needs its own check that the transition to `crystal_t` still happens (`nnp_transition`).
 
 ## 8. Bubblewrap launcher (optional)
 
@@ -232,7 +243,7 @@ The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_
 - [x] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`, `Seccomp_filters: 1` (`running_sandbox_shows_in_proc_status`)
 - [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
-- [ ] `ps -eZ` shows `crystal_t` (when policy installed; manual check)
+- [x] `ps -eZ` shows `crystal_t` (manual check with the module installed, step S9): a full session (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock, outside suspend and resume, `check-code`, `rm`) runs in `crystal_t` in enforcing mode
 - [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 9 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 8 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
 

@@ -669,3 +669,24 @@ BSD-3-Clause and is taken under BSD-3-Clause, already allowed in
 `deny.toml`. `libc` =0.2.191, already in the tree through
 both, is a direct dependency for its constants only (the syscall and
 `ioctl` numbers of the allowlist), so no number is typed by hand.
+
+## 0061 An SELinux domain, `crystal_t`, built from what the code does {#0061}
+
+*2026-11-16.* `packaging/selinux/` holds a policy module: the user's
+shell runs `~/.local/bin/crystal` (`crystal_exec_t`) in `crystal_t`,
+which may use the terminal, manage `crystal_vault_t`
+(`~/.local/share/crystal`) and `crystal_state_t`
+(`~/.local/state/crystal`), create those two directories by name, and
+only search the directories on the way there. Nothing else: no network,
+no exec, no other file, no IPC, no executable memory. It is the layer
+Crystal cannot switch off itself, and it confines the process from exec
+on, before Landlock and seccomp. Each rule was derived from a full
+session in permissive mode and checked against the code; a denial is
+answered by changing the code where it can be (`HOME` and the
+directories on the way are opened with `O_PATH`, so no `read` is
+granted outside Crystal's trees), never by pasting `audit2allow`
+output. `filetrans_pattern` is not used, since it also grants reading
+and removing in the parent. Installing it needs root once; every install
+of the binary is relabeled with `restorecon -F`, as `home_bin_t` is a
+customizable type. There is no config type until settings exist
+([0032](#0032)). See [Sandboxing, section 7](design/sandboxing.md).

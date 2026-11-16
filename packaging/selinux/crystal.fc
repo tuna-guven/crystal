@@ -1,0 +1,7 @@
+# File contexts for Crystal (docs/design/sandboxing.md, section 7.3).
+# Vaults exist only in ~/.local/share/crystal, so these rules cover every
+# vault; no per-vault rule is ever needed. Apply with restorecon after
+# installing the module and after every install of the binary.
+HOME_DIR/\.local/bin/crystal              --  gen_context(system_u:object_r:crystal_exec_t,s0)
+HOME_DIR/\.local/share/crystal(/.*)?          gen_context(system_u:object_r:crystal_vault_t,s0)
+HOME_DIR/\.local/state/crystal(/.*)?          gen_context(system_u:object_r:crystal_state_t,s0)

@@ -28,6 +28,17 @@ pub(crate) const OPEN_DIR_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
+/// HOME and the directories on the way down (`.local`, `share`, `state`)
+/// are only walked through and checked with fstat, never listed: an
+/// `O_PATH` fd needs no read permission, so the SELinux domain grants
+/// none there (packaging/selinux/crystal.te). The vault and state
+/// directories themselves are listed and synced, so they keep
+/// `OPEN_DIR_FLAGS`.
+const WALK_DIR_FLAGS: OFlags = OFlags::PATH
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
 /// A vault name: the directory name under ~/.local/share/crystal
 /// (decision 0032). 1 to 64 characters
 /// from `A-Z a-z 0-9 - _`, starting with a letter or digit, and not a
@@ -270,7 +281,8 @@ fn open_home_subdir(
 ) -> Result<OwnedFd, PrivateDirError> {
     let fail = |problem| PrivateDirError { dir, problem };
     let home = home_dir(home, dir)?;
-    let home_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    // HOME itself is followed (no NOFOLLOW): see above.
+    let home_flags = OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC;
     let mut parent =
         openat(CWD, &home, home_flags, Mode::empty()).map_err(|e| fail(Problem::Open(e)))?;
     for part in parents {
@@ -304,7 +316,7 @@ fn is_safe_parent(uid: u32, mode: u32, our_uid: u32) -> bool {
 /// Opens an intermediate directory: not a symlink, ours, and not writable
 /// by group or others (`is_safe_parent`).
 fn open_safe_parent(parent: &OwnedFd, name: &str) -> Result<OwnedFd, Problem> {
-    let fd = openat(parent, name, OPEN_DIR_FLAGS, Mode::empty()).map_err(|errno| match errno {
+    let fd = openat(parent, name, WALK_DIR_FLAGS, Mode::empty()).map_err(|errno| match errno {
         Errno::NOENT => Problem::Missing,
         Errno::NOTDIR => Problem::UnsafeParent,
         other => Problem::Open(other),

@@ -1,0 +1,7 @@
+## <summary>Crystal, an encrypted Markdown notes vault in the terminal.</summary>
+## <desc>
+##	<p>
+##	No interfaces: no other domain is meant to reach Crystal's process,
+##	vaults or state (docs/design/sandboxing.md, section 7).
+##	</p>
+## </desc>

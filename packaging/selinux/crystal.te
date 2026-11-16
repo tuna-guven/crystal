@@ -1,0 +1,102 @@
+policy_module(crystal, 1.0.0)
+
+########################################
+#
+# Crystal's SELinux domain (docs/design/sandboxing.md, section 7).
+# A layer Crystal cannot switch off itself: it holds even if Crystal's own
+# Landlock and seccomp code had a bug. Everything not allowed below is
+# denied: no network, no exec of anything, no other file in the home
+# directory, no D-Bus, X11 or Wayland, no ptrace, no user namespaces.
+# Every rule was checked against what the code does; never paste
+# audit2allow output in unread.
+#
+
+# The process and its binary, ~/.local/bin/crystal (crystal.fc).
+type crystal_t;
+type crystal_exec_t;
+userdom_user_application_domain(crystal_t, crystal_exec_t)
+
+# ~/.local/share/crystal and everything beneath: the vaults.
+type crystal_vault_t;
+userdom_user_home_content(crystal_vault_t)
+
+# ~/.local/state/crystal: pins and generation counters.
+type crystal_state_t;
+userdom_user_home_content(crystal_state_t)
+
+gen_require(`
+	type data_home_t;
+	type gconf_home_t;
+')
+
+########################################
+#
+# Entering the domain
+#
+
+# The user's shell (unconfined_t) runs crystal_exec_t in crystal_t, and
+# Crystal may use the user's terminal. domtrans_pattern also lets
+# crystal_t use the shell's fds and pipes and send it SIGCHLD at exit.
+unconfined_run_to(crystal_t, crystal_exec_t)
+
+########################################
+#
+# The process itself
+#
+
+# setrlimit: RLIMIT_CORE to 0, the memlock soft limit up to the hard
+# limit (harden::lock_down_process, lock_memory). sigstop: the suspend
+# stops itself (term::TerminalGuard::suspend). signal: kill() to itself.
+allow crystal_t self:process { setrlimit sigstop signal };
+# The self-pipes for signals (term::Signals).
+allow crystal_t self:fifo_file rw_fifo_file_perms;
+# harden::refuse_inherited_fds lists /proc/self/fd, before the sandbox.
+kernel_search_proc(crystal_t)
+kernel_read_proc_symlinks(crystal_t)
+allow crystal_t self:dir list_dir_perms;
+allow crystal_t self:lnk_file read_lnk_file_perms;
+
+########################################
+#
+# The terminal
+#
+
+# /dev/tty (term::Tty::open) and the inherited stdio of the shell.
+term_use_controlling_term(crystal_t)
+userdom_use_user_terminals(crystal_t)
+domain_use_interactive_fds(crystal_t)
+
+########################################
+#
+# Files: walk from HOME, then only Crystal's own two trees
+#
+
+# HOME, then .local and .local/state (gconf_home_t) and .local/share
+# (data_home_t): search, and getattr for the owner and mode checks of
+# vault::open_home_subdir. Crystal opens them with O_PATH (never listed),
+# so no read is granted: crystal_t cannot list anything outside its two
+# trees.
+userdom_search_user_home_dirs(crystal_t)
+allow crystal_t gconf_home_t:dir { getattr search_dir_perms };
+allow crystal_t data_home_t:dir { getattr search_dir_perms };
+
+# The vaults and the state: everything Crystal does there (create, read,
+# atomic writes through rename, remove; crystal rm removes a vault's
+# directory, crystal init creates one).
+manage_dirs_pattern(crystal_t, crystal_vault_t, crystal_vault_t)
+manage_files_pattern(crystal_t, crystal_vault_t, crystal_vault_t)
+manage_dirs_pattern(crystal_t, crystal_state_t, crystal_state_t)
+manage_files_pattern(crystal_t, crystal_state_t, crystal_state_t)
+
+# crystal init creates ~/.local/share/crystal, and any run may create
+# ~/.local/state/crystal: each gets Crystal's label at creation, by name.
+# write and add_name allow adding an entry, but creating anything there
+# needs create on the new object's type, which crystal_t has only for
+# these two directories. No read, no remove_name: nothing in those
+# directories can be listed, renamed or removed. Missing parents (.local,
+# share, state) are not created under this policy; the user's session
+# normally has them (setup guide).
+allow crystal_t data_home_t:dir { write add_name };
+allow crystal_t gconf_home_t:dir { write add_name };
+type_transition crystal_t data_home_t:dir crystal_vault_t "crystal";
+type_transition crystal_t gconf_home_t:dir crystal_state_t "crystal";
