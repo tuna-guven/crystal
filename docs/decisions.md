@@ -196,31 +196,32 @@ identity is open, and only the vault's recipient outlives unlock
 ([0045](#0045)). For startup tests, debug builds accept
 `--skip-unlock-for-test`; release builds do not have it.
 
-## 0026 Locked memory floor of 512 MiB {#0026}
+## 0026 A fixed locked-memory floor {#0026}
 
 *2026-11-07.* Crystal raises the soft `RLIMIT_MEMLOCK` to the hard limit,
-refuses to start if that is below 512 MiB (no override), then calls
+refuses to start if that is below a fixed floor (no override; 2 GiB
+since [0066](#0066)), then calls
 `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)`, keeping plaintext out
-of swap and hibernation images. Half the floor holds scrypt at log N 18
-([0027](#0027)), so every device that starts Crystal can open every
-vault. The floor is a fixed number, not derived from RAM, the limit or
-speed, because a synced vault must open everywhere. Locking only secret
-buffers would miss copies made by libraries. Most distributions default
-to 8 MiB, so users raise it once ([Setup, Memory
+of swap and hibernation images. Half the floor holds scrypt at the fixed
+factor ([0027](#0027)), so every device that starts Crystal can open
+every vault. The floor is a fixed number, not derived from RAM, the
+limit or speed, because a synced vault must open everywhere. Locking
+only secret buffers would miss copies made by libraries. Most
+distributions default to 8 MiB, so users raise it once ([Setup, Memory
 locking](guide/setup.md#memory-locking-required)).
 
-## 0027 scrypt: one fixed work factor, log N 18 {#0027}
+## 0027 scrypt: one fixed work factor {#0027}
 
-*2026-11-07.* Passphrase files (`identity.age`) are
-written at log N 18 (256 MiB) on every device; nothing is timed.
-Decryption accepts up to log N 22 and never more than half this device's
-locked-memory limit, and refuses a higher factor before any scrypt work,
-so a planted file cannot stall or abort unlock. age's timed factor was
-dropped because a fast machine wrote files that smaller devices refused.
-Unit tests use log N 10; integration tests run the real binary at 18,
-with the scrypt crates optimized in debug builds; no binary can lower the
-factor. Guessing resistance comes from this factor plus the 20-character
-minimum ([0028](#0028)), about 0.5 s per file on a fast machine.
+*2026-11-07.* Passphrase files (`identity.age`) are written at one fixed
+scrypt factor on every device (log N 20 since [0066](#0066)); nothing
+is timed. Decryption accepts up to log N 22 and never more than half
+this device's locked-memory limit, and refuses a higher factor before
+any scrypt work, so a planted file cannot stall or abort unlock. age's
+timed factor was dropped because a fast machine wrote files that smaller
+devices refused. Unit tests use log N 10; integration tests run the real
+binary at the real factor, with the scrypt crates optimized in debug
+builds; no binary can lower the factor. Guessing resistance comes from
+this factor plus the 20-character minimum ([0028](#0028)).
 
 ## 0028 New passphrases: at least 20 characters {#0028}
 
@@ -751,3 +752,23 @@ A synced device that gets the new `identity.age` before the new
 nothing can take back a copy someone already has. Rejected: a passphrase
 change without a new identity, and a separate `rotate` command (two
 commands for one need; the extra cost is one more `vault.age` write).
+
+## 0066 scrypt at log N 20, a 2 GiB locked-memory floor {#0066}
+
+*2026-11-16.* Every passphrase file is written at scrypt log N 20 (1 GiB,
+about 2 s on a fast desktop), four times the work per guess of the
+earlier log N 18, so a passphrase near the 20-character minimum
+([0028](#0028)) resists offline guessing of a copied `identity.age`
+longer. It stays one fixed factor for every vault and device
+([0027](#0027)), chosen by the user over a per-vault setting, which
+would have had to travel with the vault and could be refused on a
+smaller device. Half the locked-memory floor must hold it, so the floor
+rises from 512 MiB to 2 GiB ([0026](#0026)): every device needs
+`RLIMIT_MEMLOCK` of at least 2 GiB, and any process running as the user
+may then lock that much. Decryption keeps its absolute cap at log N 22,
+not the factor plus 4, so a planted file still cannot ask for more than
+4 GiB and about 8 s. Files written at log N 18 still open everywhere;
+`crystal passwd` ([0065](#0065)) rewrites them at 20. Integration tests
+run at 20 and take about twice as long. Rejected: a per-vault or
+per-command setting such as `--scrypt-memory`, and log N 22 or more
+(8 s and 4 GiB per unlock, a floor most laptops cannot spare).

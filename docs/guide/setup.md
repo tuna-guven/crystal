@@ -288,10 +288,10 @@ never reach swap or a hibernation image ([startup](../design/startup.md) step 4)
 memory counts against `RLIMIT_MEMLOCK`. Fedora's default is 8 MiB, which a
 large vault could exhaust mid-session; a failed allocation then aborts
 without zeroizing memory or saving edits. So Crystal requires at least
-**512 MiB** (`harden::MEMLOCK_FLOOR`) and refuses to start below that:
+**2 GiB** (`harden::MEMLOCK_FLOOR`) and refuses to start below that:
 
 ```text
-crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 524288 KiB to keep notes out of swap; see docs/guide/setup.md
+crystal: RLIMIT_MEMLOCK is 8192 KiB, need at least 2097152 KiB to keep notes out of swap; see docs/guide/setup.md
 ```
 
 **Check the current limit** (in KiB; `unlimited` is fine too):
@@ -301,10 +301,10 @@ ulimit -l
 ```
 
 **Raise it** (needs root once). Replace `user` with your login name
-(`id -un`). The value is in KiB: 524288 KiB = 512 MiB.
+(`id -un`). The value is in KiB: 2097152 KiB = 2 GiB.
 
 ```sh
-echo 'user - memlock 524288' | run0 tee /etc/security/limits.d/90-crystal.conf
+echo 'user - memlock 2097152' | run0 tee /etc/security/limits.d/90-crystal.conf
 ```
 
 `-` sets both the soft and hard limit. On Fedora and secureblue, `pam_limits`
@@ -317,14 +317,14 @@ restarts. Opening a new terminal is not enough.
 **Verify:**
 
 ```sh
-ulimit -l                                              # expect 524288
+ulimit -l                                              # expect 2097152
 grep 'locked' /proc/$(pgrep -u "$(id -un)" -x systemd)/limits
 ```
 
 The file itself may be readable by root only; that is fine, `pam_limits`
 reads it as root.
 
-**Trade-off.** Any process running as your user can now lock up to 512 MiB
+**Trade-off.** Any process running as your user can now lock up to 2 GiB
 of RAM. On a single-user desktop this is a minor denial-of-service risk; it
 does not let anything read Crystal's memory.
 
@@ -332,9 +332,11 @@ does not let anything read Crystal's memory.
 
 **Passphrase files.** The passphrase is stretched with scrypt, which needs
 a lot of memory, and that memory is locked too. Crystal writes every
-passphrase file at the same factor on every device, log N 18 (256 MiB),
-which is half the 512 MiB floor, so any device that starts Crystal opens
-any vault ([decision 0027](../decisions.md#0027)). A larger
+passphrase file at the same factor on every device, log N 20 (1 GiB,
+about 2 s per unlock), which is half the 2 GiB floor, so any device that
+starts Crystal opens any vault ([decision 0066](../decisions.md#0066)).
+Vaults written at log N 18 before still open; `crystal passwd` moves
+them to 20. A larger
 limit, up to what your machine can spare (for example 16777216 KiB =
 16 GiB), is fine and changes nothing else. A passphrase file that needs
 more than your limit allows is refused with a message pointing here,

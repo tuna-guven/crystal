@@ -318,7 +318,7 @@ impl Page {
 
 /// Renders `text` as `kind` for `width` columns. The whole note is laid
 /// out at once: an 8 MiB note of empty paragraphs is about 4 million lines
-/// (about 140 MB of line data, numbers included), within the 512 MiB
+/// (about 140 MB of line data, numbers included), within the 2 GiB
 /// memory budget. Accepted;
 /// laying out only the visible part is the fix if it ever matters.
 pub fn render(text: &str, kind: Kind, width: u16) -> Page {

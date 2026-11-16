@@ -49,7 +49,7 @@ Module: `harden` ([startup](startup.md) steps 1 to 4; already implemented in Pha
 - `prctl(PR_SET_NO_NEW_PRIVS, 1)`: set this early, so Landlock and seccomp need nothing more.
 - `umask(0o077)`.
 - Environment read only through `harden::env_var` (allowlist; enforced by clippy).
-- `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` is mandatory, with a 512 MiB `RLIMIT_MEMLOCK` floor ([decision 0026](../decisions.md#0026)); Crystal refuses to start without it.
+- `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` is mandatory, with a 2 GiB `RLIMIT_MEMLOCK` floor ([decision 0026](../decisions.md#0026)); Crystal refuses to start without it.
 - Secrets: note text only in `NoteText` (`Zeroizing<String>`); the vault identity in a `Box` whose key wipes itself on drop ([decision 0013](../decisions.md#0013)); the `zalloc` global allocator zeroes every freed block.
 
 ## 5. Landlock

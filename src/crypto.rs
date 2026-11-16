@@ -36,13 +36,13 @@ pub fn fill_random(buf: &mut [u8]) -> Result<(), Errno> {
 }
 
 /// The fewest characters a new passphrase may have
-/// (decision 0028). With scrypt at log N 18,
+/// (decision 0028). With scrypt at log N 20,
 /// this is what keeps offline guessing of a copied `identity.age` out of
 /// reach.
 pub const MIN_NEW_PASSPHRASE_CHARS: usize = 20;
 
 /// The largest plaintext Crystal encrypts: 32 MiB, far beyond any text
-/// vault, and well inside the 512 MiB locked-memory minimum
+/// vault, and well inside the 2 GiB locked-memory minimum
 /// (docs/design/startup.md, step 4) with the ciphertext and a decoded
 /// copy alongside.
 pub const MAX_PLAINTEXT: usize = 32 << 20;
@@ -61,6 +61,12 @@ const TEST_SCRYPT_LOG_N: u8 = 10;
 /// What `fitting_log_n` returns for an unlimited RLIMIT_MEMLOCK (2^30
 /// needs 1 TiB); `policy_for` caps decryption far below it.
 const MAX_SCRYPT_LOG_N: u8 = 30;
+
+/// The largest log2 N Crystal ever decrypts, whatever the memlock limit:
+/// 4 GiB and about 8 s on a fast machine, so a planted `identity.age`
+/// cannot make an unlock run for minutes (decision 0027). Files written
+/// by age's timed factor before 0027 stay within it.
+const MAX_DECRYPT_LOG_N: u8 = 22;
 
 /// scrypt work factors for this run (decision 0027).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,20 +98,21 @@ fn fitting_log_n(memlock: Option<u64>) -> u8 {
 }
 
 /// log2 N for every passphrase file Crystal writes, on every device: the
-/// largest whose memory fits in half of `harden::MEMLOCK_FLOOR` (256 MiB),
+/// largest whose memory fits in half of `harden::MEMLOCK_FLOOR` (1 GiB),
 /// so any device that starts Crystal can open it. Fixed, not timed:
 /// `identity.age` is synced, and a factor picked by a faster or larger
 /// machine could be refused elsewhere (decision 0027).
-const ENCRYPT_LOG_N: u8 = 18;
+const ENCRYPT_LOG_N: u8 = 20;
 
 /// The scrypt policy for a run with memlock hard limit `memlock`.
-/// Decryption accepts up to 16 times Crystal's own cost (age's allowance,
-/// so files written before 0027 at log N 19 to 22 still open), and never
-/// more than fits in half the limit, where scrypt would abort the process.
+/// Decryption accepts up to log N 22 (files written at 18 before the
+/// factor rose, and by age's timed factor before 0027, still open), and
+/// never more than fits in half the limit, where scrypt would abort the
+/// process.
 fn policy_for(memlock: Option<u64>) -> ScryptPolicy {
     ScryptPolicy {
         encrypt: ENCRYPT_LOG_N,
-        max_decrypt: (ENCRYPT_LOG_N + 4).min(fitting_log_n(memlock)),
+        max_decrypt: MAX_DECRYPT_LOG_N.min(fitting_log_n(memlock)),
     }
 }
 
@@ -501,6 +508,14 @@ mod tests {
         assert_eq!(fitting_log_n(Some(MEMLOCK_FLOOR)), ENCRYPT_LOG_N);
     }
 
+    // Vaults sealed at log N 18, before the factor rose to 20, open on
+    // every device at the floor; a passwd moves them to 20.
+    #[test]
+    fn older_factor_still_opens_at_the_floor() {
+        use crate::harden::MEMLOCK_FLOOR;
+        assert!(policy_for(Some(MEMLOCK_FLOOR)).max_decrypt >= 18);
+    }
+
     // Encryption never depends on the device; decryption takes up to
     // 16 times that cost, capped by what fits in half the limit.
     #[test]
@@ -510,11 +525,11 @@ mod tests {
             encrypt,
             max_decrypt,
         };
-        assert_eq!(policy_for(Some(512 * MIB)), policy(18, 18), "the floor");
-        assert_eq!(policy_for(Some(2048 * MIB)), policy(18, 20));
-        assert_eq!(policy_for(Some(8192 * MIB)), policy(18, 22));
-        assert_eq!(policy_for(Some(64 << 30)), policy(18, 22));
-        assert_eq!(policy_for(None), policy(18, 22), "unlimited");
+        assert_eq!(policy_for(Some(2048 * MIB)), policy(20, 20), "the floor");
+        assert_eq!(policy_for(Some(4096 * MIB)), policy(20, 21));
+        assert_eq!(policy_for(Some(8192 * MIB)), policy(20, 22));
+        assert_eq!(policy_for(Some(64 << 30)), policy(20, 22));
+        assert_eq!(policy_for(None), policy(20, 22), "unlimited");
     }
 
     // decision 0028: characters, not bytes; 19 is refused, 20 accepted.

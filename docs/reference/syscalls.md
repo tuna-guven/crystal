@@ -32,7 +32,7 @@ are allowed only with certain arguments (step S5, last column).
 | `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces | any |
 | `clock_gettime` | `session::now`, `term::Idle` | Timestamps and auto-lock (usually answered by the vDSO; the syscall is the fallback) | any |
 | `prlimit64` | `crypto::scrypt_policy`, before the first passphrase is used | Read the memlock hard limit, to refuse an scrypt work factor that cannot fit | pid 0, `RLIMIT_MEMLOCK`, new limit NULL (read only) |
-| `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 256 MiB | `mmap`: no `PROT_EXEC`. `brk`, `munmap`: any |
+| `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 1 GiB | `mmap`: no `PROT_EXEC`. `brk`, `munmap`: any |
 | `exit_group` | std, when `main` returns `crystal::run`'s exit code | Exit | any |
 
 | Syscall | Used by | Why | Restriction |

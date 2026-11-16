@@ -302,19 +302,19 @@ fn scrypt_log_n(file: &Path) -> u8 {
 }
 
 /// decision 0027: every passphrase file is written
-/// at log N 18, whatever this device's memlock limit or speed, so every
+/// at log N 20, whatever this device's memlock limit or speed, so every
 /// device at the floor opens it.
 #[test]
-fn passphrase_files_use_log_n_18() {
+fn passphrase_files_use_log_n_20() {
     let (_, vault) = home_with_vault("scrypt_factor");
-    assert_eq!(scrypt_log_n(&vault.join("identity.age")), 18);
+    assert_eq!(scrypt_log_n(&vault.join("identity.age")), 20);
 }
 
-/// An identity.age asking for log N 19 (512 MiB of scrypt) on a device at
-/// the 512 MiB floor, where only 256 MiB may go to scrypt: refused before
+/// An identity.age asking for log N 21 (2 GiB of scrypt) on a device at
+/// the 2 GiB floor, where only 1 GiB may go to scrypt: refused before
 /// any scrypt work with a message, never an abort. The work factor is
 /// changed in the header text; it is read before any key is derived or
-/// the header MAC is checked, so this is the path a real log N 19 file
+/// the header MAC is checked, so this is the path a real log N 21 file
 /// takes.
 #[test]
 fn refuses_work_factor_beyond_locked_memory() {
@@ -323,13 +323,13 @@ fn refuses_work_factor_beyond_locked_memory() {
     let mut bytes = std::fs::read(&identity).unwrap();
     let line = bytes.windows(10).position(|w| w == b"-> scrypt ").unwrap();
     let end = line + bytes[line..].iter().position(|&b| b == b'\n').unwrap();
-    assert_eq!(&bytes[end - 3..end], b" 18");
-    bytes[end - 1] = b'9';
+    assert_eq!(&bytes[end - 3..end], b" 20");
+    bytes[end - 1] = b'1';
     std::fs::write(&identity, bytes).unwrap();
-    assert_eq!(scrypt_log_n(&identity), 19);
+    assert_eq!(scrypt_log_n(&identity), 21);
 
     let (ok, output) = dialog(
-        &format!("prlimit --memlock=536870912:536870912 '{BIN}' unlock diary"),
+        &format!("prlimit --memlock=2147483648:2147483648 '{BIN}' unlock diary"),
         &home,
         &pass_step(PASS),
     );
