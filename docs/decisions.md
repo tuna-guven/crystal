@@ -809,3 +809,26 @@ build without the tool, so no release lacks the list. Checked
 2026-11-16: two clean builds identical, `cargo audit bin` finds 64
 dependencies and no advisory.
 
+## 0069 Releases are signed with SSH keys on YubiKeys {#0069}
+
+*2026-11-16.* A release is the binary from `packaging/build-release.sh`
+([0067](#0067), [0068](#0068)), its `SHA256SUMS`, and `SHA256SUMS.sig`,
+made by `packaging/sign-release.sh` with `ssh-keygen -Y sign`: OpenSSH,
+already on every Linux, so neither signer nor user needs another tool.
+The keys are two `ed25519-sk` keys, one on each of the user's two
+YubiKeys (`crystal-release-1` and `-2`): the private key never leaves
+the YubiKey, every signature needs a touch, so malware or a stolen
+laptop cannot sign, and the second key keeps releases possible if one
+YubiKey is lost. `packaging/allowed_signers` lists both under the
+principal `crystal-release`, limited to the namespace `crystal-release`,
+so a signature made for anything else (a git commit) is never a release
+signature. The script refuses uncommitted changes, so every release is
+a commit that rebuilds to the same hash, and verifies its signature
+before it ends. Checked 2026-11-16 with both keys: genuine files verify;
+a changed `SHA256SUMS`, a changed binary and the wrong namespace are
+refused. The keys must also be published outside the repository before
+a public release, since whoever controls the repository could replace
+`allowed_signers` together with the binary. Rejected: GPG (a second
+tool, a keyring and a large attack surface for one signature),
+minisign (another program), and an unsigned hash alone.
+

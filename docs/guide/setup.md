@@ -12,9 +12,12 @@ SUID privilege-escalation bugs. On other distributions `sudo` works the same.
 Crystal is a per-user executable in `~/.local/bin`; installing and updating
 need no root ([Installation](installation.md)).
 
+Verify a release's signature and hash first ([Installation, Getting a
+binary you can trust](installation.md#getting-a-binary-you-can-trust)),
+or build it yourself with `packaging/build-release.sh`. Then:
+
 ```sh
-packaging/build-release.sh   # reproducible build (decision 0067)
-install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
+install -m 0555 crystal ~/.local/bin/crystal
 restorecon -Fv ~/.local/bin/crystal   # SELinux: must show crystal_exec_t
 ```
 
