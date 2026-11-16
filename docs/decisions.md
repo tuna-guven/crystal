@@ -772,3 +772,25 @@ not the factor plus 4, so a planted file still cannot ask for more than
 run at 20 and take about twice as long. Rejected: a per-vault or
 per-command setting such as `--scrypt-memory`, and log N 22 or more
 (8 s and 4 GiB per unlock, a floor most laptops cannot spare).
+
+## 0067 Reproducible release builds through `packaging/build-release.sh` {#0067}
+
+*2026-11-16.* A release binary is built with `packaging/build-release.sh`:
+`cargo build --locked --release` on the pinned toolchain
+(`rust-toolchain.toml`, musl, LTO, one codegen unit, stripped), with
+rustc's `--remap-path-prefix` mapping the checkout to `/crystal`, Cargo's
+registry (under the path Cargo uses and its resolved form) to
+`/cargo/registry/src`, and the toolchain's `rust-src`, to which rustc
+maps the standard library's `/rustc/<commit>` paths back, to
+`/rustc/<commit>` again. Without it the binary held 47 paths naming the
+builder's home directory and user name, and its bytes depended on where
+it was built. `packaging/check-reproducible.sh` is the Phase 8
+acceptance check: two clean clones of `HEAD`, in directories of
+different names and lengths and with Cargo's home under two paths,
+must give the same SHA-256, and the binary must hold no home path;
+checked 2026-11-16, and mutation-checked (without the registry remap the
+hashes differ). The flags live in the script, not in `.cargo/config.toml`,
+which cannot name `$HOME`; Cargo's `trim-paths` would do the same but is
+not stable on 1.99. Builds by other people on other machines need the
+same toolchain version and the same `Cargo.lock`.
+

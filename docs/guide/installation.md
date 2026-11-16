@@ -3,7 +3,7 @@
 Crystal is a per-user executable at `~/.local/bin/crystal`. Installing or updating it needs no root, and nothing goes into `/usr/local` (`/var/usrlocal` on secureblue) or the OS image.
 
 ```sh
-cargo build --locked --release
+packaging/build-release.sh   # reproducible build (decision 0067)
 install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
 ```
 

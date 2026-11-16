@@ -13,7 +13,7 @@ Crystal is a per-user executable in `~/.local/bin`; installing and updating
 need no root ([Installation](installation.md)).
 
 ```sh
-cargo build --locked --release
+packaging/build-release.sh   # reproducible build (decision 0067)
 install -m 0555 target/x86_64-unknown-linux-musl/release/crystal ~/.local/bin/crystal
 restorecon -Fv ~/.local/bin/crystal   # SELinux: must show crystal_exec_t
 ```
