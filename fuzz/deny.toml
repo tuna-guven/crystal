@@ -1,0 +1,70 @@
+# Supply-chain policy for the fuzz crate only (fuzz/, its own workspace).
+# Same rules as the root deny.toml, which covers Crystal itself; the
+# differences: the glibc host target (libFuzzer is C++ on glibc) and NCSA,
+# libFuzzer's license. Run in fuzz/: cargo deny check
+
+[graph]
+# Only judge crates that end up in our binary.
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+yanked = "deny"
+# Every entry names who pulls the crate in and why it cannot reach the
+# binary or our data. Remove an entry as soon as an upgrade drops the crate.
+# Empty since step C3 (decision 0043) removed the age crate, the only crate
+# that brought RUSTSEC-2026-0374 (basic-toml) and RUSTSEC-2026-0173
+# (proc-macro-error2), both build time only.
+ignore = []
+
+[licenses]
+# GPL-3.0-compatible only. Add a license here only when a reviewed
+# dependency needs it, and name the crates that need it.
+allow = [
+    # Every crate that offers Apache-2.0 also offers MIT or BSD-3-Clause;
+    # the last Apache-2.0-only crate (self_cell, via age's i18n stack) went in C3.
+    "MIT",
+    # curve25519-dalek, x25519-dalek, subtle: the X25519 primitives src/age_v1 uses.
+    # seccompiler (Apache-2.0 OR BSD-3-Clause): the seccomp filter (decision 0060).
+    "BSD-3-Clause",
+    # unicode-ident (proc-macro2, build time): Unicode data tables.
+    "Unicode-3.0",
+    # libfuzzer-sys bundles LLVM's libFuzzer: (MIT OR Apache-2.0) AND NCSA.
+    "NCSA",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# Our own unpublished crates (crystal, zalloc) are GPL-3.0; don't check them.
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+# docs/design/dependencies.md "Avoid" list, plus network/async crates (no network code at all).
+deny = [
+    { name = "tokio" },
+    { name = "async-std" },
+    { name = "smol" },
+    { name = "reqwest" },
+    { name = "hyper" },
+    { name = "ureq" },
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "clap" },
+    { name = "syntect" },
+    { name = "tui-markdown" },
+    { name = "rpassword" },
+    # Thread pool: Crystal is single-threaded (seccomp denies clone).
+    { name = "rayon" },
+]
+# Two semver lines of the same crate. Each skip names one exact version, so
+# a third version or a new duplicate still fails the check.
+skip = [
+    { crate = "syn@3.0.10", reason = "serde_derive 1.0.229 and thiserror-impl 2.0.21 (postcard, cobs), build time; curve25519-dalek-derive and zeroize_derive use syn 2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

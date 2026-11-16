@@ -9,6 +9,9 @@ publish = false
 
 [workspace]
 members = ["crates/zalloc"]
+# The fuzz crate is its own workspace with its own Cargo.lock: libfuzzer-sys
+# never enters this lock file or the binary (docs/development/testing.md).
+exclude = ["fuzz"]
 # Plain `cargo test` / `cargo clippy` at the root check every crate.
 default-members = [".", "crates/zalloc"]
 
@@ -77,6 +80,12 @@ proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # as published. Pure Rust, forbid(unsafe_code); brings adler2. Only
 # `with-alloc`, for decompress_to_vec_zlib_with_limit.
 miniz_oxide = { version = "=0.8.9", default-features = false, features = ["with-alloc"] }
+
+# cargo-fuzz builds the library with `--cfg fuzzing`, which compiles
+# src/fuzz.rs (the fuzz targets' entry points, fuzz/). Declared so rustc
+# knows the name; normal and release builds never set it.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [profile.release]
 lto = true

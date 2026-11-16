@@ -85,6 +85,13 @@ impl Identity {
         Some(Self(StaticSecret::from(*bytes)))
     }
 
+    /// Fuzzing only (`cfg(fuzzing)`, set by cargo-fuzz; src/fuzz.rs): a
+    /// fixed key, so every fuzz run is reproducible. Never in Crystal.
+    #[cfg(fuzzing)]
+    pub(crate) fn fixed_for_fuzzing() -> Self {
+        Self(StaticSecret::from([7; 32]))
+    }
+
     /// The key as age writes it: `AGE-SECRET-KEY-1…`, upper case, in a
     /// wiped buffer.
     pub(crate) fn to_secret_string(&self) -> Zeroizing<String> {

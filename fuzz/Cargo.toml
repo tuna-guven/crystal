@@ -1,0 +1,52 @@
+# Coverage-guided fuzzing of Crystal's parsers (docs/development/testing.md;
+# roadmap step S11b). Its own workspace and Cargo.lock: libfuzzer-sys (and
+# the C++ libFuzzer it compiles) never enters Crystal's lock file, its
+# cargo deny check or its binary. Run with cargo-fuzz:
+#   cargo fuzz run --sanitizer none render -- -max_total_time=60
+[package]
+name = "crystal-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+# libFuzzer's driver and the fuzz_target! macro. Exact pin, like every
+# crate here; brings `arbitrary`, and `cc` at build time. License adds
+# NCSA (LLVM's libFuzzer), allowed in this crate's deny.toml only.
+libfuzzer-sys = "=0.4.13"
+crystal = { path = ".." }
+
+[[bin]]
+name = "render"
+path = "fuzz_targets/render.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sanitize"
+path = "fuzz_targets/sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "age"
+path = "fuzz_targets/age.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vault"
+path = "fuzz_targets/vault.rs"
+test = false
+doc = false
+bench = false

@@ -690,3 +690,22 @@ and removing in the parent. Installing it needs root once; every install
 of the binary is relabeled with `restorecon -F`, as `home_bin_t` is a
 customizable type. There is no config type until settings exist
 ([0032](#0032)). See [Sandboxing, section 7](design/sandboxing.md).
+
+## 0062 Fuzzing in its own workspace, on stable, through a private library {#0062}
+
+*2026-11-16.* Four libFuzzer targets in `fuzz/` (render, sanitize, age,
+vault) run Crystal's parsers on hostile bytes: the Markdown renderer and
+the sanitizer (A3), Crystal's age code before anything is authenticated,
+including round trips and damaged valid files (A1), and the vault
+decoder. `fuzz/` is its own workspace with its own `Cargo.lock`
+(started from the root one, so shipped crates keep their versions) and
+`deny.toml`; `libfuzzer-sys` =0.4.13 and its build-time C++ toolchain
+crates never enter Crystal's lock file or binary. The targets build on
+the pinned stable toolchain with `--sanitizer none` and debug
+assertions: Crystal forbids `unsafe`, so the address sanitizer would
+mostly check dependencies, and no nightly toolchain is kept. To give the
+targets something to call, the program became a library with a
+five-line `src/main.rs`; the library exports only `run`, plus
+`crystal::fuzz` under `cfg(fuzzing)`, which only cargo-fuzz sets, so the
+modules stay private and dead code is still reported. A fixed X25519
+key for the fuzzer exists only under the same `cfg`.

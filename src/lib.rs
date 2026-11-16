@@ -35,6 +35,10 @@ mod ui;
 mod unlock;
 mod vault;
 
+/// The fuzz targets' entry points; only in cargo-fuzz builds (fuzz/).
+#[cfg(fuzzing)]
+pub mod fuzz;
+
 use std::error::Error;
 use std::os::fd::AsFd;
 use std::process::ExitCode;
