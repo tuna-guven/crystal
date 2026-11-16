@@ -1,6 +1,6 @@
 # Crystal Sandboxing Design
 
-Status: Built (Phase 6, 2026-11-16): sections 5 to 7 and 9 describe the code; section 8 (bubblewrap) is still to be built (roadmap S10).
+Status: Built (Phase 6, 2026-11-16): sections 5 to 9 describe the code. Open: CI on a kernel with Landlock ABI 9 (roadmap S0) and the SELinux check through the bubblewrap launcher (section 8).
 Scope: Process confinement for the `crystal` binary (offline, age-encrypted Markdown notes TUI)
 Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-16 on kernel 7.3.3 (Landlock ABI 11). The `landlock` crate (0.4.7, the newest release) supports up to ABI 9, which is what Crystal uses (section 5.1).
 
@@ -186,40 +186,19 @@ Rules:
 
 ## 8. Bubblewrap launcher (optional)
 
-File: `packaging/crystal-sandboxed.sh`. Works on secureblue through its patched, SELinux-confined bwrap. Crystal is a static binary, so only the binary itself is bound, not `/usr` or any libraries.
+File: `packaging/crystal-sandboxed.sh` ([decision 0063](../decisions.md#0063)). Usage: `packaging/crystal-sandboxed.sh NAME`. One more layer around a normal `crystal unlock NAME`, never a replacement: Crystal's own Landlock, seccomp and SELinux domain apply inside it as always. Works on secureblue with its SELinux-confined, unprivileged bwrap (0.13.1 checked). Crystal is a static binary, so only the binary itself is bound, not `/usr` or any libraries.
 
-```sh
-#!/bin/sh
-# Usage: crystal-sandboxed.sh VAULT_NAME [crystal options]
-set -eu
-name=$1; shift
-case $name in                                       # same rule as Crystal's; checked here
-  ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) echo "invalid vault name" >&2; exit 1 ;;
-esac                                                # too, so a bad name binds nothing
-vault=$HOME/.local/share/crystal/$name
-state=$HOME/.local/state/crystal
-bin=$HOME/.local/bin/crystal
-mkdir -p -m 700 "$state"                            # must exist to be bound
-exec bwrap \
-  --unshare-all --die-with-parent \
-  --clearenv \
-  --setenv HOME "$HOME" --setenv TERM "$TERM" \
-  --ro-bind "$bin" "$bin" \
-  --proc /proc --dev /dev --tmpfs /tmp \
-  --ro-bind-try /etc/localtime /etc/localtime \
-  --perms 0700 --dir "$HOME/.local/share/crystal" \
-  --bind "$vault" "$vault" \
-  --bind "$state" "$state" \
-  "$bin" unlock "$@" "$name"
-```
+What it does:
+- Checks the name with Crystal's own rule (1 to 64 of `A-Z a-z 0-9 - _`, starting with a letter or digit) before using it in a path, so a bad name binds nothing; then requires the vault and `~/.local/state/crystal` to exist. It never creates them: a directory made by the shell would get the wrong SELinux label (`crystal init` creates both).
+- `--unshare-all --die-with-parent`: new user, PID, network, IPC, UTS and cgroup namespaces.
+- `--clearenv --setenv HOME`: Crystal reads only `HOME` (its environment allowlist).
+- Binds `~/.local/bin/crystal` read-only, `--proc /proc` (the inherited-fd check reads `/proc/self/fd`) and `--dev /dev` (`/dev/tty`); recreates an empty `~/.local/share/crystal` with mode 0700 (`--perms 0700 --dir`) and binds into it only this vault, plus the state directory. The other vaults do not exist inside the sandbox.
+- No `/tmp`, no `/etc`, no D-Bus, Wayland, X11 or audio sockets. `--new-session` is not used: it breaks job control, and `TIOCSTI` is killed by seccomp (section 6). `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.
+- Opens existing vaults only; run `crystal init`, `recover`, `check-code` and `rm` directly.
 
-- `--clearenv` plus `--setenv` mirrors Crystal's own environment allowlist (`HOME`, `TERM`).
-- Only the one vault is bound; `--perms 0700 --dir` recreates an empty `~/.local/share/crystal` so Crystal's owner and mode check on it passes. The other vaults do not exist inside the sandbox.
-- The launcher opens existing vaults only; run `crystal init`, `crystal recover`, `crystal check-code` and `crystal rm` directly.
-- Settings in `~/.config/crystal`, if a later decision puts them there, will be bound read-only.
-- Do not bind D-Bus, Wayland, X11 or PulseAudio/PipeWire sockets.
-- `--new-session` is not used: it breaks TUI job control, and `TIOCSTI` is blocked by seccomp (section 6).
-- `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.
+SELinux: the shell runs bwrap in `unconfined_bubblewrap_t`, which then runs Crystal. The module (section 7) lets exactly that domain enter `crystal_t` on `crystal_exec_t`; bwrap sets no_new_privs and mounts its binds nosuid, so the rule also grants `nnp_transition` and `nosuid_transition`. Without it Crystal would run in bwrap's domain instead of `crystal_t`. secureblue's policy does not let bwrap's domain execute files labeled `user_tmp_t` (anything under `/tmp`), so a binary must live in the home directory.
+
+*As checked (step S10, 2026-11-16):* in a scratch HOME under `target/` with the release binary, a session through the launcher (unlock, edit and save, quit) worked; the note opened again outside it; inside, `~/.local/share/crystal` held only the opened vault, and the network namespace differed from the host's. The name checks refuse `..`, hidden names, option-like names, `/` and names over 64 characters. Not yet checked: the transition to `crystal_t` through bwrap, which needs the hardened install (`~/.local/bin/crystal` labeled `crystal_exec_t`, section 7) and the module with the bwrap rule loaded; during development Crystal runs from `cargo install`, unlabeled.
 
 ## 9. Verification (acceptance criteria)
 
@@ -245,6 +224,8 @@ The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
 - [x] `ps -eZ` shows `crystal_t` (manual check with the module installed, step S9): a full session (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock, outside suspend and resume, `check-code`, `rm`) runs in `crystal_t` in enforcing mode
 - [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 9 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 8 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
+- [x] The bubblewrap launcher (section 8) opens a vault in which the other vaults do not exist, without network (manual, step S10)
+- [ ] Through the launcher, `ps -eZ` shows `crystal_t` (manual; needs the hardened install in `~/.local/bin`, section 7, and the module with the bwrap rule)
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
 
 ## 10. References

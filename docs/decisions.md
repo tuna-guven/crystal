@@ -709,3 +709,18 @@ five-line `src/main.rs`; the library exports only `run`, plus
 `crystal::fuzz` under `cfg(fuzzing)`, which only cargo-fuzz sets, so the
 modules stay private and dead code is still reported. A fixed X25519
 key for the fuzzer exists only under the same `cfg`.
+
+## 0063 An optional bubblewrap launcher, one more layer {#0063}
+
+*2026-11-16.* `packaging/crystal-sandboxed.sh NAME` runs
+`crystal unlock NAME` inside bwrap with new user, PID, network, IPC, UTS
+and cgroup namespaces, only `HOME` in the environment, and a file system
+holding only the binary, that one vault and the state directory; other
+vaults do not exist inside it. It is optional and never replaces
+Crystal's own Landlock, seccomp and SELinux domain, which apply inside
+it as always. It checks Crystal's name rule before building any path and
+never creates directories, which would get the wrong label. Since bwrap
+runs in `unconfined_bubblewrap_t` and sets no_new_privs, the SELinux
+module lets exactly that domain enter `crystal_t` (`nnp_transition`,
+`nosuid_transition`); without the rule Crystal would run in bwrap's
+domain. See [Sandboxing, section 8](design/sandboxing.md).

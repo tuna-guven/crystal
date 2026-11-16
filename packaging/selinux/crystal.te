@@ -39,6 +39,18 @@ gen_require(`
 # crystal_t use the shell's fds and pipes and send it SIGCHLD at exit.
 unconfined_run_to(crystal_t, crystal_exec_t)
 
+# The optional bubblewrap launcher (packaging/crystal-sandboxed.sh;
+# docs/design/sandboxing.md, section 8): the user's shell runs bwrap in
+# unconfined_bubblewrap_t, which then runs Crystal. Without this rule
+# Crystal would stay in unconfined_bubblewrap_t, outside crystal_t. bwrap
+# sets no_new_privs and mounts its binds nosuid, so the transition needs
+# nnp_transition and nosuid_transition; it only ever narrows the process.
+gen_require(`
+	type unconfined_bubblewrap_t;
+')
+domtrans_pattern(unconfined_bubblewrap_t, crystal_exec_t, crystal_t)
+allow unconfined_bubblewrap_t crystal_t:process2 { nnp_transition nosuid_transition };
+
 ########################################
 #
 # The process itself

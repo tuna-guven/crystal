@@ -35,7 +35,14 @@ run0 semodule -i /tmp/crystal-selinux/crystal.pp
 restorecon -RFv ~/.local/bin/crystal ~/.local/share/crystal ~/.local/state/crystal
 ```
 
-While a vault is open, `ps -eZ | grep crystal` shows `crystal_t`. The
+While a vault is open, `ps -eZ | grep crystal` shows `crystal_t`.
+
+**Optional: the bubblewrap launcher.** `packaging/crystal-sandboxed.sh NAME`
+opens an existing vault inside bwrap, where only the binary, that vault and
+the state directory exist, with no network ([Sandboxing, section
+8](../design/sandboxing.md)). It runs `~/.local/bin/crystal`, so it needs the
+install above; copy it anywhere on your `PATH` if you like. Use `crystal`
+directly for `init`, `recover`, `check-code` and `rm`. The
 policy creates `~/.local/share/crystal` and `~/.local/state/crystal`
 itself, but not missing parents: `~/.local/share` and `~/.local/state`
 must exist (a normal desktop session has both).
