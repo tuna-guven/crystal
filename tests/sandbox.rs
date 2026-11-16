@@ -202,3 +202,21 @@ fn refuses_to_start_without_landlock() {
     let (_, output) = pty_dialog(&cmd, &home, &[(PROMPT, b"\x1b")]);
     assert!(output.contains(PROMPT), "{output:?}");
 }
+
+/// Decision 0059: `crystal passwd` enters the sandbox before its first
+/// prompt, so identity.age and vault.age are parsed and rewritten inside
+/// it. Read from outside while it waits at that prompt. No debug hook:
+/// this runs in release builds too.
+#[test]
+fn passwd_waits_inside_the_sandbox() {
+    let home = home_with_vault("sandbox_passwd");
+    let cmd = format!(
+        "'{BIN}' passwd diary & p=$!; sleep 1; echo; \
+         grep -E '^(NoNewPrivs|Seccomp):' /proc/$p/status; \
+         kill -TERM $p; wait $p; echo exit=$?"
+    );
+    let (ok, output) = pty_dialog(&cmd, &home, &[]);
+    assert!(ok, "{output:?}");
+    assert!(output.contains("Seccomp:\t2"), "{output:?}");
+    assert!(output.contains("NoNewPrivs:\t1"), "{output:?}");
+}

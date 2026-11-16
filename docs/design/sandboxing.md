@@ -31,13 +31,13 @@ Matches the [startup order](startup.md).
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
 5. Apply Landlock (section 5; step 8).
 6. Apply the seccomp filter (section 6; step 9). Requires no_new_privs, which step 1 already set.
-7. Unlock, inside the sandbox ([decision 0059](../decisions.md#0059)): read the passphrase in raw mode from `/dev/tty` and decrypt `identity.age` (step 10). `init` and `rm` never enter the sandbox.
+7. Unlock, inside the sandbox ([decision 0059](../decisions.md#0059)): read the passphrase in raw mode from `/dev/tty` and decrypt `identity.age` (step 10). `crystal passwd` enters the sandbox the same way before its first prompt; `init` and `rm` never do.
 8. Decrypt the vault, build the indexes, start the shell (step 11).
 
 Rules:
 - Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
 - MUST NOT continue to step 7 if steps 1, 5 or 6 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
-- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3; Landlock first, then seccomp; `crystal unlock` is its one caller. (`recover` and `check-code` also entered it, step S8, until the recovery code was removed, [decision 0064](../decisions.md#0064).)
+- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3; Landlock first, then seccomp; `crystal unlock` and `crystal passwd` call it before their first prompt (test `passwd_waits_inside_the_sandbox`, mutation-checked). (`recover` and `check-code` also entered it, step S8, until the recovery code was removed, [decision 0064](../decisions.md#0064).)
 
 ## 4. Process hardening
 

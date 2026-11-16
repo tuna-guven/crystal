@@ -42,7 +42,7 @@ opens an existing vault inside bwrap, where only the binary, that vault and
 the state directory exist, with no network ([Sandboxing, section
 8](../design/sandboxing.md)). It runs `~/.local/bin/crystal`, so it needs the
 install above; copy it anywhere on your `PATH` if you like. Use `crystal`
-directly for `init` and `rm`. The
+directly for `init`, `passwd` and `rm`. The
 policy creates `~/.local/share/crystal` and `~/.local/state/crystal`
 itself, but not missing parents: `~/.local/share` and `~/.local/state`
 must exist (a normal desktop session has both).
@@ -107,6 +107,7 @@ and no config file ([On-disk layout](../design/storage.md#on-disk-layout)).
 ```text
 crystal unlock NAME          open the vault NAME (the Crystal shell)
 crystal init NAME            create a vault
+crystal passwd NAME          change the passphrase (and the vault's key)
 crystal rm NAME              delete a vault for good
 crystal help
 ```
@@ -153,6 +154,25 @@ only with the same passphrase.
 Only then is anything created: `~/.local/share/crystal` (mode 0700) if
 needed, the vault directory (0700) and its three files (0600). If a step
 fails, what was created is removed again.
+
+### Changing the passphrase
+
+```sh
+crystal passwd diary
+```
+
+`crystal passwd` asks for the current passphrase, then the new one twice
+(at least 20 characters), and changes both the passphrase and the key
+that encrypts the notes ([decision 0065](../decisions.md#0065)). Use it
+whenever the passphrase may have been seen or logged: copies of the old
+`identity.age`, in a backup or on another device, then open nothing you
+save afterwards. Copies of `vault.age` from before still open with the old
+passphrase; nothing can take back a copy someone already has.
+
+If it stops halfway (a crash, a full disk), the message says which
+passphrase opens the vault now; the vault always opens with one of the
+two. On a synced device, wait until both `identity.age` and `vault.age`
+have arrived before you unlock there.
 
 ### Vaults made before the recovery code was removed
 

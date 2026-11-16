@@ -281,10 +281,6 @@ impl VaultRecipient {
     /// that `crystal passwd` writes while it moves the vault to a new
     /// identity, which opens with either (decision 0065). The copies of
     /// both recipients are wiped before returning.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired to the command in step K1b")
-    )]
     pub fn encrypt_with(
         &self,
         next: &VaultRecipient,

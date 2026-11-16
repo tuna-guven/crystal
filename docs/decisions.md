@@ -45,7 +45,7 @@ timing advisory), unaudited third-party crates, and plugins (they need
 *2026-11-06.* The vault is encrypted to a random X25519 vault identity,
 not to the passphrase: `identity.age` holds the identity, sealed to the
 passphrase, so saving needs only the public recipient and never the
-passphrase, and a new way to unlock rewrites `identity.age` alone. The
+passphrase. `crystal passwd` replaces the identity too ([0065](#0065)). The
 second copy, `identity.backup.age` under a recovery code, is gone
 ([0064](#0064)) ([Storage, Key design](design/storage.md#key-design)).
 
@@ -227,7 +227,7 @@ minimum ([0028](#0028)), about 0.5 s per file on a fast machine.
 *2026-11-07.* `identity.age` travels wherever the vault is synced or
 backed up, where it can be guessed offline, so a new passphrase needs at
 least 20 Unicode characters (`crypto::MIN_NEW_PASSPHRASE_CHARS`). It is
-checked as soon as the first entry ends, in `init`; a short
+checked as soon as the first entry ends, in `init` and `passwd`; a short
 one ends the command with a hint to use five or more random words, and
 nothing is created. An existing passphrase is never checked, so unlock is
 unaffected. Length is the only rule: composition rules push people
@@ -264,7 +264,8 @@ read, not yet created. Each vault has its own passphrase.
 `~/.local/state/crystal/NAME.pin` holds the vault's `vault_id`, set at
 `init` or the first unlock on a device, so a vault swapped in under
 another name is refused. The first word is a command ([0058](#0058)): `crystal init NAME`,
-`unlock NAME`, `rm NAME` and `help`; `init`, `rm`, `recover`,
+`unlock NAME`, `passwd NAME` ([0065](#0065)), `rm NAME` and `help`;
+`init`, `rm`, `recover`,
 `check-code` and `help` are reserved and cannot name a vault (the last
 two named commands removed with the recovery code, [0064](#0064)). `crystal rm NAME`, after the name is
 typed again, deletes the vault for good: Crystal's own files, conflict
@@ -600,7 +601,7 @@ and numbering the border under the header, were dropped for this.
 ## 0058 A vault is opened with `crystal unlock NAME` {#0058}
 
 *2026-11-15.* The first word is always a command: `unlock`, `init`,
-`rm` or `help`. A vault is opened with
+`passwd`, `rm` or `help`. A vault is opened with
 `crystal unlock NAME`; the bare `crystal NAME` is refused, as is an
 empty command line, with the usage, so every action is named and none
 is a default. The refusal never repeats the word, which could be a
@@ -627,7 +628,8 @@ passphrase is asked. The passphrase, scrypt, the parsing of
 A1), the pin and counter checks, the `restore` question and the whole
 session then run confined. The lock screen's unlock ([0048](#0048)) runs
 inside the sandbox anyway, so the first unlock needs no syscall the
-sandbox would not allow already. `init` and `rm` create and remove
+sandbox would not allow already. `crystal passwd` ([0065](#0065))
+enters the same sandbox before its first prompt. `init` and `rm` create and remove
 directories, so they stay outside and exit. Nothing Crystal does needs
 `execve`. A hardware-key plugin (Phase 8) would; how such a vault
 unlocks is decided then, and the sandbox is never weakened for it.
@@ -720,3 +722,32 @@ hand and destroy the paper, since it still opens the vault with the old
 code. `recover` and `check-code` stay reserved vault names, so the name
 rule does not change. Replaces the recovery code decision (0029) and
 cuts [0004](#0004).
+
+## 0065 `crystal passwd` changes the passphrase and the vault key together {#0065}
+
+*2026-11-16.* `crystal passwd NAME` is the only way to change a
+passphrase, and it always makes a new vault identity as well: the
+passphrase is the key-encryption key, the identity the data-encryption
+key, and both change. `identity.age` travels with every sync and
+backup, so with a new passphrase alone every older copy would still
+open with the old one and give the same identity, which opens every
+later `vault.age`; a user cannot know whether such a copy is out there.
+Inside the sandbox ([0059](#0059)) it asks for the current passphrase
+and the new one twice (at least 20 characters, [0028](#0028)) before
+anything is decrypted, so no decrypted vault waits on a prompt; then it
+unlocks as `crystal unlock` does (pin, counter, the `restore` question)
+and writes three files in an order that leaves a vault opening with the
+old or the new passphrase after a crash at any point: `vault.age`
+sealed to the old and the new recipient, then `identity.age` with the
+new identity under the new passphrase, then `vault.age` to the new
+recipient alone, each `vault.age` with the next generation and the
+counter after it, and none over a `vault.age` that changed on disk
+([0045](#0045)). A failure says which passphrase now opens the vault.
+Both recipients stay private ([0044](#0044)); age's several recipients
+need no format change, and unlock already opens a vault sealed to two.
+A synced device that gets the new `identity.age` before the new
+`vault.age` cannot open the vault until the rest arrives. Copies of
+`vault.age` from before the change still open with the old passphrase:
+nothing can take back a copy someone already has. Rejected: a passphrase
+change without a new identity, and a separate `rotate` command (two
+commands for one need; the extra cost is one more `vault.age` write).

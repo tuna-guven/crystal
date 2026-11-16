@@ -15,6 +15,7 @@ use crate::vault::VaultName;
 pub const USAGE: &str = "\
 usage: crystal unlock NAME        open the vault NAME
        crystal init NAME          create a vault
+       crystal passwd NAME        change the passphrase (and the vault's key)
        crystal rm NAME            delete a vault for good
        crystal help
 Vaults live in ~/.local/share/crystal.";
@@ -25,6 +26,10 @@ pub enum Command {
     Run(RunArgs),
     /// `init NAME`: create a vault.
     Init {
+        name: VaultName,
+    },
+    /// `passwd NAME`: a new passphrase and a new vault key.
+    Passwd {
         name: VaultName,
     },
     /// `rm NAME`: delete a vault for good.
@@ -199,7 +204,9 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg = match self {
             Self::UnknownArgument => "unknown argument",
-            Self::MissingCommand => "the first word must be a command: unlock, init, rm or help",
+            Self::MissingCommand => {
+                "the first word must be a command: unlock, init, passwd, rm or help"
+            }
             Self::MissingVault => "missing vault name",
             Self::ExtraArgument => "too many arguments",
             Self::BadVaultName => {
@@ -219,6 +226,7 @@ impl std::error::Error for CliError {}
 enum Mode {
     Unlock,
     Init,
+    Passwd,
     Rm,
 }
 
@@ -291,6 +299,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             Arg::Value(value) if mode.is_none() => match value.as_bytes() {
                 b"unlock" => mode = Some(Mode::Unlock),
                 b"init" => mode = Some(Mode::Init),
+                b"passwd" => mode = Some(Mode::Passwd),
                 b"rm" => mode = Some(Mode::Rm),
                 b"help" => return Ok(Command::Help),
                 _ => return Err(CliError::MissingCommand),
@@ -337,6 +346,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             hide_landlock_for_test,
         }),
         Mode::Init => Command::Init { name },
+        Mode::Passwd => Command::Passwd { name },
         Mode::Rm => Command::Rm { name },
     })
 }
@@ -379,6 +389,10 @@ mod tests {
         assert_eq!(
             parse_strs(&["init", "v"]),
             Ok(Command::Init { name: name("v") })
+        );
+        assert_eq!(
+            parse_strs(&["passwd", "v"]),
+            Ok(Command::Passwd { name: name("v") })
         );
         assert_eq!(
             parse_strs(&["rm", "v"]),
@@ -511,7 +525,7 @@ mod tests {
     // A mistyped secret must never be echoed back to the terminal.
     #[test]
     fn errors_never_echo_arguments() {
-        let attempts: [&[&str]; 9] = [
+        let attempts: [&[&str]; 10] = [
             &["hunter2"],
             &["--passphrase=hunter2", "v"],
             &["--passphrase", "hunter2", "v"],
@@ -521,6 +535,7 @@ mod tests {
             &["init", "v", "hunter2"],
             &["rm", "hunter2/x"],
             &["unlock", "v", "hunter2"],
+            &["passwd", "v", "hunter2"],
         ];
         for args in attempts {
             let err = parse_strs(args).unwrap_err();

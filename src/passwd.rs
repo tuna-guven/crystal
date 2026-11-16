@@ -13,11 +13,6 @@
 //! The rollback counter follows each `vault.age`. Nothing is merged: a
 //! `vault.age` that changed on disk since it was read is never replaced.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to the command in step K1b")
-)]
-
 use std::fmt;
 
 use rustix::io::Errno;

@@ -68,7 +68,7 @@ fn print_usage() {
     println!("{}", cli::USAGE);
 }
 
-/// The result line of `check-code` and `rm`: fixed text, never a name.
+/// The result line of `passwd` and `rm`: fixed text, never a name.
 #[expect(clippy::disallowed_macros, reason = "fixed result text only")]
 fn print_done(message: &dyn std::fmt::Display) {
     println!("{message}");
@@ -90,6 +90,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
         }
         cli::Command::Run(args) => args,
         cli::Command::Init { name } => return init_vault(tty, &name),
+        cli::Command::Passwd { name } => return passwd_vault(tty, &name),
         cli::Command::Rm { name } => return remove_vault(tty, &name),
     };
     let home = harden::env_var(harden::EnvVar::Home);
@@ -405,6 +406,52 @@ fn init_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Err
     let pass = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
     drop(terminal);
     init::create(plan, name, &pass, &data_dir, &state_dir)?;
+    Ok(())
+}
+
+/// `crystal passwd NAME` (decision 0065): a new passphrase and a new vault
+/// key. The current passphrase and the new one (twice) are asked first,
+/// inside the sandbox, so no decrypted vault waits on a prompt; then the
+/// vault is unlocked as at `crystal unlock` (pin, counter, and the
+/// `restore` question for an older vault) and moved to the new key in
+/// three crash-safe writes (src/passwd.rs).
+fn passwd_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Error>> {
+    let home = home_dir()?;
+    let data_dir = vault::DataDir::open(Some(&home))?;
+    let state_dir = vault::StateDir::open_or_create(Some(&home))?;
+    // As at unlock: a mistyped name or a sync conflict copy fails before
+    // any prompt, and no fd to the other vaults stays open.
+    let mut vault_dir = unlock::open_vault_dir(&data_dir, name)?;
+    drop(data_dir);
+
+    let signals = term::Signals::register()?;
+    let mut terminal = term::TerminalGuard::enter(tty)?;
+    // Decision 0059: the sandbox before the first prompt. identity.age and
+    // vault.age are parsed, and rewritten, beneath the vault directory.
+    harden::enter_sandbox(vault_dir.fd().as_fd(), state_dir.fd().as_fd())?;
+    let current = terminal.read_passphrase(&signals, PROMPT)?;
+    let new = terminal.read_new_passphrase(&signals, NEW_PROMPT, REPEAT)?;
+    let unlocked = unlock::unlock(&vault_dir, name, current, &state_dir)?;
+    if let Some(older) = unlocked.older {
+        // The decrypted vault waits behind the question: with no key for
+        // the auto-lock time, Crystal quits and wipes it, changing nothing.
+        confirm_restore(&mut terminal, &signals, older, Some(app::AUTO_LOCK))?;
+        unlock::accept_restore(&state_dir, unlocked.contents.vault_id, older)?;
+    }
+    drop(terminal);
+    passwd::Rekey::new(
+        &mut vault_dir,
+        &state_dir,
+        unlocked.contents,
+        unlocked.recipient,
+        unlocked.stamp,
+    )?
+    .run(&new)?;
+    print_done(
+        &"The passphrase and the vault key were changed. Copies of the old identity.age (in \
+          backups, on other devices) open nothing saved from now on; older copies of vault.age \
+          still open with the old passphrase.",
+    );
     Ok(())
 }
 

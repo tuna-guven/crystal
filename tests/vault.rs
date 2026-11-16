@@ -613,6 +613,125 @@ fn vaults_have_their_own_passphrases() {
     );
 }
 
+// ---- crystal passwd ----
+
+const NEW_PASS: &str = "a-new-passphrase-for-diary";
+const PASSWD_DONE: &str = "The passphrase and the vault key were changed.";
+
+/// `crystal passwd diary`: the current passphrase `old`, then `new` twice.
+fn passwd(home: &Path, old: &str, new: &str) -> (bool, String) {
+    let steps = vec![
+        (PROMPT, format!("{old}\r").into_bytes()),
+        (NEW_PROMPT, format!("{new}\r").into_bytes()),
+        (REPEAT, format!("{new}\r").into_bytes()),
+    ];
+    dialog(&format!("'{BIN}' passwd diary"), home, &steps)
+}
+
+/// The main story (decision 0065): the new passphrase unlocks the vault,
+/// the old one does not, and the notes are still there. Neither
+/// passphrase is shown. identity.age and vault.age both change.
+#[test]
+fn passwd_changes_the_passphrase() {
+    let (home, vault) = home_with_vault("passwd");
+    let identity = std::fs::read(vault.join("identity.age")).unwrap();
+    let vault_age = std::fs::read(vault.join("vault.age")).unwrap();
+    let (ok, output) = passwd(&home, PASS, NEW_PASS);
+    assert!(ok && output.contains(PASSWD_DONE), "{output}");
+    assert!(
+        !output.contains(PASS) && !output.contains(NEW_PASS),
+        "{output}"
+    );
+    assert_ne!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
+    assert_ne!(std::fs::read(vault.join("vault.age")).unwrap(), vault_age);
+    // Two writes of vault.age: generation 1 + 2.
+    assert_eq!(
+        std::fs::read(vault_counter(&home, "diary")).unwrap(),
+        b"3\n"
+    );
+    unlock_ok(&home, "diary", NEW_PASS);
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &pass_step(PASS));
+    assert!(
+        !ok && output.contains("does not open with this passphrase"),
+        "{output}"
+    );
+    assert_eq!(
+        vault_files(&vault),
+        ["VERSION", "identity.age", "vault.age"]
+    );
+}
+
+/// A wrong current passphrase, a short new one, or a cancel at any prompt
+/// changes nothing.
+#[test]
+fn passwd_refusals_change_nothing() {
+    let (home, vault) = home_with_vault("passwd_refused");
+    let before = (
+        std::fs::read(vault.join("identity.age")).unwrap(),
+        std::fs::read(vault.join("vault.age")).unwrap(),
+    );
+    let unchanged = || {
+        assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), before.0);
+        assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before.1);
+    };
+
+    let (ok, output) = passwd(&home, "not-the-passphrase", NEW_PASS);
+    assert!(
+        !ok && output.contains("does not open with this passphrase"),
+        "{output}"
+    );
+    unchanged();
+
+    let steps = vec![
+        (PROMPT, format!("{PASS}\r").into_bytes()),
+        (NEW_PROMPT, b"nineteen-characters\r".to_vec()),
+    ];
+    let (ok, output) = dialog(&format!("'{BIN}' passwd diary"), &home, &steps);
+    assert!(!ok && output.contains("at least 20 characters"), "{output}");
+    unchanged();
+
+    let all = [
+        (PROMPT, format!("{PASS}\r").into_bytes()),
+        (NEW_PROMPT, format!("{NEW_PASS}\r").into_bytes()),
+        (REPEAT, format!("{NEW_PASS}\r").into_bytes()),
+    ];
+    for cut in 0..all.len() {
+        let mut steps = all[..cut].to_vec();
+        steps.push((all[cut].0, b"abc\x03".to_vec()));
+        let (ok, output) = dialog(&format!("'{BIN}' passwd diary"), &home, &steps);
+        assert!(!ok && output.contains("cancelled"), "step {cut}: {output}");
+        unchanged();
+    }
+    unlock_ok(&home, "diary", PASS);
+}
+
+/// An older vault than this device has seen: passwd asks for `restore`
+/// first, as unlock does; anything else changes nothing.
+#[test]
+fn passwd_asks_before_accepting_an_older_vault() {
+    let (home, vault) = home_with_vault("passwd_older");
+    let counter = vault_counter(&home, "diary");
+    std::fs::write(&counter, b"5\n").unwrap();
+    let identity = std::fs::read(vault.join("identity.age")).unwrap();
+    let mut steps = vec![
+        (PROMPT, format!("{PASS}\r").into_bytes()),
+        (NEW_PROMPT, format!("{NEW_PASS}\r").into_bytes()),
+        (REPEAT, format!("{NEW_PASS}\r").into_bytes()),
+    ];
+    steps.push(("Type restore to accept: ", b"no\r".to_vec()));
+    let (ok, _) = dialog(&format!("'{BIN}' passwd diary"), &home, &steps);
+    assert!(!ok);
+    assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
+    assert_eq!(std::fs::read(&counter).unwrap(), b"5\n");
+
+    steps.pop();
+    steps.push(("Type restore to accept: ", b"restore\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' passwd diary"), &home, &steps);
+    assert!(ok && output.contains(PASSWD_DONE), "{output}");
+    assert_eq!(std::fs::read(&counter).unwrap(), b"3\n");
+    unlock_ok(&home, "diary", NEW_PASS);
+}
+
 // ---- crystal rm ----
 
 /// rm deletes one vault; the others still unlock, and the deleted name is

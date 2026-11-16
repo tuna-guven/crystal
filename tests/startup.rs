@@ -461,24 +461,34 @@ fn init_cancelled_leaves_no_vault() {
     }
 }
 
-/// `crystal rm` checks the vault before any prompt, and never creates
-/// anything.
+/// `crystal rm` and `passwd` check the vault before any prompt, and never
+/// create anything.
 #[test]
-fn rm_checks_the_vault_before_prompting() {
+fn commands_check_the_vault_before_prompting() {
     let home = fresh_home("check_first");
     set_mode(&home, 0o700);
-    let (ok, output) = run_in_pty("rm v", Some(&home));
-    assert!(!ok && output.contains("there is no vault yet"), "{output}");
+    for command in ["rm", "passwd"] {
+        let (ok, output) = run_in_pty(&format!("{command} v"), Some(&home));
+        assert!(
+            !ok && output.contains("there is no vault yet"),
+            "{command}: {output}"
+        );
+    }
     assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
 
     make_data_dir(&home);
-    let (ok, output) = run_in_pty("rm v", Some(&home));
-    assert!(
-        !ok && output.contains("there is no vault with that name"),
-        "{output}"
-    );
-    for prompt in [RM_CONFIRM, PROMPT] {
-        assert!(!output.contains(prompt), "prompted first: {output}");
+    for command in ["rm", "passwd"] {
+        let (ok, output) = run_in_pty(&format!("{command} v"), Some(&home));
+        assert!(
+            !ok && output.contains("there is no vault with that name"),
+            "{command}: {output}"
+        );
+        for prompt in [RM_CONFIRM, PROMPT] {
+            assert!(
+                !output.contains(prompt),
+                "{command}: prompted first: {output}"
+            );
+        }
     }
 }
 
