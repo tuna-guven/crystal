@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status (2026-11-14)
+## Status (2026-11-16)
 
 | Phase | State |
 | --- | --- |
@@ -12,13 +12,13 @@
 | 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
-| 6 Sandbox | Done locally (S1 to S9, S11; decisions 0059 to 0062): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests; the SELinux domain `crystal_t`; four fuzz targets, an hour clean. Open: CI on a kernel with Landlock ABI 9 (S0), and the `crystal_t` check through the bubblewrap launcher (needs the hardened install) |
-| 7, 8 | Phase 7 dropped (decision 0036); Phase 8 not started |
+| 6 Sandbox | Done (S1 to S12; decisions 0059 to 0063): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests, run locally; the SELinux domain `crystal_t`; four fuzz targets, an hour clean; the optional bubblewrap launcher. Skipped by the user: CI (S0) and the `crystal_t` check through the launcher |
+| 7 | Dropped (decision 0036) |
+| 8 Keys and release | Planned: steps K0 to H4 below, awaiting approval |
 
 What runs today: `crystal init NAME` creates a vault in
-`~/.local/share/crystal/NAME`, `crystal recover NAME` sets a new passphrase
-with the recovery code, `crystal check-code NAME` checks the code,
-`crystal rm NAME` deletes a vault, and `crystal unlock NAME` unlocks the vault
+`~/.local/share/crystal/NAME` (a passphrase and no recovery code, decision
+0064), `crystal rm NAME` deletes a vault, and `crystal unlock NAME` unlocks the vault
 into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
 `view`, `links`, `edit`, `mv`, `rm`, `help`, `clear`, `lock` and
 `quit`. Crystal locks by itself after 5 minutes without a key, and when
@@ -26,6 +26,49 @@ suspended.
 `edit` opens the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes), creating a missing note after asking for its
 type (Markdown or text), shown dimmed after every name.
+
+## Steps K0 to H4 (Phase 8, keys and release)
+
+Approved 2026-11-16 with the user's answers: K4 as one fixed factor, log N 20; K5 dropped; R2 approved; hardware keys wanted (the user owns YubiKeys). Security
+first, Crystal minimal. Order: key management (no new dependency, no
+sandbox change), then the release work, then hardware keys, whose unlock
+design is settled in a decision (H0) before any code. Every step ends
+with fmt, clippy, tests, deny and audit green and leaves Crystal working;
+tests are automated Rust tests on the real binary where possible, and
+anything needing root is a `run0` command the user runs. **Flagged**
+marks a step that adds code without a security benefit, or whose cost
+is far above its benefit; flagged steps are dropped unless the user
+keeps them.
+
+No recovery code (user, 2026-11-16): a forgotten passphrase loses the
+notes, on every device, and backups do not help. K0 removes the code and
+the commands built on it. Changing the passphrase always makes a new
+vault key (user, 2026-11-16: no separate `rotate`): `identity.age`
+travels with every sync and backup, so with only a new passphrase every
+older copy would still open with the old one and yield the same vault
+identity, which opens every later `vault.age`. A user cannot know
+whether such a copy is out there, so `passwd` always revokes it.
+
+| Step | What | Why | Size |
+| --- | --- | --- | --- |
+| K0a (done) | Remove `crystal recover` and `crystal check-code`: `src/recover.rs`, both commands in `cli.rs` and `lib.rs` (the words stay reserved as vault names, so the name rule and the launcher's copy do not change), and their tests (`tests/vault.rs`, `tests/startup.rs`, `tests/sandbox.rs`). `harden::enter_sandbox` and Landlock's `restrict` take the state directory again, not an `Option`: only `check-code` passed none. `VaultIdentity::recipient` is test-only now | The user's choice: one way into the vault and its code less | removes ~600 lines |
+| K0b (done) | `init` asks for the passphrase twice and nothing else: no code, no `identity.backup.age`; `src/recovery.rs` and `init::confirm_recovery_code` gone, `init::VAULT_FILES` has three files. `crystal rm` keeps its own list with `identity.backup.age`, so an older vault's backup (and its temp files) is still removed (unit test). An existing `identity.backup.age` is ignored by unlock; the guide will say to delete it by hand, since it still opens the vault with the old code. Tests: `init_asks_only_for_the_passphrase` replaces the code confirmation tests; the pty driver's code-typing markers are gone | Same | removes ~450 lines |
+| K0c (done) | The book: decision 0029 deleted and 0064 added (no recovery code; older vaults' `identity.backup.age` deleted by hand), 0004 cut to the vault identity in `identity.age`, 0022, 0027, 0028, 0032, 0036, 0058 and 0059 brought up to date; Storage, Backups, Leakage, threat model (A1, A9 now an old paper), Startup, Sandboxing, Syscalls, Testing, the setup guide (keep the passphrase in a password manager; deleting `identity.backup.age`) and the launcher's comment | The book matches the code | docs |
+| K1 | `crystal passwd NAME`: changes the passphrase **and** the vault key (a KEK and DEK change in one; no separate `rotate`). Sandbox before the prompt (vault and state, as `unlock`); the current passphrase opens `identity.age` and `vault.age` with the same pin, counter and `restore` checks as unlock; then a new identity is made and a new passphrase asked twice (20 characters, 0028), before the first write. Crash-safe order using age's several recipients, no format change: (1) `vault.age` sealed to the old **and** new recipient (generation +1), (2) `identity.age` (new passphrase, new identity), (3) `vault.age` to the new recipient alone (generation +1). After every step the vault opens with the old or the new passphrase. Unlock accepts a two-recipient vault (left by a crash), and the next save writes one recipient. Debug-only `--stop-passwd-after-for-test N`: after each N, unlock still opens it; mutation-checked by swapping steps. Decision (both recipients stay private, 0044; a synced device may see the files arrive out of order and fail until the rest arrives; old copies of `vault.age` stay readable with the old passphrase) | A leaked passphrase or `identity.age` copy opens nothing saved afterwards | ~120 + ~100 tests |
+| K4 | Stronger scrypt as **one fixed factor, log N 20** (1 GiB, about 2 s per unlock on the desktop), chosen by the user over a per-vault setting; every new or changed passphrase file uses it on every device, and older files at log N 18 still open. The locked-memory floor rises from 512 MiB to 2 GiB (half holds scrypt), so every device needs `RLIMIT_MEMLOCK` of at least 2 GiB (this machine has 2 GiB). Decryption still accepts up to 4 above and never more than half the limit. Integration tests run the real binary at the real factor, so the suite gets slower. Decisions 0026 and 0027 replaced in part; setup guide | 4 times the work per passphrase guess | ~10 lines, tests, docs |
+| K5 (dropped) | Plaintext export: dropped by the user for now (it would need a change to the rule that only ciphertext is written, a Landlock rule outside the vault, and leaves plaintext on an SSD) | | |
+| R1 | Reproducible builds. Today's release binary holds 47 absolute paths such as `/home/user/.cargo/registry/...` (the build directory and the user name). Remove them with Cargo's `trim-paths` if stable on 1.99, else `--remap-path-prefix` in a small `packaging/build-release.sh` (`--locked`, pinned toolchain, musl). Check: two fresh clones in two different directories give identical `sha256sum`; no home path left (`strings`). Decision | Anyone can check the binary was built from this source; no user name in the binary | ~25 lines script or config |
+| R2 | `cargo auditable`: the dependency list embedded in the binary (a few KiB), so `cargo audit bin` can check a shipped binary. **Approved by the user:** the build tool `cargo-auditable` (newest release, version pinned at the step, installed with `cargo install --locked`; it is not in `Cargo.lock` and adds no code to Crystal). R1's check is repeated with it | A shipped binary can be checked for advisories without its source | config only |
+| R3 | Signed releases with `ssh-keygen -Y sign` (OpenSSH, already installed; no new tool): a dedicated release key, ideally `ed25519-sk` on a hardware key; its public key in `packaging/allowed_signers`, also published outside the repository; the binary and `SHA256SUMS` signed; `ssh-keygen -Y verify` in the guide. The user creates the key and signs; I give the commands. Decision | A replaced download is detected before install | ~10 lines doc, one file |
+| R4 | Installation guide: download, verify the signature and hash, `install`, `restorecon -F`, then the optional `run0 chattr +i`; one manual check by the user with `run0` (an overwrite fails while the flag is set). No install script: the guide's few commands are the install. Dev builds stay on `cargo install --path .` | The documented install is the checked one | docs |
+| H0 | Decision only: how a hardware-key vault unlocks while the sandbox starts before the first prompt (0059) and is never weakened. Proposed: the age plugin (e.g. `age-plugin-yubikey`) is spawned **before** the sandbox, Crystal's only exec (CLAUDE.md allows exactly this), with stdin and stdout pipes, no terminal, stderr discarded and a cleared environment; then Crystal enters the sandbox and does everything else inside it: parsing `identity.age`, the age plugin protocol over the open pipes (a new parser of hostile input: bounded, fuzzed), the PIN and touch prompts on Crystal's own prompt, decryption. The plugin runs in its own SELinux domain (`crystal_plugin_t`, pcscd only), never in `crystal_t`. Lock on such a vault wipes and exits, since no new plugin can be started inside the sandbox. `identity.age` goes to one or more hardware keys (age allows no passphrase beside them); with no recovery code, a lost or broken key loses the notes, so two keys (a second recipient, no new file) are strongly advised. To settle in H0: how Crystal knows the plugin's name before reading `identity.age` (a fixed public file like `VERSION`, versus a header peek outside the sandbox, which would put a parser back outside), and where the plugin binary may come from (not a `PATH` search, A5). Rejected: `execve` in the allowlist, a broker process, a plugin kept alive for the lock screen, and FIDO2, PIV or TPM spoken by Crystal itself (own protocol code, P-256, a construction outside age, 0042) | The design must exist before code, as for 0059 | decision, book |
+| H1 to H4 (wanted; YubiKey) | H1 the plugin protocol client (`src/age_v1/plugin.rs`, unwrap side) with a fuzz target and a test-only fake plugin; H2 spawning before the sandbox, the unlock path, lock exits, seccomp (`wait4` to reap the child, if needed) and `syscalls.md`, sandbox tests that `exec` still dies afterwards; H3 `crystal add-key NAME` (the plugin wraps the file key for its recipient); H4 the SELinux plugin domain, built as the user, loaded with `run0 semodule -i`, and a manual check with the real device. Benefit is real but only with a hardware key: a phished passphrase is useless and `identity.age` cannot be guessed offline. Cost: Crystal's first exec, a new hostile-input parser, external software (the plugin), a second SELinux domain, the launcher stays passphrase-only. The user owns YubiKeys and wants it; built after H0 is approved | Asked in the plan | ~850 lines total, ~40 policy |
+
+Order of work: K0a, K0b, K0c, then K1 (K2 dropped, K3 folded into K1), K4;
+R1 to R4; H0; H1 to H4 after H0 is approved. Phase 8 acceptance: two
+clean builds in different directories give identical hashes, and the
+signature verifies; also, a `passwd` interrupted after any step still
+opens with the old or the new secrets.
 
 ## Steps S0 to S12 (Phase 6, the sandbox)
 
@@ -39,7 +82,7 @@ Crystal working.
 
 | Step | What | Why | Size |
 | --- | --- | --- | --- |
-| S0 (later) | CI: a runner or VM with Landlock ABI 9 or newer, never a weaker mode (sandboxing section 9); first a probe printing the runner's kernel and ABI | From S3 on, Crystal refuses to start below ABI 9, so every pty test fails on an older runner. Deferred by the user: the sandbox is tested locally first | ~10 lines YAML, then the fix |
+| S0 (skipped) | Skipped by the user (2026-11-16); the sandbox tests run locally. Was: CI: a runner or VM with Landlock ABI 9 or newer, never a weaker mode (sandboxing section 9); first a probe printing the runner's kernel and ABI | From S3 on, Crystal refuses to start below ABI 9, so every pty test fails on an older runner. Deferred by the user: the sandbox is tested locally first | ~10 lines YAML, then the fix |
 | S1 (done) | Decision 0059 and the book: the sandbox is entered **before the first passphrase prompt**, not after the identity is decrypted; startup steps 8 to 11 and sandboxing sections 1 and 3 reordered. Code comments naming step 8 as unlock follow in S3, with the code | The lock screen already re-unlocks inside the sandbox (0048), so the first unlock needs no syscall the sandbox lacks; moving it in puts the parsers of `identity.age` and `vault.age` (hostile input, A1) and scrypt inside Landlock and seccomp | docs only |
 | S2 (done) | Dependencies: `landlock` 0.4.7 (MIT/Apache-2.0; brings `enumflags2`, reuses `libc` and `thiserror`) and `seccompiler` 0.5.0 (Apache-2.0/BSD-3; no default features, so no serde). Exact pins, `deny.toml` checked | Both already chosen in [Dependencies](../design/dependencies.md); Landlock and BPF by hand would need `unsafe` in the crystal crate | Cargo.toml, lock |
 | S3 (done) | `src/harden/landlock.rs`: ABI 9 hard requirement, rules from the vault and state fds already open (vault and state: read, write, truncate, make and remove files; no `REFER`, `EXECUTE`, `MAKE_DIR`, `REMOVE_DIR`, `IOCTL_DEV`), TCP bind and connect handled with no rule, signal and abstract-socket scopes. Called from `harden::enter_sandbox` at the point S1 fixes | The file layer: a bug or a bad crate can no longer read `~/.ssh` or other vaults, nor reach D-Bus or Wayland sockets | ~150 lines |
@@ -50,15 +93,16 @@ Crystal working.
 | S7 (done) | The refusal without Landlock, end to end: debug-only `--hide-landlock-for-test` (a one-rule seccomp filter: `landlock_create_ruleset` gets `ENOSYS`, as from a kernel without Landlock), test `refuses_to_start_without_landlock` (exit 1, the ABI 9 message, no prompt; positive control reaches the prompt). Mutation-checked: best-effort mode is still refused by the status check; without it Crystal reached the prompt and the test failed | Planned as a unit test of the message; the real path is tested instead, without a VM or `unsafe` | ~30 + ~25 lines |
 | S8 (done) | `recover` and `check-code` enter the sandbox right before the recovery code prompt, after the data directory is closed; `check-code` (reads, changes nothing) passes no state directory, so Landlock grants the vault alone (`enter_sandbox` takes `state` as an `Option`). The existing pty tests (`recover_*`, `check_code_*`, including the `restore` path) pass inside it; new test `recover_and_check_code_wait_inside_the_sandbox` reads `Seccomp: 2` from outside, also in release; mutation-checked for each command. `init` and `rm` stay outside | Same protection for the other commands that parse `identity.backup.age` | ~25 + ~20 lines |
 | S9 (done) | SELinux module in `packaging/selinux/` (decision 0061): `crystal_t`, `crystal_exec_t`, `crystal_vault_t`, `crystal_state_t`; built as the user, installed with `run0`. A full pty session ran in `crystal_t`, permissive first: the one denial (`read` on the home directory) was answered in the code (`O_PATH` for `HOME` and the walk) and the module narrowed (no `filetrans_pattern`, which also granted read and remove on the parents); the same session then logged none, and passed in enforcing mode. Found: `restorecon` needs `-F` (`home_bin_t` is customizable) | A layer Crystal cannot switch off itself | ~110 lines policy, a few lines Rust |
-| S10 (done) | `packaging/crystal-sandboxed.sh` (decision 0063): bwrap with all namespaces, only `HOME` in the environment, the binary, this vault and the state directory; Crystal's name rule checked before any path is built; never creates the state directory (wrong label). The module lets `unconfined_bubblewrap_t` enter `crystal_t` (with `nnp_transition`, `nosuid_transition`), found because Crystal would otherwise stay in bwrap's domain. Checked in a scratch HOME: a session works, the other vaults do not exist inside, no network. Open: the `crystal_t` check through bwrap, which needs the hardened install | An outer layer Crystal does not set up itself | ~60 lines script, ~10 lines policy |
+| S10 (done) | `packaging/crystal-sandboxed.sh` (decision 0063): bwrap with all namespaces, only `HOME` in the environment, the binary, this vault and the state directory; Crystal's name rule checked before any path is built; never creates the state directory (wrong label). The module lets `unconfined_bubblewrap_t` enter `crystal_t` (with `nnp_transition`, `nosuid_transition`), found because Crystal would otherwise stay in bwrap's domain. Checked in a scratch HOME: a session works, the other vaults do not exist inside, no network. The `crystal_t` check through bwrap (needs the hardened install) was skipped by the user | An outer layer Crystal does not set up itself | ~60 lines script, ~10 lines policy |
 | S11a (done) | Library and program split, no behavior change: `src/main.rs` became `src/lib.rs` (`fn main` is `pub fn run`), a five-line `src/main.rs` calls `crystal::run()`. The modules stay private, so dead code is still reported; nothing else is exported. Found: a library with public modules (tried on a scratch copy first) would have hidden dead code | The fuzz targets need a library to call | ~20 lines |
 | S11b (done) | `fuzz/`, its own workspace (decision 0062): `libfuzzer-sys` =0.4.13, `Cargo.lock` started from the root one, `deny.toml` adds NCSA only there; `src/fuzz.rs` under `cfg(fuzzing)` only (render, sanitize, age with decrypt, round-trip and damaged-file modes, vault), plus a fixed X25519 key under the same `cfg`. Stable 1.99 with `--sanitizer none --debug-assertions` works, so no nightly. One hour each, all four in parallel: clean (render 5.7 M runs, sanitize 58 M, age 5.6 M, vault 696 M) | Finds parser bugs property tests miss; the sandbox limits what such a bug can do, fuzzing removes the bug | ~110 + ~80 lines |
 | S12 | Book pass done: introduction, roadmap status and plan, `testing.md` (the old sandbox row, no `cargo vet` or `cargo geiger`, the outside review now due), `syscalls.md` (the second table is every use, before and inside the sandbox; the obsolete log-mode paragraph cut), threat model A4 and A6 (no `cargo vet`, which was never set up; the three layers), sandboxing header, leakage. Then `/security-review` of the Phase 6 changes | The book matches the code; the review mirrors Phases 4 and 5 | docs |
 
 Order of work: S1, S2, then S3 to S7 one per turn, then S8, S9, S11,
-S12, then S10; S0 when the user asks. Phase 6 acceptance: every check in
-[Sandboxing](../design/sandboxing.md) section 9 passes locally; the CI
-check follows with S0.
+S12, then S10; S0 skipped. Phase 6 acceptance: every check in
+[Sandboxing](../design/sandboxing.md) section 9 passes locally (passed
+2026-11-16); CI and the `crystal_t` check through the launcher were
+skipped by the user.
 
 ## Steps N1 to N5 (note types shown, not typed; done)
 
@@ -239,10 +283,10 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock after 5 minutes and the shell's `lock` command, lock on suspend (decision 0048), the shell starting at the top (decision 0049). No settings and no vault format change. Steps M0 to M6 above.
    - Accept (passed 2026-11-14): the canary scan finds no plaintext after lock.
-7. **Phase 6: Sandbox** (done locally; steps S0 to S12 above). Landlock (ABI 9, hard requirement) and a seccomp allowlist with argument rules, entered before the first passphrase prompt (decision 0059); the debug-only `--sandbox-check-for-test CHECK` and `tests/sandbox.rs`; the SELinux module (decision 0061); fuzzing in its own workspace (decision 0062). The optional bubblewrap launcher (S10, decision 0063). Still open: CI on a kernel with Landlock ABI 9 (S0).
-   - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied (passed locally 2026-11-16; CI with S0).
+7. **Phase 6: Sandbox** (done; steps S0 to S12 above). Landlock (ABI 9, hard requirement) and a seccomp allowlist with argument rules, entered before the first passphrase prompt (decision 0059); the debug-only `--sandbox-check-for-test CHECK` and `tests/sandbox.rs`; the SELinux module (decision 0061); fuzzing in its own workspace (decision 0062). The optional bubblewrap launcher (S10, decision 0063). CI (S0) skipped.
+   - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied (passed locally 2026-11-16; CI skipped).
 8. ~~**Phase 7: Backups.**~~ Dropped (decision 0036): backups are left to restic, borg or any file-level tool; Crystal only accepts a restored, older vault after the word `restore` (step L3), and `crystal check-code NAME` checks the recovery code (step L1).
-9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), optionally a hardware key as a further recovery method (never required; decision 0029), passphrase change, a new recovery code, and key rotation (with an optional stronger scrypt setting, see Storage, Open questions), explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`, per-user install to `~/.local/bin` with the optional immutable flag ([Installation](../guide/installation.md)).
+9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), optionally a second hardware key, passphrase change, a new recovery code, and key rotation (with an optional stronger scrypt setting, see Storage, Open questions), explicit plaintext export with a warning, reproducible builds, signed releases, embedded dependency list via `cargo auditable`, per-user install to `~/.local/bin` with the optional immutable flag ([Installation](../guide/installation.md)). Steps K0 to H4 above (proposed): no recovery code any more (K0, user 2026-11-16); `passwd` always makes a new vault key (K1); K4 (stronger scrypt) and K5 (plaintext export) are flagged for dropping; hardware keys are settled in a decision (H0) first.
    - Accept: two clean builds produce identical hashes; the signature verifies.
 
 A usable daily driver exists after Phase 4; Phases 5 and 6 are what make it meaningfully more secure than gocryptfs plus an editor.

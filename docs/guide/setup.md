@@ -42,7 +42,7 @@ opens an existing vault inside bwrap, where only the binary, that vault and
 the state directory exist, with no network ([Sandboxing, section
 8](../design/sandboxing.md)). It runs `~/.local/bin/crystal`, so it needs the
 install above; copy it anywhere on your `PATH` if you like. Use `crystal`
-directly for `init`, `recover`, `check-code` and `rm`. The
+directly for `init` and `rm`. The
 policy creates `~/.local/share/crystal` and `~/.local/state/crystal`
 itself, but not missing parents: `~/.local/share` and `~/.local/state`
 must exist (a normal desktop session has both).
@@ -107,8 +107,6 @@ and no config file ([On-disk layout](../design/storage.md#on-disk-layout)).
 ```text
 crystal unlock NAME          open the vault NAME (the Crystal shell)
 crystal init NAME            create a vault
-crystal recover NAME         set a new passphrase with the recovery code
-crystal check-code NAME      check the recovery code on paper; changes nothing
 crystal rm NAME              delete a vault for good
 crystal help
 ```
@@ -140,42 +138,35 @@ crystal init diary
 ```
 
 `crystal init` first checks that `~/.local/share/crystal/diary` does not
-exist yet. Then it asks for:
+exist yet. Then it asks for **a new passphrase**, twice. It protects this
+vault's `identity.age`; each vault has its own (using the same one for
+several is your choice). Crystal recommends a passphrase of 8 or more
+random words, generated with KeePassDX or KeePassXC. It must have at least
+20 characters ([decision 0028](../decisions.md#0028)): `identity.age`
+travels with the vault, so anyone with a copy of it can guess offline.
 
-1. **A new passphrase**, twice. It protects this vault's `identity.age`;
-   each vault has its own (using the same one for several is your choice).
-   Crystal recommends a passphrase of 8 or more random words, generated
-   with KeePassDX or KeePassXC. It must have at least 20 characters
-   ([decision 0028](../decisions.md#0028)):
-   `identity.age` travels with the vault, so anyone with a copy of it can
-   guess offline.
-2. **The recovery code.** Crystal generates a code of 7 groups of 4
-   characters, such as `K7QM-3XRD-HW9P-T2NB-FG4S-ZE8V-YC6J`, and shows it
-   once. Write it on paper, press Enter, and type it back to confirm; a
-   mistake shows the code again. It opens `identity.backup.age`, so it
-   recovers the vault if you forget the passphrase
-   ([decision 0029](../decisions.md#0029)). Keep the paper
-   like a house key: off the computer, and away from where the vault is
-   synced or backed up, because the code and a copy of the vault together
-   open your notes. Run `crystal check-code diary` once afterwards to make
-   sure the paper is right.
-
+**Keep the passphrase in your password manager.** It is the only way into
+the vault: there is no recovery code and no reset
+([decision 0064](../decisions.md#0064)). A forgotten passphrase loses
+the notes on every device, and a backup does not help, since it opens
+only with the same passphrase.
 Only then is anything created: `~/.local/share/crystal` (mode 0700) if
-needed, the vault directory (0700) and its four files (0600). If a step
+needed, the vault directory (0700) and its three files (0600). If a step
 fails, what was created is removed again.
 
-### If you forget the passphrase
+### Vaults made before the recovery code was removed
+
+Older vaults hold a fourth file, `identity.backup.age`, which still opens
+the vault with the recovery code on your paper. Crystal ignores it, and
+`crystal rm` deletes it with the vault. To close that way in, delete it
+yourself and destroy the paper:
 
 ```sh
-crystal recover diary
+rm ~/.local/share/crystal/diary/identity.backup.age
 ```
 
-`crystal recover NAME` asks for the recovery code. Case, dashes and spaces
-do not matter, and O, I and L are read as 0, 1 and 1. A typo is reported
-as such; another vault's code is refused. Then it asks for a new
-passphrase twice and rewrites `identity.age`. Nothing is written until the
-code, the vault and its rollback counter are checked. The recovery code
-stays the same afterwards; keep the paper.
+Copies already in a backup or on another device still open with the old
+code until they are gone too.
 
 ### Deleting a vault
 

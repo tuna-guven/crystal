@@ -3,8 +3,9 @@
 //! a backup brings it back (decision 0036).
 //!
 //! Only Crystal's own files are removed: `VERSION`, `identity.age`,
-//! `identity.backup.age`, `vault.age`, Syncthing conflict copies of
-//! `vault.age`, and atomic-writer temp files of those four. Any other file
+//! `vault.age`, `identity.backup.age` (written by `init` while Crystal had
+//! a recovery code), Syncthing conflict copies of `vault.age`, and
+//! atomic-writer temp files of those four. Any other file
 //! stays, and then so does the directory. The vault's pin and rollback
 //! counter go too. Runs before the sandbox and then exits.
 
@@ -13,9 +14,9 @@ use std::fmt;
 use rustix::fs::{AtFlags, Dir, Mode, OFlags, openat, unlinkat};
 use rustix::io::Errno;
 
-use crate::init::VAULT_FILES;
 use crate::unlock::is_sync_conflict;
 use crate::vault::atomic::{FileName, is_temp_of};
+use crate::vault::format::{IDENTITY_BACKUP_FILE, IDENTITY_FILE, VAULT_FILE, VERSION_FILE};
 use crate::vault::generation::{self, Counter};
 use crate::vault::pin::{self, PinError};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir};
@@ -78,11 +79,20 @@ impl fmt::Display for Removed {
     }
 }
 
+/// The files Crystal makes in a vault directory, or made once: older
+/// vaults still hold an `identity.backup.age` (roadmap K0).
+const OWN_FILES: [&str; 4] = [
+    VERSION_FILE,
+    IDENTITY_FILE,
+    IDENTITY_BACKUP_FILE,
+    VAULT_FILE,
+];
+
 /// Whether `entry` in a vault directory is Crystal's own.
 fn is_crystal_file(entry: &[u8]) -> bool {
-    VAULT_FILES.iter().any(|f| entry == f.as_bytes())
+    OWN_FILES.iter().any(|f| entry == f.as_bytes())
         || is_sync_conflict(entry)
-        || VAULT_FILES
+        || OWN_FILES
             .iter()
             .filter_map(|f| FileName::new(f))
             .any(|f| is_temp_of(entry, &f))
@@ -134,7 +144,6 @@ mod tests {
     use super::*;
     use crate::crypto::Passphrase;
     use crate::init;
-    use crate::recovery::RecoveryCode;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -165,9 +174,8 @@ mod tests {
 
         fn init(&self, n: &str) {
             let pass = Passphrase::new(Zeroizing::new(b"pw".to_vec())).unwrap();
-            let code = RecoveryCode::generate().unwrap();
             let plan = init::plan(&self.data, &name(n)).unwrap();
-            init::create(plan, &name(n), &pass, &code, &self.data, &self.state).unwrap();
+            init::create(plan, &name(n), &pass, &self.data, &self.state).unwrap();
         }
 
         fn vault(&self, n: &str) -> PathBuf {
@@ -201,6 +209,10 @@ mod tests {
         )
         .unwrap();
         fs::write(vault.join(".vault.age.tmp-0123456789abcdef"), b"").unwrap();
+        // An older vault's backup of the identity, from when Crystal had a
+        // recovery code, and a temp file of one.
+        fs::write(vault.join("identity.backup.age"), b"").unwrap();
+        fs::write(vault.join(".identity.backup.age.tmp-0123456789abcdef"), b"").unwrap();
 
         assert_eq!(
             remove(&world.data, &world.state, &name("diary")),

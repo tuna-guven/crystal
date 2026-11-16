@@ -40,15 +40,14 @@ timing advisory), unaudited third-party crates, and plugins (they need
 `execve`, which the sandbox denies, [0059](#0059)). Recorded in
 [Storage, Open questions](design/storage.md#open-questions).
 
-## 0004 Two identity files {#0004}
+## 0004 A vault identity, sealed in `identity.age` {#0004}
 
 *2026-11-06.* The vault is encrypted to a random X25519 vault identity,
-which is stored twice: `identity.age`, sealed to the passphrase, and
-`identity.backup.age`, sealed to the recovery code ([0029](#0029)). age
-allows a scrypt stanza only as the sole recipient of a file, so one file
-cannot serve both, and encrypting `vault.age` to a second secret would
-tie every save to it. Changing the passphrase rewrites only
-`identity.age` ([Storage, Key design](design/storage.md#key-design)).
+not to the passphrase: `identity.age` holds the identity, sealed to the
+passphrase, so saving needs only the public recipient and never the
+passphrase, and a new way to unlock rewrites `identity.age` alone. The
+second copy, `identity.backup.age` under a recovery code, is gone
+([0064](#0064)) ([Storage, Key design](design/storage.md#key-design)).
 
 ## 0006 Per-user install in ~/.local/bin {#0006}
 
@@ -175,11 +174,10 @@ the passphrase anyway.
 ## 0022 init: check and ask first, create last, undo on failure {#0022}
 
 *2026-11-06.* `crystal init NAME` checks that the vault directory
-([0032](#0032)) does not exist, asks for the passphrase twice and has the
-recovery code ([0029](#0029)) typed back before it creates anything, so a
-cancelled prompt leaves nothing behind. It then writes `VERSION`, a new
-identity and random `vault_id`, `identity.age`, `identity.backup.age` and
-an empty `vault.age` at generation 1, each through the atomic writer,
+([0032](#0032)) does not exist, asks for the passphrase twice before it
+creates anything, so a cancelled prompt leaves nothing behind. It then
+writes `VERSION`, a new identity and random `vault_id`, `identity.age`
+and an empty `vault.age` at generation 1, each through the atomic writer,
 checks the result, and writes the pin and the counter. If a step fails,
 exactly what this run created is removed and the error says so; a
 directory that existed before is never removed.
@@ -213,7 +211,7 @@ locking](guide/setup.md#memory-locking-required)).
 
 ## 0027 scrypt: one fixed work factor, log N 18 {#0027}
 
-*2026-11-07.* Passphrase files (`identity.age`, `identity.backup.age`) are
+*2026-11-07.* Passphrase files (`identity.age`) are
 written at log N 18 (256 MiB) on every device; nothing is timed.
 Decryption accepts up to log N 22 and never more than half this device's
 locked-memory limit, and refuses a higher factor before any scrypt work,
@@ -229,30 +227,12 @@ minimum ([0028](#0028)), about 0.5 s per file on a fast machine.
 *2026-11-07.* `identity.age` travels wherever the vault is synced or
 backed up, where it can be guessed offline, so a new passphrase needs at
 least 20 Unicode characters (`crypto::MIN_NEW_PASSPHRASE_CHARS`). It is
-checked as soon as the first entry ends, in `init` and `recover`; a short
+checked as soon as the first entry ends, in `init`; a short
 one ends the command with a hint to use five or more random words, and
 nothing is created. An existing passphrase is never checked, so unlock is
 unaffected. Length is the only rule: composition rules push people
 toward patterns, and a strength estimator (zxcvbn) would be a dependency
 for a guess.
-
-## 0029 Recovery code instead of a backup recipient {#0029}
-
-*2026-11-08.* `crystal init` generates a recovery code: 27 random symbols
-(135 bits from `getrandom`) and one check symbol (Σ (2i + 1) · vᵢ mod 32,
-which catches every single wrong symbol and most swaps of neighbours) in
-Crockford's base32, shown once as 7 groups of 4 to be written on paper
-and typed back before anything is created. It is read leniently (any
-case, dashes and spaces, O as 0, I and L as 1), and `identity.backup.age`
-is scrypt-encrypted to it at log N 18. `crystal recover NAME` asks for the
-code (echoed), opens the backup and `vault.age` with it, then sets a new
-passphrase, rewriting `identity.age` only ([0032](#0032)). The code is
-typed only on the tty, kept in zeroizing buffers, and never appears in an
-error or log. Rejected: age backup recipients (they need another program,
-and Crystal alone must suffice), a second chosen passphrase (weak and
-forgettable), BIP-39 words (a 2048-word list in the binary), and a
-printed `AGE-SECRET-KEY` (74 characters, no typo check). Anyone holding
-the paper and a copy of the vault can open it.
 
 ## 0031 Own screen grid and terminal backend, no ratatui {#0031}
 
@@ -284,9 +264,9 @@ read, not yet created. Each vault has its own passphrase.
 `~/.local/state/crystal/NAME.pin` holds the vault's `vault_id`, set at
 `init` or the first unlock on a device, so a vault swapped in under
 another name is refused. The first word is a command ([0058](#0058)): `crystal init NAME`,
-`unlock NAME`, `recover NAME`, `check-code NAME` (checks the recovery
-code, changes nothing), `rm NAME` and `help`; `init`, `rm`, `recover`,
-`check-code` and `help` are reserved and cannot name a vault. `crystal rm NAME`, after the name is
+`unlock NAME`, `rm NAME` and `help`; `init`, `rm`, `recover`,
+`check-code` and `help` are reserved and cannot name a vault (the last
+two named commands removed with the recovery code, [0064](#0064)). `crystal rm NAME`, after the name is
 typed again, deletes the vault for good: Crystal's own files, conflict
 copies, temp leftovers, the directory, the pin and the counter; other
 files, and then the directory, are left alone. There is no trash.
@@ -336,7 +316,7 @@ file, a stored link table, CSV and self-describing encodings.
 *2026-11-08.* Crystal has no backup code: back up `~/.local/share/crystal`
 with restic, borg or any file-level tool ([Backups](design/backups.md));
 the atomic writer means a backup taken during a save holds a whole old
-or new `vault.age`, and the recovery code plus one backup restores
+or new `vault.age`, and one backup plus the passphrase restores
 everything. Every save is a fresh ciphertext, so deduplication stores
 each version in full; deterministic encryption would show which note
 changed. When a vault's generation is lower than this device's counter,
@@ -620,7 +600,7 @@ and numbering the border under the header, were dropped for this.
 ## 0058 A vault is opened with `crystal unlock NAME` {#0058}
 
 *2026-11-15.* The first word is always a command: `unlock`, `init`,
-`recover`, `check-code`, `rm` or `help`. A vault is opened with
+`rm` or `help`. A vault is opened with
 `crystal unlock NAME`; the bare `crystal NAME` is refused, as is an
 empty command line, with the usage, so every action is named and none
 is a default. The refusal never repeats the word, which could be a
@@ -647,9 +627,7 @@ passphrase is asked. The passphrase, scrypt, the parsing of
 A1), the pin and counter checks, the `restore` question and the whole
 session then run confined. The lock screen's unlock ([0048](#0048)) runs
 inside the sandbox anyway, so the first unlock needs no syscall the
-sandbox would not allow already. `crystal recover` and
-`crystal check-code` enter the same sandbox before their prompt, since
-they parse `identity.backup.age`; `init` and `rm` create and remove
+sandbox would not allow already. `init` and `rm` create and remove
 directories, so they stay outside and exit. Nothing Crystal does needs
 `execve`. A hardware-key plugin (Phase 8) would; how such a vault
 unlocks is decided then, and the sandbox is never weakened for it.
@@ -724,3 +702,21 @@ runs in `unconfined_bubblewrap_t` and sets no_new_privs, the SELinux
 module lets exactly that domain enter `crystal_t` (`nnp_transition`,
 `nosuid_transition`); without the rule Crystal would run in bwrap's
 domain. See [Sandboxing, section 8](design/sandboxing.md).
+
+## 0064 No recovery code: a forgotten passphrase loses the vault {#0064}
+
+*2026-11-16.* A vault has one secret, its passphrase. `crystal init`
+makes no recovery code and no `identity.backup.age`, and `crystal
+recover` and `crystal check-code` are gone; the user chose this: "if you
+lose your password, you lose your notes, period". A paper code was a
+second way into every copy of the vault for whoever found it, and about
+1,500 lines of code, prompts and tests. A forgotten passphrase now loses
+the notes on every device, and backups do not help, since they open
+only with a passphrase that once sealed them; keeping the passphrase in
+a password manager is the advice. Older vaults still hold an
+`identity.backup.age`: unlock ignores it, `crystal rm` still removes it
+as Crystal's own file, and the guide tells the user to delete it by
+hand and destroy the paper, since it still opens the vault with the old
+code. `recover` and `check-code` stay reserved vault names, so the name
+rule does not change. Replaces the recovery code decision (0029) and
+cuts [0004](#0004).

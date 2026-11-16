@@ -246,8 +246,7 @@ mod tests {
         /// `crystal init NAME`: the vault in ~/.local/share/crystal/NAME.
         fn init(&self, n: &str) -> PathBuf {
             let plan = init::plan(&self.data, &name(n)).unwrap();
-            let code = crate::recovery::RecoveryCode::generate().unwrap();
-            init::create(plan, &name(n), &pass("pw"), &code, &self.data, &self.state).unwrap();
+            init::create(plan, &name(n), &pass("pw"), &self.data, &self.state).unwrap();
             self.home.join(".local/share/crystal").join(n)
         }
 

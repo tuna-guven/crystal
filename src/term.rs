@@ -736,10 +736,9 @@ impl TerminalGuard {
     /// `MAX_PUBLIC_LINE` characters, so nothing typed can be a terminal
     /// control sequence. Enter returns the line (possibly empty);
     /// Backspace and Ctrl+U edit; Ctrl+C, Esc or an exit signal cancels.
-    /// Its buffers are wiped and the line is returned in a `Zeroizing`:
-    /// it also reads the recovery code, typed back at `crystal init` and
-    /// given to `crystal recover`, which is shown as typed so typos can be
-    /// seen.
+    /// Its buffers are wiped and the line is returned in a `Zeroizing`,
+    /// though it reads only public answers (the `restore` word, a vault
+    /// name).
     ///
     /// `limit`: with no key for this long, `TimedOut`. The `restore`
     /// question passes `AUTO_LOCK`, since the decrypted vault waits

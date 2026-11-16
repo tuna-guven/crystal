@@ -2,40 +2,27 @@
 //! 0032): create a vault in `~/.local/share/crystal/NAME`.
 //!
 //! Everything that can be checked is checked before anything is created:
-//! the vault directory must not exist; the passphrase is asked for and the
-//! recovery code is shown and typed back
-//! (decision 0029). Only then are the directory and
-//! files made. If a later step fails, exactly what this run created is
+//! the vault directory must not exist, and the passphrase is asked for
+//! twice. Only then are the directory and files made. If a later step fails, exactly what this run created is
 //! removed again, never anything that existed before.
 
 use std::fmt;
 use std::os::fd::OwnedFd;
 
-use rustix::fs::{AtFlags, Mode, mkdirat, openat, statat, unlinkat};
-use rustix::io::Errno;
-use zeroize::Zeroizing;
-
 use crate::crypto::{CryptoError, Passphrase, VaultIdentity};
 use crate::model::VaultId;
-use crate::recovery::{CodeError, RecoveryCode};
-use crate::term::{PromptError, Signals, TerminalGuard};
 use crate::vault::atomic::{FileName, Payload, WriteError, atomic_write};
 use crate::vault::codec::VaultContents;
-use crate::vault::format::{
-    self, IDENTITY_BACKUP_FILE, IDENTITY_FILE, VAULT_FILE, VERSION_FILE, VaultError,
-};
+use crate::vault::format::{self, IDENTITY_FILE, VAULT_FILE, VERSION_FILE, VaultError};
 use crate::vault::generation::{self, Counter, GenError};
 use crate::vault::pin::{self, PinError};
 use crate::vault::vault_dir::{OpenVaultError, VaultDir};
 use crate::vault::{DataDir, OPEN_DIR_FLAGS, StateDir, VaultName};
+use rustix::fs::{AtFlags, Mode, mkdirat, openat, statat, unlinkat};
+use rustix::io::Errno;
 
 /// Every file `crystal init` creates in the vault directory, in order.
-pub const VAULT_FILES: [&str; 4] = [
-    VERSION_FILE,
-    IDENTITY_FILE,
-    IDENTITY_BACKUP_FILE,
-    VAULT_FILE,
-];
+pub const VAULT_FILES: [&str; 3] = [VERSION_FILE, IDENTITY_FILE, VAULT_FILE];
 
 /// Why `crystal init` stopped. Fixed text; never a path, name or key.
 #[derive(Debug, PartialEq, Eq)]
@@ -51,7 +38,6 @@ pub enum InitError {
     Write(WriteError),
     Pin(PinError),
     Generation(GenError),
-    Prompt(PromptError),
     /// A step after the directory was created failed; everything this run
     /// created was removed again.
     RolledBack(Box<InitError>),
@@ -73,7 +59,6 @@ impl fmt::Display for InitError {
             Self::Write(e) => write!(f, "cannot write a vault file: {e}"),
             Self::Pin(e) => e.fmt(f),
             Self::Generation(e) => e.fmt(f),
-            Self::Prompt(e) => e.fmt(f),
             Self::RolledBack(e) => {
                 write!(f, "{e}; the partly created vault was removed")
             }
@@ -105,53 +90,6 @@ pub fn plan(data: &DataDir, name: &VaultName) -> Result<Plan, InitError> {
     }
 }
 
-/// Shows the new vault's recovery code once and has it typed back, so a
-/// copying mistake is found now, not on the day it is needed. A wrong
-/// entry shows the code again. The code is on the alternate screen only,
-/// which the next prompt clears; every copy is wiped when dropped.
-pub fn confirm_recovery_code(
-    terminal: &mut TerminalGuard,
-    signals: &Signals,
-    code: &RecoveryCode,
-) -> Result<(), InitError> {
-    let mut note = "";
-    loop {
-        let grouped = code.grouped();
-        let shown = Zeroizing::new(format!(
-            "{note}Recovery code for this vault. Write it on paper and keep it away from this \
-             computer.\r\nIt opens the vault if you forget the passphrase; anyone who has it \
-             can open the vault too.\r\n\r\n    {}\r\n\r\n{SHOWN_PROMPT}",
-            grouped.as_str()
-        ));
-        // What is typed here does not matter; it is wiped on drop.
-        terminal
-            .read_public_line(signals, &shown, None)
-            .map_err(InitError::Prompt)?;
-        let typed = terminal
-            .read_public_line(signals, CONFIRM_PROMPT, None)
-            .map_err(InitError::Prompt)?;
-        match RecoveryCode::parse(&typed) {
-            Ok(back) if back.passphrase().matches(&code.passphrase()) => return Ok(()),
-            Ok(_) => note = "That is not the code shown; here it is again.\r\n\r\n",
-            Err(e) => {
-                note = match e {
-                    CodeError::WrongLength => {
-                        "That has the wrong length (7 groups of 4); here is the code again.\r\n\r\n"
-                    }
-                    CodeError::BadCharacter | CodeError::Mistyped => {
-                        "That has a typo; here is the code again.\r\n\r\n"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The last line of the screen that shows the recovery code.
-pub const SHOWN_PROMPT: &str = "Press Enter once you have written it down.";
-/// The prompt to type the recovery code back.
-pub const CONFIRM_PROMPT: &str = "Type the recovery code to confirm: ";
-
 /// What this run created, to remove again if a later step fails.
 #[derive(Default)]
 struct Created {
@@ -165,12 +103,11 @@ pub fn create(
     plan: Plan,
     name: &VaultName,
     pass: &Passphrase,
-    recovery: &RecoveryCode,
     data: &DataDir,
     state: &StateDir,
 ) -> Result<(), InitError> {
     let mut created = Created::default();
-    match build(&plan, name, pass, recovery, data, state, &mut created) {
+    match build(&plan, name, pass, data, state, &mut created) {
         Ok(()) => Ok(()),
         Err(e) => match remove_created(&plan, name, data, state, created) {
             Ok(()) => Err(InitError::RolledBack(Box::new(e))),
@@ -183,7 +120,6 @@ fn build(
     plan: &Plan,
     name: &VaultName,
     pass: &Passphrase,
-    recovery: &RecoveryCode,
     data: &DataDir,
     state: &StateDir,
     created: &mut Created,
@@ -205,7 +141,7 @@ fn build(
     let identity = VaultIdentity::generate().map_err(InitError::Crypto)?;
     let vault_id = VaultId::random().map_err(InitError::Random)?;
     let write = |file: &str, sealed: &crate::crypto::Ciphertext| {
-        // The four names are fixed and valid: this cannot fail.
+        // The names are fixed and valid: this cannot fail.
         let name = FileName::new(file).ok_or(InitError::Create(Errno::INVAL))?;
         atomic_write(dir, &name, Payload::Ciphertext(sealed)).map_err(InitError::Write)
     };
@@ -213,12 +149,6 @@ fn build(
         IDENTITY_FILE,
         &identity
             .seal_with_passphrase(pass)
-            .map_err(InitError::Crypto)?,
-    )?;
-    write(
-        IDENTITY_BACKUP_FILE,
-        &identity
-            .seal_with_passphrase(&recovery.passphrase())
             .map_err(InitError::Crypto)?,
     )?;
     let empty = VaultContents {
@@ -271,7 +201,6 @@ fn remove_created(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::decrypt_with_identity;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
@@ -320,19 +249,17 @@ mod tests {
             self.home.join(".local/state/crystal")
         }
 
-        fn create(&self, n: &str, code: &RecoveryCode) -> Result<(), InitError> {
+        fn create(&self, n: &str) -> Result<(), InitError> {
             let plan = plan(&self.data, &name(n))?;
-            create(plan, &name(n), &pass("pw"), code, &self.data, &self.state)
+            create(plan, &name(n), &pass("pw"), &self.data, &self.state)
         }
     }
 
-    // Acceptance: the layout matches docs/design/storage.md exactly, and
-    // identity.backup.age recovers the vault without the passphrase.
+    // Acceptance: the layout matches docs/design/storage.md exactly.
     #[test]
     fn creates_the_documented_layout() {
         let world = World::new("layout");
-        let code = RecoveryCode::generate().unwrap();
-        world.create("diary", &code).unwrap();
+        world.create("diary").unwrap();
 
         let vault = world.data_path().join("diary");
         assert_eq!((mode(&world.data_path()), mode(&vault)), (0o700, 0o700));
@@ -341,15 +268,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         files.sort();
-        assert_eq!(
-            files,
-            [
-                "VERSION",
-                "identity.age",
-                "identity.backup.age",
-                "vault.age"
-            ]
-        );
+        assert_eq!(files, ["VERSION", "identity.age", "vault.age"]);
         for file in &files {
             assert_eq!(mode(&vault.join(file)), 0o600, "{file}");
         }
@@ -384,41 +303,6 @@ mod tests {
             crate::vault::codec::FORMAT,
         );
         assert!(contents.unwrap().vault_id == id);
-
-        // Recovery without the passphrase: the recovery code opens
-        // identity.backup.age, and the identity inside opens vault.age.
-        let recovered = VaultIdentity::open_with_passphrase(
-            &fs::read(vault.join("identity.backup.age")).unwrap(),
-            &code.passphrase(),
-        )
-        .unwrap();
-        let vault_age = fs::read(vault.join("vault.age")).unwrap();
-        assert!(decrypt_with_identity(&vault_age, &recovered).is_ok());
-        // As any age tool opens it (decision 0029): the shown code without
-        // dashes is the scrypt passphrase, given as plain bytes to the age
-        // code, past Crystal's code parser; inside is an age secret key
-        // string for the vault's recipient.
-        let typed = Zeroizing::new(code.grouped().replace('-', "").into_bytes());
-        let by_age = crate::age_v1::Identity::Passphrase {
-            passphrase: &typed,
-            max_log_n: 22,
-        };
-        let backup = fs::read(vault.join("identity.backup.age")).unwrap();
-        let secret = crate::age_v1::decrypt(&by_age, &backup).unwrap();
-        let secret = std::str::from_utf8(&secret).unwrap();
-        let key = crate::age_v1::x25519::Identity::parse(secret).unwrap();
-        assert_eq!(
-            key.to_public().to_string(),
-            recovered.recipient().to_string()
-        );
-        // The passphrase does not open it.
-        assert!(
-            VaultIdentity::open_with_passphrase(
-                &fs::read(vault.join("identity.backup.age")).unwrap(),
-                &pass("pw"),
-            )
-            .is_err()
-        );
     }
 
     #[test]
@@ -450,10 +334,9 @@ mod tests {
     #[test]
     fn late_failure_removes_what_was_created() {
         let world = World::new("rollback");
-        let code = RecoveryCode::generate().unwrap();
-        world.create("other", &code).unwrap();
+        world.create("other").unwrap();
         set_mode(&world.state_path(), 0o500);
-        let err = world.create("diary", &code).unwrap_err();
+        let err = world.create("diary").unwrap_err();
         set_mode(&world.state_path(), 0o700);
         assert!(
             matches!(&err, InitError::RolledBack(e) if matches!(**e, InitError::Pin(_))),
@@ -474,10 +357,9 @@ mod tests {
     fn vault_file_not_synced_rolls_back() {
         use crate::vault::atomic::{FailAt, Step};
         let world = World::new("dirfsync_vault");
-        let code = RecoveryCode::generate().unwrap();
         let err = {
             let _armed = FailAt::arm_for(Step::DirFsync, "vault.age");
-            world.create("diary", &code).unwrap_err()
+            world.create("diary").unwrap_err()
         };
         assert!(matches!(err, InitError::RolledBack(_)), "{err:?}");
         assert!(!world.data_path().join("diary").exists());
@@ -491,14 +373,12 @@ mod tests {
     fn failed_cleanup_is_reported() {
         let world = World::new("cleanup_fails");
         let plan = plan(&world.data, &name("diary")).unwrap();
-        let code = RecoveryCode::generate().unwrap();
         let mut created = Created::default();
         set_mode(&world.state_path(), 0o500);
         let err = build(
             &plan,
             &name("diary"),
             &pass("pw"),
-            &code,
             &world.data,
             &world.state,
             &mut created,
@@ -525,9 +405,8 @@ mod tests {
     #[test]
     fn errors_never_show_the_name() {
         let world = World::new("errors");
-        let code = RecoveryCode::generate().unwrap();
-        world.create("diary", &code).unwrap();
-        let err = world.create("diary", &code).unwrap_err();
+        world.create("diary").unwrap();
+        let err = world.create("diary").unwrap_err();
         assert_eq!(err, InitError::Exists);
         assert!(!err.to_string().contains("diary"));
     }

@@ -1,5 +1,5 @@
 //! Acceptance through the real binary: unlock (startup steps 10 and 11), the tamper
-//! suite, and the vault commands (`init`, `recover`, `check-code`, `rm`).
+//! suite, and the vault commands (`init`, `rm`).
 //! Each test makes its own vault with `crystal init` in a fresh HOME,
 //! damages one thing, and checks that Crystal refuses it with a fixed
 //! message that names no path.
@@ -24,7 +24,7 @@ fn vault_path(home: &Path, name: &str) -> PathBuf {
 }
 
 /// Runs `crystal init NAME` in `home` with passphrase `pass`; returns the
-/// output, which shows the recovery code (`recovery_code_in`).
+/// output.
 fn init(home: &Path, name: &str, pass: &str) -> String {
     let mut steps = init_steps();
     if pass != PASS {
@@ -108,12 +108,6 @@ fn state_files(home: &Path) -> Vec<String> {
         .collect();
     files.sort();
     files
-}
-
-fn contains(haystack: &[u8], needle: &str) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|w| w == needle.as_bytes())
 }
 
 // ---- unlock and the tamper suite ----
@@ -314,7 +308,6 @@ fn scrypt_log_n(file: &Path) -> u8 {
 fn passphrase_files_use_log_n_18() {
     let (_, vault) = home_with_vault("scrypt_factor");
     assert_eq!(scrypt_log_n(&vault.join("identity.age")), 18);
-    assert_eq!(scrypt_log_n(&vault.join("identity.backup.age")), 18);
 }
 
 /// An identity.age asking for log N 19 (512 MiB of scrypt) on a device at
@@ -566,29 +559,13 @@ fn init_refuses_mismatched_new_passphrase() {
     assert!(!vault_path(&home, "diary").exists());
 }
 
-/// The recovery code is shown once and must be typed back. A wrong or
-/// mistyped entry shows the code again. The code then opens
-/// identity.backup.age, and appears in no file.
+/// init asks for the passphrase twice and nothing else: there is no
+/// recovery code (roadmap K0), and no `identity.backup.age` is written.
+/// The new vault unlocks.
 #[test]
-fn init_recovery_code_confirmation() {
-    let home = private_home("init_recovery_confirm");
-    let steps = vec![
-        (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
-        (REPEAT, format!("{PASS}\r").into_bytes()),
-        (RECOVERY_SHOWN, b"\r".to_vec()),
-        (
-            RECOVERY_CONFIRM,
-            b"0000-0000-0000-0000-0000-0000-0000\r".to_vec(),
-        ),
-        ("That is not the code shown; here it is again.", Vec::new()),
-        (RECOVERY_SHOWN, b"\r".to_vec()),
-        (RECOVERY_CONFIRM, b"K7QM-3XRD\r".to_vec()),
-        ("That has the wrong length", Vec::new()),
-        (RECOVERY_SHOWN, b"\r".to_vec()),
-        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE.to_vec()),
-    ];
-    let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
-    assert!(ok, "{output}");
+fn init_asks_only_for_the_passphrase() {
+    let home = private_home("init_passphrase_only");
+    let output = init(&home, "diary", PASS);
     assert!(
         output.contains(
             "Crystal recommends a passphrase of 8 or more random words, generated with \
@@ -596,51 +573,17 @@ fn init_recovery_code_confirmation() {
         ),
         "{output}"
     );
-    let code = recovery_code_in(&output);
-    let canonical = code.replace('-', "");
-    let vault = vault_path(&home, "diary");
-    // check-code accepts the code typed without dashes: it opens
-    // identity.backup.age, which holds the key identity.age holds. That
-    // this spelling is age's scrypt passphrase is checked in recovery.rs
-    // and init.rs.
-    let steps = vec![
-        (CODE_PROMPT, format!("{canonical}\r").into_bytes()),
-        (PROMPT, format!("{PASS}\r").into_bytes()),
-    ];
-    let (ok, output) = dialog(&format!("'{BIN}' check-code diary"), &home, &steps);
+    assert!(!output.contains("ecovery"), "{output}");
     assert!(
-        ok && output.contains("The recovery code is right"),
-        "{output}"
+        !vault_path(&home, "diary")
+            .join("identity.backup.age")
+            .exists()
     );
-    for dir in [vault.clone(), state_dir(&home)] {
-        for file in std::fs::read_dir(&dir).unwrap() {
-            let bytes = std::fs::read(file.unwrap().path()).unwrap();
-            assert!(!contains(&bytes, &canonical) && !contains(&bytes, &code));
-        }
-    }
     unlock_ok(&home, "diary", PASS);
 }
 
-/// A typo in the code typed back (one symbol changed) is caught by the
-/// check symbol, and the code is shown again.
-#[test]
-fn init_recovery_code_typo_is_caught() {
-    let home = private_home("init_recovery_typo");
-    let steps = vec![
-        (NEW_PROMPT, format!("{PASS}\r").into_bytes()),
-        (REPEAT, format!("{PASS}\r").into_bytes()),
-        (RECOVERY_SHOWN, b"\r".to_vec()),
-        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE_WITH_TYPO.to_vec()),
-        ("That has a typo; here is the code again.", Vec::new()),
-        (RECOVERY_SHOWN, b"\r".to_vec()),
-        (RECOVERY_CONFIRM, TYPE_RECOVERY_CODE_LOWERCASE.to_vec()),
-    ];
-    let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &steps);
-    assert!(ok, "{output}");
-}
-
-/// decision 0028: init and recover refuse a new passphrase under 20
-/// characters, before the repeat, and change nothing.
+/// decision 0028: init refuses a new passphrase under 20 characters,
+/// before the repeat, and creates nothing.
 #[test]
 fn new_passphrase_needs_twenty_characters() {
     let short = (NEW_PROMPT, b"nineteen-characters\r".to_vec());
@@ -653,16 +596,6 @@ fn new_passphrase_needs_twenty_characters() {
     assert!(!ok && output.contains("at least 20 characters"), "{output}");
     assert!(!output.contains(REPEAT), "{output}");
     assert!(!vault_path(&home, "diary").exists());
-
-    let home = private_home("recover_short_pass");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    let identity = std::fs::read(vault_path(&home, "diary").join("identity.age")).unwrap();
-    let (ok, output) = recover(&home, &[code_step(&code), short]);
-    assert!(!ok && output.contains("at least 20 characters"), "{output}");
-    assert_eq!(
-        std::fs::read(vault_path(&home, "diary").join("identity.age")).unwrap(),
-        identity
-    );
 }
 
 /// Each vault has its own passphrase.
@@ -678,167 +611,6 @@ fn vaults_have_their_own_passphrases() {
         !ok && output.contains("does not open with this passphrase"),
         "{output}"
     );
-}
-
-// ---- crystal recover and check-code ----
-
-const NEW_PASS: &str = "a-new-passphrase-after-recovery";
-
-/// `crystal recover diary` with `steps`.
-fn recover(home: &Path, steps: &[(&str, Vec<u8>)]) -> (bool, String) {
-    dialog(&format!("'{BIN}' recover diary"), home, steps)
-}
-
-fn code_step(code: &str) -> (&'static str, Vec<u8>) {
-    (CODE_PROMPT, format!("{code}\r").into_bytes())
-}
-
-fn new_pass_steps() -> Vec<(&'static str, Vec<u8>)> {
-    vec![
-        (NEW_PROMPT, format!("{NEW_PASS}\r").into_bytes()),
-        (REPEAT, format!("{NEW_PASS}\r").into_bytes()),
-    ]
-}
-
-/// The main story: the passphrase is forgotten. The recovery code written
-/// down at init (typed in lowercase here) opens the vault; the new
-/// passphrase unlocks it and the old one no longer does. Only
-/// identity.age changes.
-#[test]
-fn recover_after_forgetting_the_passphrase() {
-    let home = private_home("recover_forgotten");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    let vault = vault_path(&home, "diary");
-    let before = std::fs::read(vault.join("vault.age")).unwrap();
-    let mut steps = vec![code_step(&code.to_lowercase())];
-    steps.extend(new_pass_steps());
-    let (ok, output) = recover(&home, &steps);
-    assert!(ok, "{output}");
-    assert!(!output.contains(NEW_PASS), "{output}");
-    unlock_ok(&home, "diary", NEW_PASS);
-    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &pass_step(PASS));
-    assert!(
-        !ok && output.contains("does not open with this passphrase"),
-        "{output}"
-    );
-    assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before);
-}
-
-/// A backup restored after the passphrase was forgotten: recover asks
-/// for `restore` before the new passphrase, and then works.
-#[test]
-fn recover_an_older_vault() {
-    let home = private_home("recover_older");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    let counter = vault_counter(&home, "diary");
-    std::fs::write(&counter, b"5\n").unwrap();
-    let mut steps = vec![
-        code_step(&code),
-        ("Type restore to accept: ", b"restore\r".to_vec()),
-    ];
-    steps.extend(new_pass_steps());
-    let (ok, output) = recover(&home, &steps);
-    assert!(ok, "{output}");
-    assert_eq!(std::fs::read(&counter).unwrap(), b"1\n");
-    unlock_ok(&home, "diary", NEW_PASS);
-}
-
-/// identity.age lost: recover writes it again with a new passphrase.
-#[test]
-fn recover_a_lost_identity() {
-    let home = private_home("recover_lost_identity");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    std::fs::remove_file(vault_path(&home, "diary").join("identity.age")).unwrap();
-    let mut steps = vec![code_step(&code)];
-    steps.extend(new_pass_steps());
-    let (ok, output) = recover(&home, &steps);
-    assert!(ok, "{output}");
-    unlock_ok(&home, "diary", NEW_PASS);
-}
-
-/// A typo, a short code, and another vault's code are refused with their
-/// own messages, before any passphrase is asked for; nothing changes.
-#[test]
-fn recover_refuses_wrong_codes() {
-    let home = private_home("recover_wrong_codes");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    let other_code = recovery_code_in(&init(&home, "other", PASS));
-    let vault = vault_path(&home, "diary");
-    let identity = std::fs::read(vault.join("identity.age")).unwrap();
-    let typo = format!(
-        "{}{}",
-        if code.starts_with('A') { "B" } else { "A" },
-        &code[1..]
-    );
-    for (typed, expected) in [
-        (typo.as_str(), "that recovery code has a typo"),
-        ("K7QM-3XRD", "a recovery code has 28 characters"),
-        (
-            other_code.as_str(),
-            "this recovery code does not open the vault's identity.backup.age",
-        ),
-    ] {
-        for command in ["recover", "check-code"] {
-            let (ok, output) = dialog(
-                &format!("'{BIN}' {command} diary"),
-                &home,
-                &[code_step(typed)],
-            );
-            assert!(
-                !ok && output.contains(expected),
-                "{command} {typed}: {output}"
-            );
-            assert!(
-                !output.contains("assphrase"),
-                "asked for a passphrase: {output}"
-            );
-            assert_no_leak(&home, &output);
-        }
-    }
-    assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
-}
-
-/// check-code confirms a right code and passphrase, and finds a wrong
-/// passphrase and a backup that holds another key. It writes nothing.
-#[test]
-fn check_code_reports_and_writes_nothing() {
-    let home = private_home("check_code");
-    let code = recovery_code_in(&init(&home, "diary", PASS));
-    init(&home, "other", PASS);
-    let vault = vault_path(&home, "diary");
-    let state = state_files(&home);
-    let check = |pass: &str| {
-        dialog(
-            &format!("'{BIN}' check-code diary"),
-            &home,
-            &[code_step(&code), (PROMPT, format!("{pass}\r").into_bytes())],
-        )
-    };
-
-    let (ok, output) = check(PASS);
-    assert!(
-        ok && output.contains("The recovery code is right"),
-        "{output}"
-    );
-    let (ok, output) = check("not-the-passphrase");
-    assert!(
-        !ok && output.contains("identity.age does not open with this passphrase"),
-        "{output}"
-    );
-
-    std::fs::copy(
-        vault_path(&home, "other").join("identity.age"),
-        vault.join("identity.age"),
-    )
-    .unwrap();
-    let identity = std::fs::read(vault.join("identity.age")).unwrap();
-    let (ok, output) = check(PASS);
-    assert!(
-        !ok && output.contains("identity.backup.age and identity.age hold different keys"),
-        "{output}"
-    );
-    assert_eq!(std::fs::read(vault.join("identity.age")).unwrap(), identity);
-    assert_eq!(state_files(&home), state);
 }
 
 // ---- crystal rm ----
@@ -870,7 +642,7 @@ fn rm_cancelled_deletes_nothing() {
     let steps = vec![(RM_CONFIRM, b"dia\x03".to_vec())];
     let (ok, output) = dialog(&format!("'{BIN}' rm diary"), &home, &steps);
     assert!(!ok && output.contains("cancelled"), "{output}");
-    assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 4);
+    assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 3);
     unlock_ok(&home, "diary", PASS);
 }
 
@@ -1365,15 +1137,10 @@ fn new_note_is_saved_and_opens_again() {
     assert!(ok, "{output}");
     assert!(!after_leaving(&output).contains(CANARY));
 
-    // Only Crystal's four files, and the text nowhere in them.
+    // Only Crystal's three files, and the text nowhere in them.
     assert_eq!(
         vault_files(&vault),
-        [
-            "VERSION",
-            "identity.age",
-            "identity.backup.age",
-            "vault.age"
-        ]
+        ["VERSION", "identity.age", "vault.age"]
     );
     for file in vault_files(&vault) {
         let bytes = std::fs::read(vault.join(&file)).unwrap();
@@ -1571,12 +1338,7 @@ fn kill_9_during_saves_never_corrupts_the_vault() {
         kill_during_saves(&home, (round % 12) * 30);
         let files = vault_files(&vault);
         for file in &files {
-            let known = [
-                "VERSION",
-                "identity.age",
-                "identity.backup.age",
-                "vault.age",
-            ];
+            let known = ["VERSION", "identity.age", "vault.age"];
             assert!(
                 known.contains(&file.as_str()) || is_temp(file),
                 "round {round}: unexpected {file}"

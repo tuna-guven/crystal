@@ -15,8 +15,6 @@ use crate::vault::VaultName;
 pub const USAGE: &str = "\
 usage: crystal unlock NAME        open the vault NAME
        crystal init NAME          create a vault
-       crystal recover NAME       set a new passphrase with the recovery code
-       crystal check-code NAME    check the recovery code; changes nothing
        crystal rm NAME            delete a vault for good
        crystal help
 Vaults live in ~/.local/share/crystal.";
@@ -27,14 +25,6 @@ pub enum Command {
     Run(RunArgs),
     /// `init NAME`: create a vault.
     Init {
-        name: VaultName,
-    },
-    /// `recover NAME`: a new passphrase, with the recovery code.
-    Recover {
-        name: VaultName,
-    },
-    /// `check-code NAME`: check the recovery code; writes nothing.
-    CheckCode {
         name: VaultName,
     },
     /// `rm NAME`: delete a vault for good.
@@ -209,9 +199,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let msg = match self {
             Self::UnknownArgument => "unknown argument",
-            Self::MissingCommand => {
-                "the first word must be a command: unlock, init, recover, check-code, rm or help"
-            }
+            Self::MissingCommand => "the first word must be a command: unlock, init, rm or help",
             Self::MissingVault => "missing vault name",
             Self::ExtraArgument => "too many arguments",
             Self::BadVaultName => {
@@ -231,8 +219,6 @@ impl std::error::Error for CliError {}
 enum Mode {
     Unlock,
     Init,
-    Recover,
-    CheckCode,
     Rm,
 }
 
@@ -305,8 +291,6 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             Arg::Value(value) if mode.is_none() => match value.as_bytes() {
                 b"unlock" => mode = Some(Mode::Unlock),
                 b"init" => mode = Some(Mode::Init),
-                b"recover" => mode = Some(Mode::Recover),
-                b"check-code" => mode = Some(Mode::CheckCode),
                 b"rm" => mode = Some(Mode::Rm),
                 b"help" => return Ok(Command::Help),
                 _ => return Err(CliError::MissingCommand),
@@ -353,8 +337,6 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             hide_landlock_for_test,
         }),
         Mode::Init => Command::Init { name },
-        Mode::Recover => Command::Recover { name },
-        Mode::CheckCode => Command::CheckCode { name },
         Mode::Rm => Command::Rm { name },
     })
 }
@@ -399,14 +381,6 @@ mod tests {
             Ok(Command::Init { name: name("v") })
         );
         assert_eq!(
-            parse_strs(&["recover", "v"]),
-            Ok(Command::Recover { name: name("v") })
-        );
-        assert_eq!(
-            parse_strs(&["check-code", "v"]),
-            Ok(Command::CheckCode { name: name("v") })
-        );
-        assert_eq!(
             parse_strs(&["rm", "v"]),
             Ok(Command::Rm { name: name("v") })
         );
@@ -427,6 +401,12 @@ mod tests {
         assert_eq!(parse_strs(&["v"]), Err(CliError::MissingCommand));
         assert_eq!(parse_strs(&["add", "v"]), Err(CliError::MissingCommand));
         assert_eq!(parse_strs(&["remove", "v"]), Err(CliError::MissingCommand));
+        // The recovery code is gone (roadmap K0), and its commands with it.
+        assert_eq!(parse_strs(&["recover", "v"]), Err(CliError::MissingCommand));
+        assert_eq!(
+            parse_strs(&["check-code", "v"]),
+            Err(CliError::MissingCommand)
+        );
         for args in [
             &["--init", "v"][..],
             &["init", "v", "--at", "/d"],
@@ -434,10 +414,7 @@ mod tests {
         ] {
             assert_eq!(parse_strs(args), Err(CliError::UnknownArgument), "{args:?}");
         }
-        assert_eq!(
-            parse_strs(&["recover", "v", "/d"]),
-            Err(CliError::ExtraArgument)
-        );
+        assert_eq!(parse_strs(&["rm", "v", "/d"]), Err(CliError::ExtraArgument));
     }
 
     // The auto-lock test hook (debug builds): seconds, with `crystal
@@ -543,7 +520,7 @@ mod tests {
             &["hunter2/../x"],
             &["init", "v", "hunter2"],
             &["rm", "hunter2/x"],
-            &["recover", "v", "hunter2"],
+            &["unlock", "v", "hunter2"],
         ];
         for args in attempts {
             let err = parse_strs(args).unwrap_err();
@@ -560,7 +537,6 @@ mod tests {
             &["unlock", "hunter2"][..],
             &["init", "hunter2"],
             &["rm", "hunter2"],
-            &["check-code", "hunter2"],
         ] {
             let parsed = format!("{:?}", parse_strs(args).unwrap());
             assert!(!parsed.contains("hunter2"), "{args:?}: {parsed}");

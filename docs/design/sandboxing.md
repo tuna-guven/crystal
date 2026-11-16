@@ -1,6 +1,6 @@
 # Crystal Sandboxing Design
 
-Status: Built (Phase 6, 2026-11-16): sections 5 to 9 describe the code. Open: CI on a kernel with Landlock ABI 9 (roadmap S0) and the SELinux check through the bubblewrap launcher (section 8).
+Status: Built (Phase 6, 2026-11-16): sections 5 to 9 describe the code. Skipped by the user: CI (roadmap S0) and the SELinux check through the bubblewrap launcher (section 8).
 Scope: Process confinement for the `crystal` binary (offline, age-encrypted Markdown notes TUI)
 Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-16 on kernel 7.3.3 (Landlock ABI 11). The `landlock` crate (0.4.7, the newest release) supports up to ABI 9, which is what Crystal uses (section 5.1).
 
@@ -31,13 +31,13 @@ Matches the [startup order](startup.md).
 4. Enter raw mode and the alternate screen on the `/dev/tty` fd.
 5. Apply Landlock (section 5; step 8).
 6. Apply the seccomp filter (section 6; step 9). Requires no_new_privs, which step 1 already set.
-7. Unlock, inside the sandbox ([decision 0059](../decisions.md#0059)): read the passphrase in raw mode from `/dev/tty` and decrypt `identity.age` (step 10). `crystal recover` and `crystal check-code` enter the sandbox the same way before their prompt; `init` and `rm` never do.
+7. Unlock, inside the sandbox ([decision 0059](../decisions.md#0059)): read the passphrase in raw mode from `/dev/tty` and decrypt `identity.age` (step 10). `init` and `rm` never enter the sandbox.
 8. Decrypt the vault, build the indexes, start the shell (step 11).
 
 Rules:
 - Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
 - MUST NOT continue to step 7 if steps 1, 5 or 6 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
-- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3; Landlock first, then seccomp. `crystal unlock` and `crystal recover` pass both; `crystal check-code`, which reads and changes nothing, passes no state directory, so Landlock grants it the vault alone (`state` is an `Option`). `recover` and `check-code` call it right before the recovery code prompt (step S8; test `recover_and_check_code_wait_inside_the_sandbox`, mutation-checked for each command).
+- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3; Landlock first, then seccomp; `crystal unlock` is its one caller. (`recover` and `check-code` also entered it, step S8, until the recovery code was removed, [decision 0064](../decisions.md#0064).)
 
 ## 4. Process hardening
 
@@ -181,7 +181,7 @@ Rules:
 - Every denial is explained from the code before a rule is added; prefer changing the code so the permission is not needed (as with `O_PATH` above). Never apply `audit2allow` output blindly.
 - In permissive mode each distinct denial is logged once; loading the module flushes the cache, so a fresh session after `semodule -i` shows everything.
 - Verify: `ps -eZ | grep crystal` shows `crystal_t`.
-- *As checked (step S9, 2026-11-16, Fedora 45 policy 45.24):* a full session through a pty (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock again, an outside `SIGTSTP` and resume, `check-code`, `rm`) ran in `crystal_t`, permissive first: the only denial, `read` on the home directory, was removed by opening the walk with `O_PATH`, after which the same session logged none, and then passed in enforcing mode.
+- *As checked (step S9, 2026-11-16, Fedora 45 policy 45.24):* a full session through a pty (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock again, an outside `SIGTSTP` and resume, `check-code` (since removed), `rm`) ran in `crystal_t`, permissive first: the only denial, `read` on the home directory, was removed by opening the walk with `O_PATH`, after which the same session logged none, and then passed in enforcing mode.
 - The bubblewrap launcher (section 8, step S10) runs Crystal under bwrap's domain and with no_new_privs set by bwrap; it needs its own check that the transition to `crystal_t` still happens (`nnp_transition`).
 
 ## 8. Bubblewrap launcher (optional)
@@ -194,11 +194,11 @@ What it does:
 - `--clearenv --setenv HOME`: Crystal reads only `HOME` (its environment allowlist).
 - Binds `~/.local/bin/crystal` read-only, `--proc /proc` (the inherited-fd check reads `/proc/self/fd`) and `--dev /dev` (`/dev/tty`); recreates an empty `~/.local/share/crystal` with mode 0700 (`--perms 0700 --dir`) and binds into it only this vault, plus the state directory. The other vaults do not exist inside the sandbox.
 - No `/tmp`, no `/etc`, no D-Bus, Wayland, X11 or audio sockets. `--new-session` is not used: it breaks job control, and `TIOCSTI` is killed by seccomp (section 6). `RLIMIT_MEMLOCK` is inherited, so the [Setup](../guide/setup.md) limit still applies.
-- Opens existing vaults only; run `crystal init`, `recover`, `check-code` and `rm` directly.
+- Opens existing vaults only; run `crystal init` and `rm` directly.
 
 SELinux: the shell runs bwrap in `unconfined_bubblewrap_t`, which then runs Crystal. The module (section 7) lets exactly that domain enter `crystal_t` on `crystal_exec_t`; bwrap sets no_new_privs and mounts its binds nosuid, so the rule also grants `nnp_transition` and `nosuid_transition`. Without it Crystal would run in bwrap's domain instead of `crystal_t`. secureblue's policy does not let bwrap's domain execute files labeled `user_tmp_t` (anything under `/tmp`), so a binary must live in the home directory.
 
-*As checked (step S10, 2026-11-16):* in a scratch HOME under `target/` with the release binary, a session through the launcher (unlock, edit and save, quit) worked; the note opened again outside it; inside, `~/.local/share/crystal` held only the opened vault, and the network namespace differed from the host's. The name checks refuse `..`, hidden names, option-like names, `/` and names over 64 characters. Not yet checked: the transition to `crystal_t` through bwrap, which needs the hardened install (`~/.local/bin/crystal` labeled `crystal_exec_t`, section 7) and the module with the bwrap rule loaded; during development Crystal runs from `cargo install`, unlabeled.
+*As checked (step S10, 2026-11-16):* in a scratch HOME under `target/` with the release binary, a session through the launcher (unlock, edit and save, quit) worked; the note opened again outside it; inside, `~/.local/share/crystal` held only the opened vault, and the network namespace differed from the host's. The name checks refuse `..`, hidden names, option-like names, `/` and names over 64 characters. Skipped by the user (2026-11-16): the check of the transition to `crystal_t` through bwrap, which needs the hardened install (`~/.local/bin/crystal` labeled `crystal_exec_t`, section 7) and the module with the bwrap rule loaded; during development Crystal runs from `cargo install`, unlabeled.
 
 ## 9. Verification (acceptance criteria)
 
@@ -222,10 +222,10 @@ The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_
 - [x] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`, `Seccomp_filters: 1` (`running_sandbox_shows_in_proc_status`)
 - [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
-- [x] `ps -eZ` shows `crystal_t` (manual check with the module installed, step S9): a full session (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock, outside suspend and resume, `check-code`, `rm`) runs in `crystal_t` in enforcing mode
+- [x] `ps -eZ` shows `crystal_t` (manual check with the module installed, step S9): a full session (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock, outside suspend and resume, `check-code` (since removed), `rm`) runs in `crystal_t` in enforcing mode
 - [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 9 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 8 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
 - [x] The bubblewrap launcher (section 8) opens a vault in which the other vaults do not exist, without network (manual, step S10)
-- [ ] Through the launcher, `ps -eZ` shows `crystal_t` (manual; needs the hardened install in `~/.local/bin`, section 7, and the module with the bwrap rule)
+- [ ] Through the launcher, `ps -eZ` shows `crystal_t` (skipped by the user; manual, needs the hardened install in `~/.local/bin`, section 7, and the module with the bwrap rule)
 - [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
 
 ## 10. References

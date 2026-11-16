@@ -70,6 +70,8 @@ pub fn open(
 // named once for every module that reads or writes them.
 pub const VERSION_FILE: &str = "VERSION";
 pub const IDENTITY_FILE: &str = "identity.age";
+/// Written by `crystal init` while Crystal had a recovery code; now only
+/// `crystal rm` knows it, to remove it from older vaults (roadmap K0).
 pub const IDENTITY_BACKUP_FILE: &str = "identity.backup.age";
 pub const VAULT_FILE: &str = "vault.age";
 /// `identity.age` holds one age secret key (74 bytes) under one scrypt

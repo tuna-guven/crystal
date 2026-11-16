@@ -292,7 +292,9 @@ impl VaultIdentity {
             .map_err(|_| CryptoError::RandomFailed)
     }
 
-    /// The public key `vault.age` is encrypted to.
+    /// The public key `vault.age` is encrypted to; the tests compare it.
+    /// Crystal itself keeps only `vault_recipient` (decision 0044).
+    #[cfg(test)]
     pub fn recipient(&self) -> x25519::Recipient {
         self.0.to_public()
     }

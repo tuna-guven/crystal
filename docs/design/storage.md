@@ -8,8 +8,7 @@ Vaults live in one fixed place, `~/.local/share/crystal/NAME`, and are opened by
 ~/.local/share/crystal/        mode 0700; created by the first crystal init
   NAME/                        one vault, mode 0700
     VERSION                    plaintext: the newest blob format in this directory
-    identity.age               vault X25519 identity, encrypted to the vault's passphrase or hardware key(s)
-    identity.backup.age        the same identity, encrypted to the recovery code
+    identity.age               vault X25519 identity, encrypted to the vault's passphrase
     vault.age                  the entire vault: every note, padded and encrypted
 ~/.local/state/crystal/        mode 0700; local only, never synced or backed up
   NAME.pin                     the vault's vault_id, pinned at init or first unlock
@@ -23,24 +22,22 @@ Vaults live in one fixed place, `~/.local/share/crystal/NAME`, and are opened by
 - *Listing:* `crystal` with no argument, and completion, list the directories in `~/.local/share/crystal`.
 - *Pin* (`NAME.pin`): 64 lowercase hex digits of the `vault_id` and a newline, a fixed public format written by the atomic writer ([decision 0012](../decisions.md#0012)). `crystal init` writes it; on a device without it (a vault synced or restored here), the first unlock writes it and says so. Unlock refuses a vault whose `vault_id` differs from the pin, so one of your vaults cannot be swapped in for another under its name.
 - *One passphrase per vault:* the one that seals its `identity.age`. Unlock runs scrypt once.
-- *`crystal recover NAME`:* asks for the recovery code, opens `identity.backup.age` and `vault.age` with it (a wrong code or another vault's backup is refused first), checks the pin and the rollback counter, then asks for a new passphrase twice and rewrites `identity.age` only ([decision 0029](../decisions.md#0029)).
-- *`crystal check-code NAME`:* asks for the recovery code and the passphrase, and checks that `identity.backup.age` and `identity.age` hold the same identity. It writes nothing.
-- *`crystal rm NAME`:* asks for the name again, says that only a backup can bring the vault back, then removes `VERSION`, `identity.age`, `identity.backup.age`, `vault.age`, `vault.sync-conflict-*.age`, leftover atomic-writer temp files, the directory, and the vault's `.pin` and `.gen`. Any other file stays, and so does the directory, and the message says so. There is no trash ([decision 0032](../decisions.md#0032)).
+- *No recovery code* ([decision 0064](../decisions.md#0064)): a forgotten passphrase loses the vault. An older vault may still hold `identity.backup.age`, sealed to a recovery code Crystal used to make; unlock ignores it, and it should be deleted by hand, since it still opens the vault with that code.
+- *`crystal rm NAME`:* asks for the name again, says that only a backup can bring the vault back, then removes `VERSION`, `identity.age`, `vault.age`, an older vault's `identity.backup.age`, `vault.sync-conflict-*.age`, leftover atomic-writer temp files, the directory, and the vault's `.pin` and `.gen`. Any other file stays, and so does the directory, and the message says so. There is no trash ([decision 0032](../decisions.md#0032)).
 - *SELinux:* the policy labels `~/.local/share/crystal` statically; every vault is covered ([Sandboxing](sandboxing.md)).
 - *Settings:* none yet. The auto-lock time is fixed at 5 minutes and colors follow the terminal's theme ([0048](../decisions.md#0048)). Where settings go (a read-only `~/.config/crystal` as in [0032](../decisions.md#0032), or inside `vault.age`) is decided when the first one is needed; none may loosen security.
 
 ## Key design
 
-`crystal init` generates a random vault X25519 identity and stores it twice. `identity.age` holds it for daily unlock, encrypted either to the vault's scrypt passphrase alone or to one or more YubiKey or TPM plugin recipients. `identity.backup.age` holds it for recovery, scrypt-encrypted to a recovery code that Crystal generates and the user writes on paper ([decision 0029](../decisions.md#0029)). Two files are needed because age accepts a scrypt stanza only as the sole recipient of a file, so the passphrase and the code cannot share one. `vault.age` is encrypted to the vault recipient. Changing the passphrase or adding a hardware key rewrites only `identity.age`; a new recovery code rewrites only `identity.backup.age`.
+`crystal init` generates a random vault X25519 identity. `identity.age` holds it, encrypted to the vault's scrypt passphrase ([decision 0004](../decisions.md#0004)); `vault.age` is encrypted to the vault recipient, the identity's public half. Saving needs only the recipient, never the passphrase, and a new passphrase rewrites `identity.age` alone. There is no second copy and no recovery code ([decision 0064](../decisions.md#0064)).
 
 **`crystal init NAME`** (`init.rs`, [decision 0022](../decisions.md#0022), [decision 0032](../decisions.md#0032)) creates nothing until everything is known:
 
 1. `~/.local/share/crystal` is opened, or created (0700) if missing, with the checks under [Vault directory](#vault-directory); `NAME` must not exist in it, not even as a symlink.
 2. A new passphrase is asked for twice (at least 20 characters; [decision 0028](../decisions.md#0028)).
-3. A recovery code is generated (27 random Crockford base32 symbols and a check symbol), shown once as 7 groups of 4, and must be typed back before anything is created.
-4. Created, in order: the vault directory (0700), `VERSION`, a new identity and random `vault_id`, `identity.age`, `identity.backup.age`, and an empty `vault.age` at generation 1 (each 0600, through the atomic writer). The finished directory must pass the full vault check; then `NAME.pin` and the rollback counter are written.
+3. Created, in order: the vault directory (0700), `VERSION`, a new identity and random `vault_id`, `identity.age`, and an empty `vault.age` at generation 1 (each 0600, through the atomic writer). The finished directory must pass the full vault check; then `NAME.pin` and the rollback counter are written.
 
-If a step in 4 fails, the files, the vault directory and the pin are removed again, and the error says so. `~/.local/share/crystal` itself is created before the prompts, like the state directory, and stays; a directory that existed before is never removed.
+If a step in 3 fails, the files, the vault directory and the pin are removed again, and the error says so. `~/.local/share/crystal` itself is created before the prompts, like the state directory, and stays; a directory that existed before is never removed.
 
 ## Vault contents
 
@@ -98,7 +95,7 @@ age proves a file was not changed since it was sealed to the vault's key (and, w
 
 - **Format:** the generation in ASCII decimal and one newline (`42\n`), with exactly one valid spelling, the same rules as `VERSION`. Written through the atomic writer (`PublicBytes::generation`), mode 0600.
 - **On open** (`vault::generation::accept_on_open`), after a successful decrypt: equal or higher is accepted and the counter set to it. No counter means the first unlock on this device; rollback detection starts from there, and the user is told.
-- **Older vault: restore or attack** ([decision 0036](../decisions.md#0036); `generation::open_or_older`, `restore`): a generation lower than the counter stops the unlock, and `crystal recover`, with both numbers and an explanation: the vault was restored from a backup, or someone put back an old copy. Typing `restore` accepts it and sets the counter to the vault's generation; anything else exits and changes nothing. The text says not to type `restore` unless you restored the vault yourself. This is the only way a counter is lowered.
+- **Older vault: restore or attack** ([decision 0036](../decisions.md#0036); `generation::open_or_older`, `restore`): a generation lower than the counter stops the unlock with both numbers and an explanation: the vault was restored from a backup, or someone put back an old copy. Typing `restore` accepts it and sets the counter to the vault's generation; anything else exits and changes nothing. The text says not to type `restore` unless you restored the vault yourself. This is the only way a counter is lowered.
 - **On save** (`record_save`): the counter is written after the rename of the new file has committed. A crash in between leaves the counter one behind the file, which the next open accepts and catches up. A saved generation below the counter (another writer got ahead) is reported, and the counter is not lowered.
 - **Fail closed:** a counter that is not exactly a decimal number and a newline, or is not a regular file, is refused. Crystal never resets a counter it cannot read; the user must look at it.
 - **Limits:** detection is relative to what *this device* has seen. A fresh device, or one whose state directory was lost, accepts whatever it sees first. The counters are plaintext, so a process running as you can lower or delete them (A5); this is accepted, see the decision record.

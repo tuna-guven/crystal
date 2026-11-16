@@ -7,7 +7,7 @@
 # inside it as always; this is one more layer, never a replacement.
 #
 # Usage: crystal-sandboxed.sh NAME [crystal debug options]
-# Opens existing vaults only: run crystal init, recover, check-code and rm
+# Opens existing vaults only: run crystal init and rm
 # directly.
 set -eu
 

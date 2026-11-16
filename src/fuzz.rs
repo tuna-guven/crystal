@@ -30,8 +30,8 @@ pub fn sanitize(data: &[u8]) {
     let _ = sanitize_text(&String::from_utf8_lossy(data));
 }
 
-/// Crystal's age code on hostile files (A1): identity.age,
-/// identity.backup.age and vault.age all pass through `age_v1::decrypt`
+/// Crystal's age code on hostile files (A1): identity.age and vault.age
+/// both pass through `age_v1::decrypt`
 /// before anything is authenticated. The first byte picks a mode:
 /// 0 decrypts the rest with a fixed X25519 key, 1 with a passphrase whose
 /// scrypt work factor is capped low (so a run stays fast); 2 encrypts the

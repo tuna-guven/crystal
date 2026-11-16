@@ -403,7 +403,6 @@ mod tests {
     use super::*;
     use crate::crypto::Passphrase;
     use crate::init;
-    use crate::recovery::RecoveryCode;
     use crate::unlock;
     use crate::vault::atomic::FailAt;
     use crate::vault::{DataDir, VaultName};
@@ -435,8 +434,7 @@ mod tests {
         let data = DataDir::create(Some(home.as_os_str())).unwrap();
         let state = StateDir::open_or_create(Some(home.as_os_str())).unwrap();
         let plan = init::plan(&data, &name()).unwrap();
-        let code = RecoveryCode::generate().unwrap();
-        init::create(plan, &name(), &pass(), &code, &data, &state).unwrap();
+        init::create(plan, &name(), &pass(), &data, &state).unwrap();
         home
     }
 

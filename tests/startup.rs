@@ -353,9 +353,9 @@ fn refuses_missing_or_relative_home() {
     }
 }
 
-/// End to end: `crystal init` creates the documented layout, the recovery
-/// code alone recovers the vault, and `crystal rm` deletes it after its
-/// name is typed again. The passphrase never appears in the output.
+/// End to end: `crystal init` creates the documented layout, the vault
+/// unlocks, and `crystal rm` deletes it after its name is typed again.
+/// The passphrase never appears in the output.
 #[test]
 fn init_then_rm_end_to_end() {
     let home = private_home("init_e2e");
@@ -363,9 +363,6 @@ fn init_then_rm_end_to_end() {
     let (ok, output) = dialog(&format!("'{BIN}' init diary"), &home, &init_steps());
     assert!(ok, "{output}");
     assert!(!output.contains(PASS), "passphrase shown: {output:?}");
-    // The code typed back was the code shown; below it is typed as its 28
-    // symbols without dashes.
-    let code = recovery_code_in(&output).replace('-', "");
 
     // Acceptance: the layout matches docs/design/storage.md.
     let data = home.join(".local/share/crystal");
@@ -376,15 +373,7 @@ fn init_then_rm_end_to_end() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     files.sort();
-    assert_eq!(
-        files,
-        [
-            "VERSION",
-            "identity.age",
-            "identity.backup.age",
-            "vault.age"
-        ]
-    );
+    assert_eq!(files, ["VERSION", "identity.age", "vault.age"]);
     for file in &files {
         assert_eq!(mode(&vault.join(file)), 0o600, "{file}");
     }
@@ -414,31 +403,11 @@ fn init_then_rm_end_to_end() {
         "the pin names the counter's vault"
     );
 
-    // Acceptance: identity.backup.age holds the same identity as
-    // identity.age (check-code opens both, with the code and with the
-    // passphrase, and compares their keys), and it recovers the vault
-    // without the passphrase: after `recover`, a new passphrase unlocks
-    // vault.age, which was encrypted to the identity made at init.
-    let steps = vec![
-        (CODE_PROMPT, format!("{code}\r").into_bytes()),
-        (PROMPT, format!("{PASS}\r").into_bytes()),
-    ];
-    let (ok, output) = dialog(&format!("'{BIN}' check-code diary"), &home, &steps);
-    assert!(
-        ok && output.contains("The recovery code is right"),
-        "{output}"
-    );
+    // Acceptance: the passphrase unlocks vault.age, which was encrypted
+    // to the identity made at init, and quitting writes nothing.
     let vault_age = std::fs::read(vault.join("vault.age")).unwrap();
-    let new_pass = "a-new-passphrase-after-recovery";
     let steps = vec![
-        (CODE_PROMPT, format!("{code}\r").into_bytes()),
-        (NEW_PROMPT, format!("{new_pass}\r").into_bytes()),
-        (REPEAT, format!("{new_pass}\r").into_bytes()),
-    ];
-    let (ok, output) = dialog(&format!("'{BIN}' recover diary"), &home, &steps);
-    assert!(ok, "{output}");
-    let steps = vec![
-        (PROMPT, format!("{new_pass}\r").into_bytes()),
+        (PROMPT, format!("{PASS}\r").into_bytes()),
         ("crystal:diary> ", b"quit\r".to_vec()),
     ];
     let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
@@ -471,8 +440,7 @@ fn init_then_rm_end_to_end() {
 }
 
 /// Every interruption before creation leaves nothing behind: cancelling at
-/// the passphrase, the repeat, the recovery code screen or its
-/// confirmation creates no vault.
+/// the passphrase or the repeat creates no vault.
 #[test]
 fn init_cancelled_leaves_no_vault() {
     let all = init_steps();
@@ -493,34 +461,24 @@ fn init_cancelled_leaves_no_vault() {
     }
 }
 
-/// `crystal rm`, `recover` and `check-code` check the vault before any
-/// prompt, and never create anything.
+/// `crystal rm` checks the vault before any prompt, and never creates
+/// anything.
 #[test]
-fn commands_check_the_vault_before_prompting() {
+fn rm_checks_the_vault_before_prompting() {
     let home = fresh_home("check_first");
     set_mode(&home, 0o700);
-    for command in ["rm", "recover", "check-code"] {
-        let (ok, output) = run_in_pty(&format!("{command} v"), Some(&home));
-        assert!(
-            !ok && output.contains("there is no vault yet"),
-            "{command}: {output}"
-        );
-    }
+    let (ok, output) = run_in_pty("rm v", Some(&home));
+    assert!(!ok && output.contains("there is no vault yet"), "{output}");
     assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
 
     make_data_dir(&home);
-    for command in ["rm", "recover", "check-code"] {
-        let (ok, output) = run_in_pty(&format!("{command} v"), Some(&home));
-        assert!(
-            !ok && output.contains("there is no vault with that name"),
-            "{command}: {output}"
-        );
-        for prompt in [RM_CONFIRM, CODE_PROMPT, PROMPT] {
-            assert!(
-                !output.contains(prompt),
-                "{command}: prompted first: {output}"
-            );
-        }
+    let (ok, output) = run_in_pty("rm v", Some(&home));
+    assert!(
+        !ok && output.contains("there is no vault with that name"),
+        "{output}"
+    );
+    for prompt in [RM_CONFIRM, PROMPT] {
+        assert!(!output.contains(prompt), "prompted first: {output}");
     }
 }
 
