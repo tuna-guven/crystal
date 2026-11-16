@@ -1,8 +1,8 @@
 # Crystal Sandboxing Design
 
-Status: Draft
+Status: Built (Phase 6, 2026-11-16): sections 5 to 7 and 9 describe the code; section 8 (bubblewrap) is still to be built (roadmap S10).
 Scope: Process confinement for the `crystal` binary (offline, age-encrypted Markdown notes TUI)
-Target platform: secureblue (Fedora Atomic, SELinux enforcing). Verified 2026-10-12 on kernel 7.2.9: Landlock ABI 10. The `landlock` crate (0.4.7) supports up to ABI 9, which is what Crystal uses (section 5.1).
+Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-16 on kernel 7.3.3 (Landlock ABI 11). The `landlock` crate (0.4.7, the newest release) supports up to ABI 9, which is what Crystal uses (section 5.1).
 
 ## 1. Threat model summary
 

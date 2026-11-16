@@ -53,12 +53,18 @@ are allowed only with certain arguments (step S5, last column).
 | `read` | `vault::generation::load` | Read at most 22 bytes (the longest valid counter is 21) | the counter's fd |
 | `close` | `vault::generation::load` | Release the counter's fd | none |
 
-## Pre-sandbox only
+## Each use, before and inside the sandbox
 
-Called during startup, before Landlock and seccomp. These are **not** in the
-seccomp allowlist; a call after the sandbox is applied kills the process.
-Names are the real syscalls, checked in rustix's linux_raw backend, not the
-wrapper names.
+Every call Crystal makes, with its arguments. Since decision 0059 the
+prompts, unlock, the restore question and the session all run inside the
+sandbox, so many rows below also run there: the allowlist above is the
+authority on what the filter allows, and with which arguments. Calls made
+only before it (startup steps 1 to 7, `crystal init`, `crystal rm`, and
+the sandbox's own setup) are not in the allowlist: `prctl`, `umask`,
+`mlockall`, the `prlimit64` that sets limits, `mkdirat`, `pipe2`,
+`rt_sigaction`, `sendto`, `geteuid` and the `landlock_*` calls; any of them
+after the sandbox kills the process. Names are the real syscalls, checked
+in rustix's linux_raw backend, not the wrapper names.
 
 | Syscall | Used by | Why | Arguments |
 | --- | --- | --- | --- |
@@ -137,17 +143,8 @@ wrapper names.
 With `MCL_FUTURE`, later `mmap` and `brk` calls are locked by the kernel
 automatically; locking adds no syscalls after the sandbox.
 
-`openat`, `ioctl(TIOCGWINSZ)`, `write` and `close` will also be needed after
-the sandbox (TUI drawing, resize); they move to the allowlist table when that
-code exists. A signal can arrive at any time, so `write` to the signal pipes and
-`rt_sigreturn` must be in the allowlist; the TUI loop also needs `ppoll`,
-`read` on `/dev/tty` and the suspend and resize pipes, and, for suspend, `getpid` and
-`kill` (own pid, `SIGSTOP`) plus everything the terminal guard uses to
-re-engage on resume (`fcntl`, `ioctl` `TCGETS2` and `TCSETS2`, `write`). Only signal-hook's `low_level::pipe` is used: its
-`iterator` module creates a `socketpair` and its `channel` module spawns a
-thread, both denied. `term::restore_terminal` runs at exit or on a panic, after the sandbox, so
-`ioctl(TCSETSF2)` and `write` to `/dev/tty` must be in the allowlist too. The
-seccomp filter must allow the `*2` termios requests rustix actually uses:
-its fallback to `TCGETS` happens only on an error return, and a seccomp kill
-never returns. Syscalls made by the Rust runtime and musl before `main` are not
-listed here; Phase 6 collects them in seccomp log mode.
+Only signal-hook's `low_level::pipe` is used: its `iterator` module
+creates a `socketpair` and its `channel` module spawns a thread, both of
+which the sandbox kills. Syscalls made by the Rust runtime and musl
+before `main` run before the sandbox; those made after it were collected
+from the audit log (step S4) and are in the allowlist.

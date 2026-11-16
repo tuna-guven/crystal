@@ -7,8 +7,9 @@ and never writes plaintext to disk.
 > **Status: in development, not ready for real notes.** Phases 0 to 5
 > (skeleton, hardening, terminal guard, crypto and vault format, the
 > Crystal shell and viewer, the editor, memory hygiene with lock and
-> auto-lock) and Crystal's own age code are done. Before real notes go in
-> comes the sandbox (Phase 6). The vault recipient stays X25519 until the
+> auto-lock) and Crystal's own age code are done, and so is the sandbox
+> (Phase 6): Landlock and seccomp before the first passphrase prompt, an
+> SELinux domain, and fuzzed parsers. The vault recipient stays X25519 until the
 > Rust age implementations have a hybrid post-quantum recipient
 > ([decision 0003](decisions.md#0003)). See [Roadmap and status](development/roadmap.md).
 
