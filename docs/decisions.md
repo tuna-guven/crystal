@@ -794,3 +794,18 @@ which cannot name `$HOME`; Cargo's `trim-paths` would do the same but is
 not stable on 1.99. Builds by other people on other machines need the
 same toolchain version and the same `Cargo.lock`.
 
+## 0068 The dependency list is embedded with `cargo auditable` {#0068}
+
+*2026-11-16.* Release builds run `cargo auditable build`
+(`cargo-auditable` =0.7.7, a build tool installed with `cargo install
+--locked`, not a dependency: nothing enters `Cargo.lock` or Crystal's
+code), which puts the list of every crate and version compiled into the
+binary in a section of about 1 KiB (`.dep-v0`). `cargo audit bin` then
+checks a shipped or long-installed binary for advisories without its
+source or `Cargo.lock`. The list is public anyway (`Cargo.lock` is in
+the repository) and names no path or user. The build stays
+reproducible ([0067](#0067)); `packaging/build-release.sh` refuses to
+build without the tool, so no release lacks the list. Checked
+2026-11-16: two clean builds identical, `cargo audit bin` finds 64
+dependencies and no advisory.
+
