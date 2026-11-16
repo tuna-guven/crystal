@@ -37,7 +37,7 @@ Matches the [startup order](startup.md).
 Rules:
 - Crystal is single-threaded (CLAUDE.md: no threads unless approved). Backups are made by external tools ([decision 0036](../decisions.md#0036)), never by Crystal.
 - MUST NOT continue to step 7 if steps 1, 5 or 6 return an error. There are no fallbacks and no override flag: if any layer cannot be applied in full, Crystal refuses to start.
-- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3. *As built (step S3):* Landlock only; seccomp joins in step S5.
+- All sandbox code lives in the `harden` module (`src/harden/landlock.rs`, `src/harden/seccomp.rs`) and is called from one function: `harden::enter_sandbox(vault, state) -> Result<(), HardenError>`, given the vault and state directory fds of step 3; Landlock first, then seccomp. `crystal unlock` and `crystal recover` pass both; `crystal check-code`, which reads and changes nothing, passes no state directory, so Landlock grants it the vault alone (`state` is an `Option`). `recover` and `check-code` call it right before the recovery code prompt (step S8; test `recover_and_check_code_wait_inside_the_sandbox`, mutation-checked for each command).
 
 ## 4. Process hardening
 

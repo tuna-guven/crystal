@@ -166,9 +166,14 @@ fn stray_fds<'a>(names: impl Iterator<Item = &'a [u8]>, own: i32) -> Vec<i32> {
 }
 
 /// Startup steps 8 and 9 (decision 0059): confine the process for good,
-/// before the passphrase prompt. `vault` and `state` are the directory fds
-/// of startup step 7. Fails closed: on any error the caller must exit.
-pub fn enter_sandbox(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), HardenError> {
+/// before the passphrase prompt (or, for `recover` and `check-code`, the
+/// recovery code prompt). `vault` and `state` are the directory fds of
+/// startup step 7; `check-code` passes no `state`. Fails closed: on any
+/// error the caller must exit.
+pub fn enter_sandbox(
+    vault: BorrowedFd<'_>,
+    state: Option<BorrowedFd<'_>>,
+) -> Result<(), HardenError> {
     landlock::restrict(vault, state)?;
     seccomp::restrict()
 }
@@ -185,7 +190,7 @@ pub fn enter_landlock_only_for_test(
     vault: BorrowedFd<'_>,
     state: BorrowedFd<'_>,
 ) -> Result<(), HardenError> {
-    landlock::restrict(vault, state)
+    landlock::restrict(vault, Some(state))
 }
 
 /// Environment variables Crystal may read (startup step 3). Add a variant

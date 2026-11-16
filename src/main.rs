@@ -131,7 +131,7 @@ fn startup() -> Result<(), Box<dyn Error>> {
     if let Some(check) = args.sandbox_check_for_test {
         return sandbox_check_for_test(check, &vault_dir, &state_dir, terminal, &signals);
     }
-    harden::enter_sandbox(vault_dir.fd().as_fd(), state_dir.fd().as_fd())?;
+    harden::enter_sandbox(vault_dir.fd().as_fd(), Some(state_dir.fd().as_fd()))?;
     // Steps 10 and 11: unlock, inside the sandbox.
     let mut state_dir = state_dir;
     // Each turn unlocks and runs a session; `lock` ends the session, which
@@ -414,9 +414,15 @@ fn recover_vault(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn 
     let data_dir = vault::DataDir::open(Some(&home))?;
     let state_dir = vault::StateDir::open_or_create(Some(&home))?;
     let vault_dir = vault::vault_dir::VaultDir::open(&data_dir, name)?;
+    drop(data_dir);
 
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
+    // Decision 0059: the sandbox before the recovery code is asked, so
+    // identity.backup.age is parsed inside it. The new identity.age, the
+    // pin and the counter are written beneath the vault and state
+    // directories, which Landlock allows.
+    harden::enter_sandbox(vault_dir.fd().as_fd(), Some(state_dir.fd().as_fd()))?;
     let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
     if let Some(older) = recover::check_seen(&opened, name, &state_dir)? {
         confirm_restore(&mut terminal, &signals, older, None)?;
@@ -434,9 +440,13 @@ fn check_code(tty: term::Tty, name: &vault::VaultName) -> Result<(), Box<dyn Err
     let home = home_dir()?;
     let data_dir = vault::DataDir::open(Some(&home))?;
     let vault_dir = vault::vault_dir::VaultDir::open(&data_dir, name)?;
+    drop(data_dir);
 
     let signals = term::Signals::register()?;
     let mut terminal = term::TerminalGuard::enter(tty)?;
+    // Decision 0059: the sandbox before the recovery code is asked. Only
+    // the vault is reachable: check-code reads and changes nothing.
+    harden::enter_sandbox(vault_dir.fd().as_fd(), None)?;
     let opened = open_with_code(&mut terminal, &signals, &vault_dir)?;
     let pass = terminal.read_passphrase(&signals, PROMPT)?;
     drop(terminal);
@@ -564,7 +574,7 @@ fn sandbox_check_for_test(
     if check.landlock_only() {
         harden::enter_landlock_only_for_test(vault, state)?;
     } else {
-        harden::enter_sandbox(vault, state)?;
+        harden::enter_sandbox(vault, Some(state))?;
     }
     if check == cli::SandboxCheck::Wait {
         terminal.run_until_exit(signals)?;

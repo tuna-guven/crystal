@@ -202,3 +202,23 @@ fn refuses_to_start_without_landlock() {
     let (_, output) = pty_dialog(&cmd, &home, &[(PROMPT, b"\x1b")]);
     assert!(output.contains(PROMPT), "{output:?}");
 }
+
+/// Decision 0059: `crystal recover` and `crystal check-code` enter the
+/// sandbox before the recovery code is asked, so identity.backup.age is
+/// parsed inside it. Read from outside while each waits at that prompt.
+/// No debug hook: this runs in release builds too.
+#[test]
+fn recover_and_check_code_wait_inside_the_sandbox() {
+    for command in ["recover", "check-code"] {
+        let home = home_with_vault(&format!("sandbox_{command}"));
+        let cmd = format!(
+            "'{BIN}' {command} diary & p=$!; sleep 1; echo; \
+             grep -E '^(NoNewPrivs|Seccomp):' /proc/$p/status; \
+             kill -TERM $p; wait $p; echo exit=$?"
+        );
+        let (ok, output) = pty_dialog(&cmd, &home, &[]);
+        assert!(ok, "{command}: {output:?}");
+        assert!(output.contains("Seccomp:\t2"), "{command}: {output:?}");
+        assert!(output.contains("NoNewPrivs:\t1"), "{command}: {output:?}");
+    }
+}

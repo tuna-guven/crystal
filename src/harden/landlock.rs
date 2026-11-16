@@ -36,12 +36,14 @@ fn private_dir_rights() -> BitFlags<AccessFs> {
 }
 
 /// Restricts the process for good. `vault` and `state` are the directory
-/// fds startup step 7 opened (no path is resolved again). Every right up
+/// fds startup step 7 opened (no path is resolved again); without `state`
+/// (`crystal check-code`, which changes nothing) only the vault is
+/// reachable. Every right up
 /// to ABI 9 is handled, so everything not granted below is denied; TCP
 /// bind and connect are handled with no rule, so they are always denied.
 /// Hard-requirement mode: a right the kernel cannot enforce is an error,
 /// never silently dropped.
-pub fn restrict(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), HardenError> {
+pub fn restrict(vault: BorrowedFd<'_>, state: Option<BorrowedFd<'_>>) -> Result<(), HardenError> {
     // Only compatibility checks run here, no syscall but the ABI query:
     // a failure means the kernel is older than ABI 9 or Landlock is off.
     let handled = Ruleset::default()
@@ -53,7 +55,10 @@ pub fn restrict(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), Hard
     let status = handled
         .create()
         .and_then(|ruleset| ruleset.add_rule(PathBeneath::new(vault, private_dir_rights())))
-        .and_then(|ruleset| ruleset.add_rule(PathBeneath::new(state, private_dir_rights())))
+        .and_then(|ruleset| match state {
+            Some(state) => ruleset.add_rule(PathBeneath::new(state, private_dir_rights())),
+            None => Ok(ruleset),
+        })
         // TSYNC: every thread. Crystal has one; defense in depth.
         .and_then(|ruleset| ruleset.all_threads(true))
         .and_then(|ruleset| ruleset.restrict_self())
