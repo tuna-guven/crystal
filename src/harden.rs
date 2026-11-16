@@ -173,6 +173,17 @@ pub fn enter_sandbox(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(),
     seccomp::restrict()
 }
 
+/// Debug builds only: Landlock without seccomp, for the `landlock-*`
+/// sandbox checks (tests/sandbox.rs), which show that Landlock holds on
+/// its own. Never called outside `--sandbox-check-for-test`.
+#[cfg(debug_assertions)]
+pub fn enter_landlock_only_for_test(
+    vault: BorrowedFd<'_>,
+    state: BorrowedFd<'_>,
+) -> Result<(), HardenError> {
+    landlock::restrict(vault, state)
+}
+
 /// Environment variables Crystal may read (startup step 3). Add a variant
 /// only when code needs it; reading anything else is a clippy error
 /// (clippy.toml, disallowed-methods).

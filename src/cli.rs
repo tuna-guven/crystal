@@ -88,7 +88,9 @@ pub enum PromptKind {
 }
 
 /// What `--sandbox-check-for-test CHECK` tries inside the sandbox. One
-/// check per process: a seccomp kill ends it. Debug builds only.
+/// check per process: a seccomp kill ends it. The `landlock-*` checks
+/// apply Landlock alone, to show it holds without seccomp
+/// (docs/design/sandboxing.md, section 1). Debug builds only.
 #[cfg(debug_assertions)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxCheck {
@@ -102,6 +104,77 @@ pub enum SandboxCheck {
     /// `wait`: do nothing, wait for a key or a signal, so the test can
     /// read `/proc/PID/status` from outside.
     Wait,
+    /// `socket`: a TCP connect to 127.0.0.1:9 (`socket` is not allowed).
+    Socket,
+    /// `socketpair`: a pair of connected UNIX sockets.
+    Socketpair,
+    /// `thread`: start a thread (`clone`, and `mprotect` for its guard page).
+    Thread,
+    /// `memfd`: `memfd_create`, an anonymous file outside every directory.
+    Memfd,
+    /// `mkdir`: create a directory inside the vault (`mkdirat`).
+    Mkdir,
+    /// `ioctl`: `FIONBIO` on the terminal, a request outside the five
+    /// allowed (`TIOCSTI` has no safe wrapper to call it with).
+    Ioctl,
+    /// `kill-parent`: send the harmless `SIGCONT` to the parent process.
+    KillParent,
+    /// `exec`: replace the process with `/usr/bin/true`.
+    Exec,
+    /// `landlock-tcp`: like `socket`, under Landlock alone.
+    LandlockTcp,
+    /// `landlock-unix`: connect to the pathname socket `$HOME/sock`, under
+    /// Landlock alone (`RESOLVE_UNIX`).
+    LandlockUnix,
+    /// `landlock-mkdir`: like `mkdir`, under Landlock alone.
+    LandlockMkdir,
+    /// `landlock-kill-parent`: like `kill-parent`, under Landlock alone
+    /// (the signal scope).
+    LandlockKillParent,
+    /// `landlock-exec`: like `exec`, under Landlock alone.
+    LandlockExec,
+}
+
+#[cfg(debug_assertions)]
+impl SandboxCheck {
+    const NAMES: [(&'static str, Self); 17] = [
+        ("read-outside", Self::ReadOutside),
+        ("write-outside", Self::WriteOutside),
+        ("other-vault", Self::OtherVault),
+        ("wait", Self::Wait),
+        ("socket", Self::Socket),
+        ("socketpair", Self::Socketpair),
+        ("thread", Self::Thread),
+        ("memfd", Self::Memfd),
+        ("mkdir", Self::Mkdir),
+        ("ioctl", Self::Ioctl),
+        ("kill-parent", Self::KillParent),
+        ("exec", Self::Exec),
+        ("landlock-tcp", Self::LandlockTcp),
+        ("landlock-unix", Self::LandlockUnix),
+        ("landlock-mkdir", Self::LandlockMkdir),
+        ("landlock-kill-parent", Self::LandlockKillParent),
+        ("landlock-exec", Self::LandlockExec),
+    ];
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|&(_, c)| c)
+    }
+
+    /// Whether the check runs under Landlock alone, without seccomp.
+    pub fn landlock_only(self) -> bool {
+        matches!(
+            self,
+            Self::LandlockTcp
+                | Self::LandlockUnix
+                | Self::LandlockMkdir
+                | Self::LandlockKillParent
+                | Self::LandlockExec
+        )
+    }
 }
 
 /// How `--crash-for-test KIND` ends the process. Debug builds only.
@@ -214,14 +287,10 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command, CliErr
             }
             #[cfg(debug_assertions)]
             Arg::Long("sandbox-check-for-test") => {
-                let check = match parser.value().ok().as_deref().and_then(OsStr::to_str) {
-                    Some("read-outside") => SandboxCheck::ReadOutside,
-                    Some("write-outside") => SandboxCheck::WriteOutside,
-                    Some("other-vault") => SandboxCheck::OtherVault,
-                    Some("wait") => SandboxCheck::Wait,
-                    _ => return Err(CliError::UnknownArgument),
-                };
-                sandbox_check_for_test = Some(check);
+                let value = parser.value().ok();
+                let check = value.as_deref().and_then(OsStr::to_str);
+                let check = check.and_then(SandboxCheck::from_name);
+                sandbox_check_for_test = Some(check.ok_or(CliError::UnknownArgument)?);
             }
             // The first word is always the command; anything else there,
             // such as a bare vault name, is refused without echoing it.

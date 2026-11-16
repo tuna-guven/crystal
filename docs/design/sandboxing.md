@@ -221,11 +221,14 @@ Status checks are made by the test process from outside, through `/proc/<pid>/st
 - [x] Reading `$HOME/.ssh/id_ed25519` (a fixture in the test's temporary HOME) fails with `EACCES` (`reading_outside_the_vault_is_denied`)
 - [x] Writing outside the vault and state dirs fails with `EACCES`, and nothing appears (`writing_outside_the_vault_is_denied`)
 - [x] Another vault in the same `~/.local/share/crystal` is unreachable (`another_vault_is_unreachable`). Mutation-checked: without Landlock all three report `ALLOWED`
-- [ ] `socket(AF_INET, ...)` is killed or denied
-- [ ] Connecting to a pathname UNIX socket (a fixture socket in the test directory) fails
-- [ ] `execve("/usr/bin/true")` is killed or denied
-- [ ] `kill(<parent pid>, SIGTERM)` fails (Landlock signal scope)
-- [ ] `ioctl(tty, TIOCSTI, ...)` is killed or denied
+- [x] `socket(AF_INET, ...)` is killed (`seccomp_kills_forbidden_syscalls`), and denied by Landlock alone (`landlock_alone_stops_network_signals_and_exec`, `EACCES`)
+- [x] Connecting to a pathname UNIX socket (a live fixture socket the test itself can connect to) fails under Landlock alone with `EACCES`; with seccomp, `socket` dies first
+- [x] `execve("/usr/bin/true")` is killed, and denied by Landlock alone (`EACCES`)
+- [x] Signalling the parent (the harmless `SIGCONT`, so a failing check hurts nothing) is killed, and denied by Landlock alone (`EPERM`, the signal scope)
+- [x] An `ioctl` outside the five is killed (`FIONBIO` on the terminal); `TIOCSTI` and `TIOCLINUX` have no safe wrapper, so a unit test checks that neither is in the list (`tiocsti_and_tioclinux_are_not_allowed`)
+- [x] Also killed: `socketpair`, a thread, `memfd_create`, `mkdirat` in the vault (`mkdirat` is also denied by Landlock alone)
+
+The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_only_for_test`, debug builds only), to show it holds on its own. Mutation-checked per check: under Landlock alone none of the eight seccomp checks dies, and without any sandbox none of the five Landlock checks is refused as expected (TCP then gives `ECONNREFUSED`, and `exec` really runs `/usr/bin/true`). Under Landlock alone, `socketpair`, a thread, `memfd_create` and the `FIONBIO` ioctl were allowed: for these seccomp is the only layer until the SELinux module (section 7).
 - [x] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`, `Seccomp_filters: 1` (`running_sandbox_shows_in_proc_status`)
 - [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it

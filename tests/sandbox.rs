@@ -116,3 +116,64 @@ fn running_sandbox_shows_in_proc_status() {
     assert!(output.contains("mem_read=1"), "{output:?}");
     assert!(output.contains("exit=0"), "{output:?}");
 }
+
+/// 128 + SIGSYS (31): how the shell reports a seccomp kill.
+const KILLED_BY_SIGSYS: &str = "exit=159";
+
+/// Runs one check that seccomp must stop: the process dies by `SIGSYS`
+/// before it can print a result line.
+fn assert_killed(test: &str, check: &str) {
+    let home = home_with_vault(test);
+    let cmd = format!("'{BIN}' unlock --sandbox-check-for-test {check} diary; echo exit=$?");
+    let (ok, output) = pty_dialog(&cmd, &home, &[]);
+    assert!(ok, "{output:?}");
+    assert!(output.contains(KILLED_BY_SIGSYS), "{check}: {output:?}");
+    assert!(!output.contains("sandbox-check:"), "{check}: {output:?}");
+}
+
+/// Everything sandboxing section 6 says seccomp must stop, through the
+/// calls Crystal's dependencies would make: a network socket, a socket
+/// pair, a thread, an anonymous memory file, a directory, an ioctl
+/// outside the five, a signal to another process, and exec.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn seccomp_kills_forbidden_syscalls() {
+    for check in [
+        "socket",
+        "socketpair",
+        "thread",
+        "memfd",
+        "mkdir",
+        "ioctl",
+        "kill-parent",
+        "exec",
+    ] {
+        assert_killed(&format!("sandbox_kill_{check}"), check);
+    }
+}
+
+/// Landlock alone, without seccomp, still stops the network, pathname
+/// UNIX sockets (D-Bus, Wayland), directories, signals to other
+/// processes and exec: each layer holds on its own (sandboxing section 1).
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn landlock_alone_stops_network_signals_and_exec() {
+    // EACCES for the network and files, EPERM for the signal scope.
+    let eperm = "denied errno=1";
+    let home = home_with_vault("sandbox_landlock_alone");
+    // A live socket the test itself can connect to (positive control).
+    let sock = home.join("sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    for (check, expected) in [
+        ("landlock-tcp", EACCES),
+        ("landlock-unix", EACCES),
+        ("landlock-mkdir", EACCES),
+        ("landlock-kill-parent", eperm),
+        ("landlock-exec", EACCES),
+    ] {
+        let line = run_check(&home, check);
+        assert!(line.ends_with(expected), "{check}: {line}");
+    }
+    assert!(!home.join(".local/share/crystal/diary/sub").exists());
+}

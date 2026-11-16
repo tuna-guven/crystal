@@ -153,4 +153,13 @@ mod tests {
         let conditional = conditional(1234).expect("rules are valid");
         assert_eq!(UNCONDITIONAL.len() + conditional.len(), 23);
     }
+
+    /// The requests that inject keystrokes into the terminal or reach
+    /// the console are never allowed. tests/sandbox.rs checks a live
+    /// ioctl outside the list (FIONBIO); these two have no safe wrapper.
+    #[test]
+    fn tiocsti_and_tioclinux_are_not_allowed() {
+        assert!(!IOCTL_REQUESTS.contains(&libc::TIOCSTI));
+        assert!(!IOCTL_REQUESTS.contains(&libc::TIOCLINUX));
+    }
 }
