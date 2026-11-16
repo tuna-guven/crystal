@@ -24,6 +24,7 @@ mod md;
 mod model;
 mod notes;
 mod pager;
+mod passwd;
 mod rm;
 mod session;
 mod shell;

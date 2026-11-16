@@ -276,6 +276,25 @@ impl VaultRecipient {
     pub fn encrypt(&self, secret: &[u8]) -> Result<Ciphertext, CryptoError> {
         encrypt_to_recipients(secret, std::slice::from_ref(&self.0))
     }
+
+    /// Encrypts `secret` to this recipient and `next`: the `vault.age`
+    /// that `crystal passwd` writes while it moves the vault to a new
+    /// identity, which opens with either (decision 0065). The copies of
+    /// both recipients are wiped before returning.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired to the command in step K1b")
+    )]
+    pub fn encrypt_with(
+        &self,
+        next: &VaultRecipient,
+        secret: &[u8],
+    ) -> Result<Ciphertext, CryptoError> {
+        let mut both = [(*self.0).clone(), (*next.0).clone()];
+        let sealed = encrypt_to_recipients(secret, &both);
+        both.iter_mut().for_each(Zeroize::zeroize);
+        sealed
+    }
 }
 
 impl Drop for VaultRecipient {

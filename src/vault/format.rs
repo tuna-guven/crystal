@@ -51,6 +51,19 @@ pub fn seal(
     recipient.encrypt(&padded).map_err(VaultError::Crypto)
 }
 
+/// As `seal`, to the vault's current recipient `from` and its next one
+/// `to`: the middle step of `crystal passwd` (decision 0065), a
+/// `vault.age` that either identity opens.
+pub fn seal_moving(
+    contents: &VaultContents,
+    from: &VaultRecipient,
+    to: &VaultRecipient,
+) -> Result<Ciphertext, VaultError> {
+    let encoded = codec::encode(contents).map_err(VaultError::Codec)?;
+    let padded = padme::pad(&encoded).map_err(VaultError::Padding)?;
+    from.encrypt_with(to, &padded).map_err(VaultError::Crypto)
+}
+
 /// The vault back from `vault.age`: decrypt, unpad, decode. age
 /// authenticates the whole file, so a changed byte anywhere fails at
 /// decryption, before padding or contents are looked at. `version` is the
