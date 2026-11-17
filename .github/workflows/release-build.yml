@@ -1,0 +1,47 @@
+name: Release build
+
+# A second, independent builder for releases (roadmap step P1): CI builds
+# the tagged commit with packaging/build-release.sh and prints its SHA-256.
+# The release is signed only on the maintainer's machine, with a YubiKey,
+# and only if that machine's hash is the same (packaging/publish-release.sh).
+# CI signs nothing, uploads nothing and creates no release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Read-only token: no step can push, comment or create releases. Every
+# dependency's build script runs here, so it must not hold a write token.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_AUDITABLE_VERSION: 0.7.7
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit SHA (v7.0.1), as in ci.yml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - name: Install cargo-auditable
+        run: cargo install --locked cargo-auditable --version "$CARGO_AUDITABLE_VERSION"
+
+      - name: Reproducible release build
+        run: packaging/build-release.sh
+
+      # One line the publishing script looks for; also in the job summary.
+      - name: Report the hash
+        run: |
+          hash=$(sha256sum target/x86_64-unknown-linux-musl/release/crystal | cut -d' ' -f1)
+          line="release $GITHUB_REF_NAME $GITHUB_SHA sha256 $hash"
+          echo "$line"
+          echo "\`$line\`" >>"$GITHUB_STEP_SUMMARY"
