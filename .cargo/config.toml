@@ -1,3 +1,8 @@
 [build]
 # Static binary by default (docs/design/dependencies.md: release profile).
 target = "x86_64-unknown-linux-musl"
+
+# Link with the LLD that ships with the pinned toolchain, never the host's
+# cc and ld: a release links the same on every machine (decision 0071).
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

@@ -792,7 +792,8 @@ checked 2026-11-16, and mutation-checked (without the registry remap the
 hashes differ). The flags live in the script, not in `.cargo/config.toml`,
 which cannot name `$HOME`; Cargo's `trim-paths` would do the same but is
 not stable on 1.99. Builds by other people on other machines need the
-same toolchain version and the same `Cargo.lock`.
+same toolchain version and the same `Cargo.lock`; the link uses the
+toolchain's own LLD, not the host's linker ([0071](#0071)).
 
 ## 0068 The dependency list is embedded with `cargo auditable` {#0068}
 
@@ -848,3 +849,22 @@ passed on 2026-11-14. The weekly long property tests run the library
 (`--lib`; with `--bin crystal`, since the library split of step S11a,
 they had run nothing and passed).
 
+## 0071 The toolchain's LLD links; CI rebuilds every release {#0071}
+
+*2026-11-18.* Crystal links with `rust-lld`, the LLD that ships with the
+pinned toolchain (`.cargo/config.toml`, `linker = "rust-lld"` for the musl
+target), for every build, so tests run the same binary a release ships.
+Before, rustc called the host's `cc` and GNU `ld`: the same commit gave
+`74e2abeb…` on the maintainer's Fedora (ld 2.47) and `eb701ded…` on
+GitHub's Ubuntu runner, so [0067](#0067) held only on one machine. No
+dependency compiles C, so with the linker from the toolchain nothing on
+the host enters the binary. A second builder checks this for every
+release: `.github/workflows/release-build.yml` builds each `v*` tag (and
+on demand) with `packaging/build-release.sh` and prints `release <tag>
+<commit> sha256 <hash>`. A release is signed only on the maintainer's
+machine, with a YubiKey ([0069](#0069)), and only if both hashes are the
+same; a compromised build machine or toolchain on either side is then
+caught before signing. The workflow keeps a read-only token, signs
+nothing, uploads nothing and creates no release: every dependency's build
+script runs in it, so it must not hold a key or a token that can change
+releases.

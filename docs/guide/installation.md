@@ -40,6 +40,10 @@ git checkout <release commit>
 packaging/build-release.sh              # prints the SHA-256; compare it
 ```
 
+GitHub's CI builds every release tag the same way and prints its hash in
+the run log of the "Release build" workflow ([decision
+0071](../decisions.md#0071)): a third copy of the hash to compare.
+
 ## Installing
 
 ```sh
