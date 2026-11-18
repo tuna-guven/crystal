@@ -23,6 +23,9 @@ set -eu
 src=$(cd "${1:-$(dirname "$0")/..}" && pwd -P)
 cd "$src"
 registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+# A fresh Cargo home has no registry yet (CI): create it, so its resolved
+# path can be taken before the first download.
+mkdir -p "$registry"
 registry_resolved=$(cd "$registry" && pwd -P)
 rust_src="$(rustc --print sysroot)/lib/rustlib/src/rust"
 commit=$(rustc -vV | sed -n 's/^commit-hash: //p')
