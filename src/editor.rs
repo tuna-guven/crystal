@@ -133,10 +133,6 @@ impl Editor {
     /// selection; a drag after it selects from there; the wheel moves the
     /// cursor `WHEEL_LINES` lines. Like a key, it ends a run of typing for
     /// undo, clears the notice and disarms Ctrl+Q.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired to the mouse in roadmap step X4")
-    )]
     pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>) {
         self.notice = None;
         self.quit_armed = false;
@@ -166,7 +162,7 @@ impl Editor {
     }
 
     pub fn key(&mut self, key: Key, clipboard: &mut Clipboard) -> EditorAction {
-        // Mouse reports are not turned on yet (roadmap step X4).
+        // Mouse reports go to `mouse`, never here (decision 0073).
         if matches!(key, Key::Mouse { .. }) {
             return EditorAction::Stay;
         }

@@ -1318,6 +1318,50 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
     assert!(!visible(&output).contains("draft-line!"), "{output:?}");
 }
 
+/// The mouse in the editor (decision 0073): a click places the cursor, a
+/// drag selects and typing replaces the selection. Reports are turned on
+/// only while the editor shows: off in the Ctrl+E preview, off before the
+/// lock screen, and never on again in the viewer or shell after it.
+#[test]
+fn mouse_clicks_and_drags_in_the_editor_only() {
+    const ON: &str = "\x1b[?1002h";
+    const OFF: &str = "\x1b[?1002l";
+    let (home, _) = home_with_vault("editor_mouse");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    // Row 2 is the text's first row; columns 1 and 2 are the gutter's
+    // `1 `, so `a` is at column 3. A click there, then X: `Xab`. A drag
+    // from column 4 (`a`) to 5 (`b`) selects `a`; Y replaces it: `XYb`.
+    let mut keys = b"ab\r\x1b[<0;3;2M\x1b[<0;3;2mX".to_vec();
+    keys.extend_from_slice(b"\x1b[<0;4;2M\x1b[<32;5;2M\x1b[<0;5;2mY\x13");
+    steps.push(("Ctrl+S save", keys));
+    steps.push(("Saved.", b"\x05".to_vec()));
+    steps.push(("preview", b"\x05".to_vec()));
+    steps.push(("Ctrl+S save", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"lock\r".to_vec()));
+    steps.push((LOCKED, format!("{PASS}\r").into_bytes()));
+    steps.push(("unlocked.", b"view plan\r".to_vec()));
+    steps.push(("XYb", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let preview = output.find("preview").unwrap();
+    let locked = output.find(LOCKED).unwrap();
+    // On in the editor, off for the preview, on again after it.
+    let first_on = output.find(ON).expect("reports on in the editor");
+    assert!(first_on < preview);
+    assert!(
+        output[first_on..preview].contains(OFF),
+        "off for the preview"
+    );
+    assert!(output[preview..locked].contains(ON), "on again after it");
+    // Off before the lock screen; never on again after it.
+    assert!(output[..locked].rfind(OFF) > output[..locked].rfind(ON));
+    assert!(!output[locked..].contains(ON), "on after the lock");
+}
+
 /// A session with the debug-only demo notes never saves: vault.age stays
 /// byte for byte the same.
 #[test]

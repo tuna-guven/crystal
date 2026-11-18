@@ -202,20 +202,23 @@ impl Decoder {
                 }
                 continue;
             }
-            if self.skipping {
-                // ECMA-48: parameter and intermediate bytes go on, any
-                // other byte ends the sequence.
-                self.skipping = matches!(byte, 0x20..=0x3f);
-                continue;
-            }
             if self.pending.len() == MAX_PENDING {
                 // Nothing this long is a key: drop it, and the rest of it
                 // when it is a CSI sequence.
                 self.skipping = self.pending.starts_with(b"\x1b[");
                 self.clear_pending();
-                if self.skipping {
-                    self.skipping = matches!(byte, 0x20..=0x3f);
-                    continue;
+            }
+            if self.skipping {
+                // ECMA-48: parameter and intermediate bytes go on, a final
+                // byte ends the sequence; any other byte (an ESC starting
+                // the next sequence) ends it too and is read as usual.
+                match byte {
+                    0x20..=0x3f => continue,
+                    0x40..=0x7e => {
+                        self.skipping = false;
+                        continue;
+                    }
+                    _ => self.skipping = false,
                 }
             }
             self.pending.push(byte);
@@ -686,6 +689,14 @@ mod tests {
                 assert_eq!(got, [Key::Char('a')], "{bytes:?} at {at}");
             }
         }
+    }
+
+    /// A sequence too long to keep, cut short by the next one: the next
+    /// one is still read.
+    #[test]
+    fn a_skipped_sequence_ends_at_the_next_escape() {
+        let long = format!("\x1b[{}\x1b[A", "1;".repeat(40));
+        assert_eq!(keys(&[long.as_bytes(), b"a"]), [Key::Up, Key::Char('a')]);
     }
 
     /// A lone ESC ends a whole read as Esc; at the end of a full read it

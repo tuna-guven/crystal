@@ -27,6 +27,9 @@ const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
 /// and every prompt ends them, so a click never reaches a passphrase or
 /// the shell the terminal returns to.
 pub const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l";
+/// Turns mouse reports on: button and drag events, as SGR reports. Only
+/// the editor's frames write it (`ui::screen`, decision 0073).
+pub const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
 
 /// Close any link a broken-off frame left open (`ui::frame`), mouse
 /// reports off (`MOUSE_OFF`), turn bracketed paste off and show the

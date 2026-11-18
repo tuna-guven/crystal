@@ -260,10 +260,6 @@ impl View {
     /// takes the first or last row shown: a drag stops at the screen's
     /// edge. `None` before the first frame. Always a char boundary in
     /// `text`, even when `text` changed since that frame.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired to the mouse in roadmap step X4")
-    )]
     pub fn position_at(&self, text: &str, column: u16, row: u16, clamp: bool) -> Option<usize> {
         let area = self.area?;
         if !clamp && !(area.y..area.bottom()).contains(&row) {

@@ -24,7 +24,7 @@ use crate::model::{NoteText, lines};
 use crate::notes::Notes;
 use crate::pager::{Pager, PagerAction};
 use crate::session::{Change, SaveError, Session};
-use crate::shell::keys::Key;
+use crate::shell::keys::{Key, MouseEvent};
 use crate::shell::{self, ERROR_STYLE, Shell};
 use crate::term::{Event, Idle, Signals, TerminalGuard, WAKE_CHECK};
 use crate::ui::clipboard::Clipboard;
@@ -253,7 +253,9 @@ fn run_loop(
     // A SIGTSTP sent during the passphrase prompt was not acted on there.
     signals.forget_suspend();
     loop {
-        screen.frame(terminal.output(), |grid| {
+        // Mouse reports only while the editor itself shows (decision 0073).
+        let mouse = matches!(&mode, Mode::Edit(e) if e.preview.is_none());
+        screen.frame(terminal.output(), mouse, |grid| {
             let notes = session.notes();
             match &mut mode {
                 Mode::Shell => shell.draw(grid),
@@ -426,6 +428,15 @@ fn run_loop(
                                         pager.tell(COPIED);
                                     }
                                 }
+                                continue;
+                            }
+                            // The cell, as the last frame drew it, to the
+                            // text; a press must land on the text, a drag
+                            // stops at its edge (decision 0073).
+                            if let Key::Mouse { event, column, row } = key {
+                                let clamp = event != MouseEvent::Press;
+                                let at = e.view.position_at(e.editor.text(), column, row, clamp);
+                                e.editor.mouse(event, at);
                                 continue;
                             }
                             match e.editor.key(key, clipboard) {

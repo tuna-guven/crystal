@@ -5,6 +5,10 @@
 //! screen and hides the cursor, then draws onto a blank buffer, so every
 //! cell is written once. Later frames write only what changed.
 //!
+//! Mouse reports are on exactly while the frame asks for them (the
+//! editor, decision 0073): the screen writes the change, and a full
+//! redraw starts with them off.
+//!
 //! Both grids hold note text; they are wiped on every reset and on drop.
 
 #![cfg_attr(
@@ -17,6 +21,7 @@ use std::mem;
 
 use super::frame::{FrameWriter, draw};
 use super::grid::Grid;
+use crate::term::{MOUSE_OFF, MOUSE_ON};
 
 /// Close any link a broken-off frame left open (`ui::frame`), mouse
 /// reports off (`term::MOUSE_OFF`; only the editor's frames turn them on,
@@ -32,6 +37,8 @@ pub struct Screen {
     next: Grid,
     /// Clear and draw everything on the next frame.
     full: bool,
+    /// Whether the terminal sends mouse reports, as last written.
+    mouse: bool,
 }
 
 impl Screen {
@@ -41,6 +48,7 @@ impl Screen {
             shown: Grid::new(columns, rows),
             next: Grid::new(columns, rows),
             full: true,
+            mouse: false,
         }
     }
 
@@ -56,8 +64,14 @@ impl Screen {
     }
 
     /// Lets `render` fill a blank grid, then writes the difference to
-    /// `out` and flushes it.
-    pub fn frame<W: Write>(&mut self, out: W, render: impl FnOnce(&mut Grid)) -> io::Result<()> {
+    /// `out` and flushes it. Mouse reports are turned on when `mouse` and
+    /// off otherwise, written only when that changes.
+    pub fn frame<W: Write>(
+        &mut self,
+        out: W,
+        mouse: bool,
+        render: impl FnOnce(&mut Grid),
+    ) -> io::Result<()> {
         self.next.reset();
         render(&mut self.next);
         let mut out = FrameWriter::new(out);
@@ -66,6 +80,13 @@ impl Screen {
         if mem::replace(&mut self.full, true) {
             out.write_all(FULL_REDRAW)?;
             self.shown.reset();
+            self.mouse = false;
+        }
+        // Recorded only once written; a failed write leaves `full` set,
+        // and the next frame's `FULL_REDRAW` turns reports off first.
+        if mouse != self.mouse {
+            out.write_all(if mouse { MOUSE_ON } else { MOUSE_OFF })?;
+            self.mouse = mouse;
         }
         draw(&self.shown, &self.next, &mut out)?;
         self.full = false;
@@ -80,9 +101,13 @@ mod tests {
     use crate::ui::grid::Style;
 
     fn frame(screen: &mut Screen, lines: &[&str]) -> String {
+        frame_with(screen, lines, false)
+    }
+
+    fn frame_with(screen: &mut Screen, lines: &[&str], mouse: bool) -> String {
         let mut bytes = Vec::new();
         screen
-            .frame(&mut bytes, |grid| {
+            .frame(&mut bytes, mouse, |grid| {
                 for (y, line) in (0u16..).zip(lines) {
                     grid.put_str(0, y, line, Style::PLAIN, u16::MAX);
                 }
@@ -98,6 +123,42 @@ mod tests {
             frame(&mut screen, &["ab", "c"]),
             "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[2;1Hc\x1b[0m"
         );
+    }
+
+    /// Mouse reports go on with the first frame that asks for them and off
+    /// with the first that does not, written once each; a full redraw
+    /// turns them off, and the same frame turns them on again if asked
+    /// (decision 0073).
+    #[test]
+    fn mouse_reports_follow_the_frames() {
+        let on = std::str::from_utf8(MOUSE_ON).unwrap();
+        let off = std::str::from_utf8(MOUSE_OFF).unwrap();
+        let mut screen = Screen::new((3, 1));
+        let first = frame_with(&mut screen, &["ab"], true);
+        assert!(
+            first.find(off).unwrap() < first.find(on).unwrap(),
+            "{first:?}"
+        );
+        assert_eq!(frame_with(&mut screen, &["ab"], true), "\x1b[0m\x1b[0m");
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], false),
+            format!("{off}\x1b[0m\x1b[0m")
+        );
+        assert_eq!(frame_with(&mut screen, &["ab"], false), "\x1b[0m\x1b[0m");
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], true),
+            format!("{on}\x1b[0m\x1b[0m")
+        );
+        screen.redraw_all((3, 1));
+        let redrawn = frame_with(&mut screen, &["ab"], false);
+        assert!(
+            redrawn.contains(off) && !redrawn.contains(on),
+            "{redrawn:?}"
+        );
+        // A failed frame: the next one starts over with reports off.
+        assert!(screen.frame(Broken, true, |_| {}).is_err());
+        let after = frame_with(&mut screen, &["ab"], false);
+        assert!(after.contains(off) && !after.contains(on), "{after:?}");
     }
 
     #[test]
@@ -144,7 +205,7 @@ mod tests {
     fn failed_frame_is_followed_by_a_full_redraw() {
         let mut screen = Screen::new((3, 1));
         frame(&mut screen, &["ab"]);
-        assert!(screen.frame(Broken, |_| {}).is_err());
+        assert!(screen.frame(Broken, true, |_| {}).is_err());
         assert!(screen.full);
         assert!(
             frame(&mut screen, &["ab"])
