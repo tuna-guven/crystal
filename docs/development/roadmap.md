@@ -111,6 +111,25 @@ S12, then S10; S0 skipped. Phase 6 acceptance: every check in
 2026-11-16); CI and the `crystal_t` check through the launcher were
 skipped by the user.
 
+## Steps B1 to B6 (editor closes brackets)
+
+Asked 2026-11-18: the editor closes brackets as you type, so wikilinks
+(`[[` gives `[[]]`) and links (`[text](url)`) close too. Flagged as no
+security benefit (about 60 to 100 lines in `src/editor.rs` plus tests);
+the user chose the full version. The pairs are `()`, `[]` and `{}`;
+quotes and backticks stay unpaired (`don't`). Pastes are never paired.
+Code fences get no exception. No new decision (not security related):
+0045 is brought up to date in place.
+
+| Step | What | Why |
+| --- | --- | --- |
+| B1 | Typing `(`, `[` or `{` with no selection inserts the pair, cursor between, but only when the next character is whitespace, a closing bracket or the end of the text (`(word` stays `(word`) | The pairing itself, without getting in the way before a word |
+| B2 | Typing `)`, `]` or `}` when the same character follows the cursor steps over it | Otherwise the pair gives `))` |
+| B3 | Backspace between an empty pair (`(\|)`) deletes both | Undoes a pair typed by mistake in one key |
+| B4 | An opening bracket with a selection wraps it (`[` twice turns `Note` into `[[Note]]`), the wrapped text stays selected | Typing over a selection with `(` would otherwise delete it |
+| B5 | Undo: a pair, a step-over, a pair deleted and a wrap are each part of the typing run (one Ctrl+Z); the proptest's keys include the brackets, so cursor and selection stay on grapheme boundaries | The new paths handle every keystroke of note text |
+| B6 | Decision 0045 and the setup guide's `edit` row say what the editor closes; roadmap status; all checks | The log states only what is in force |
+
 ## Steps N1 to N5 (note types shown, not typed; done)
 
 Asked 2026-11-15: a note's type (Markdown or text) is chosen when it is
