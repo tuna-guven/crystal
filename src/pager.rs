@@ -199,6 +199,11 @@ impl Pager {
     }
 
     pub fn key(&mut self, key: Key, notes: &Notes) -> PagerAction {
+        // The viewer never turns mouse reports on (decision 0073): a late
+        // one changes nothing, not even the notice.
+        if matches!(key, Key::Mouse { .. }) {
+            return PagerAction::Stay;
+        }
         let key = key.without_shift();
         self.notice = None;
         if let Some(list) = &mut self.backlinks {

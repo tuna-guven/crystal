@@ -175,6 +175,11 @@ impl Shell {
     }
 
     pub fn key(&mut self, key: Key) -> Action {
+        // The shell never turns mouse reports on; one still on its way
+        // after the editor closed changes nothing (decision 0073).
+        if matches!(key, Key::Mouse { .. }) {
+            return Action::Nothing;
+        }
         let key = key.without_shift();
         if key != Key::Tab {
             self.tabbed = false;
@@ -221,6 +226,8 @@ impl Shell {
             // Completion comes with the commands (L7); other keys do nothing.
             Key::Tab => self.complete(),
             Key::BackTab | Key::Esc | Key::Ctrl(_) => {}
+            // Returned early above.
+            Key::Mouse { .. } => {}
             // Turned into plain keys by `without_shift` above.
             Key::ShiftLeft
             | Key::ShiftRight
@@ -552,7 +559,7 @@ mod tests {
         let before = s.output_len();
         let mut decoder = keys::Decoder::new();
         let mut keys = Vec::new();
-        decoder.feed(b"\x1b[200~quit\r\nview \x1b[2J\x1b[201~", &mut keys);
+        decoder.feed(b"\x1b[200~quit\r\nview \x1b[2J\x1b[201~", true, &mut keys);
         for key in keys.drain(..) {
             assert!(matches!(s.key(key), Action::Nothing), "a paste never runs");
         }
@@ -567,7 +574,7 @@ mod tests {
         );
         // A clean paste says nothing.
         s.key(Key::Ctrl('u'));
-        decoder.feed(b"\x1b[200~ls\r\x1b[201~", &mut keys);
+        decoder.feed(b"\x1b[200~ls\r\x1b[201~", true, &mut keys);
         for key in keys.drain(..) {
             s.key(key);
         }

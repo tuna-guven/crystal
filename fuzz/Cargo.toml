@@ -50,3 +50,10 @@ path = "fuzz_targets/vault.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "keys"
+path = "fuzz_targets/keys.rs"
+test = false
+doc = false
+bench = false

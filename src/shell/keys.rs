@@ -6,7 +6,9 @@
 //! the decoder keeps the unfinished bytes. Bracketed paste (`ESC [ 200 ~`
 //! ... `ESC [ 201 ~`, enabled by the screen) arrives as one `Paste`: pasted
 //! text is never taken as keys, so a pasted escape sequence or newline
-//! cannot run a command. Unknown sequences are dropped.
+//! cannot run a command. Unknown sequences are dropped. Mouse reports
+//! (`ESC [ < b ; x ; y M`), which only the editor turns on, arrive as
+//! `Mouse` (decision 0073); inside a paste they are text.
 //!
 //! Every buffer here holds typed or pasted text: zeroizing, fixed size.
 
@@ -18,8 +20,9 @@ use zeroize::{Zeroize, Zeroizing};
 pub const MAX_PASTE: usize = crate::vault::codec::MAX_BODY_BYTES;
 /// The paste buffer's fixed size: the paste and its end marker.
 const PASTE_BUFFER: usize = MAX_PASTE + PASTE_END.len();
-/// The longest unfinished escape sequence kept.
-const MAX_PENDING: usize = 16;
+/// The longest unfinished escape sequence kept: a mouse report with a
+/// 3-digit button and 5-digit cells is 19 bytes (decision 0073).
+const MAX_PENDING: usize = 24;
 
 const PASTE_END: &[u8] = b"\x1b[201~";
 
@@ -62,6 +65,25 @@ pub enum Key {
         cut: bool,
         cleaned: bool,
     },
+    /// A mouse report (decision 0073): what happened, at which cell,
+    /// counted from 0. Only the editor turns reports on and acts on them.
+    Mouse {
+        event: MouseEvent,
+        column: u16,
+        row: u16,
+    },
+}
+
+/// What a mouse report says. Only the left button and the wheel are
+/// kept, without Shift, Alt or Ctrl.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseEvent {
+    Press,
+    /// Moved with the left button held.
+    Drag,
+    Release,
+    WheelUp,
+    WheelDown,
 }
 
 /// Typed text: shown only as a kind, never its content.
@@ -71,6 +93,7 @@ impl std::fmt::Debug for Key {
             Self::Char(_) => f.write_str("Char(..)"),
             Self::Paste { .. } => f.write_str("Paste(..)"),
             Self::Ctrl(c) => write!(f, "Ctrl({c})"),
+            Self::Mouse { event, .. } => write!(f, "Mouse({event:?})"),
             other => f.write_str(match other {
                 Self::Enter => "Enter",
                 Self::Tab => "Tab",
@@ -121,6 +144,9 @@ pub struct Decoder {
     /// Once the paste buffer is full: the last bytes seen, to find the
     /// end marker without keeping the rest.
     window: Option<[u8; PASTE_END.len()]>,
+    /// Inside a CSI sequence longer than `MAX_PENDING`: its bytes are
+    /// skipped up to its final byte, so no part of it becomes text.
+    skipping: bool,
 }
 
 impl Default for Decoder {
@@ -135,11 +161,15 @@ impl Decoder {
             pending: Zeroizing::new(Vec::with_capacity(MAX_PENDING)),
             paste: None,
             window: None,
+            skipping: false,
         }
     }
 
-    /// Decodes `bytes` (one read) into keys, appended to `out`.
-    pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<Key>) {
+    /// Decodes `bytes` (one read) into keys, appended to `out`. `whole`
+    /// is false when the read filled the caller's buffer, so more bytes
+    /// are waiting: a lone ESC at its end may start a sequence (a mouse
+    /// report while dragging) and waits for the next read.
+    pub fn feed(&mut self, bytes: &[u8], whole: bool, out: &mut Vec<Key>) {
         for &byte in bytes {
             if let Some(paste) = &mut self.paste {
                 let ended = if let Some(window) = &mut self.window {
@@ -172,12 +202,24 @@ impl Decoder {
                 }
                 continue;
             }
+            if self.skipping {
+                // ECMA-48: parameter and intermediate bytes go on, any
+                // other byte ends the sequence.
+                self.skipping = matches!(byte, 0x20..=0x3f);
+                continue;
+            }
             if self.pending.len() == MAX_PENDING {
-                // Nothing this long is a key: drop it.
-                zeroize::Zeroize::zeroize(&mut *self.pending);
-                self.pending.clear();
+                // Nothing this long is a key: drop it, and the rest of it
+                // when it is a CSI sequence.
+                self.skipping = self.pending.starts_with(b"\x1b[");
+                self.clear_pending();
+                if self.skipping {
+                    self.skipping = matches!(byte, 0x20..=0x3f);
+                    continue;
+                }
             }
             self.pending.push(byte);
+            debug_assert!(self.pending.len() <= MAX_PENDING);
             match decode(&self.pending) {
                 Decoded::More => {}
                 Decoded::Key(key) => {
@@ -191,9 +233,9 @@ impl Decoder {
                 Decoded::Drop => self.clear_pending(),
             }
         }
-        // A lone ESC at the end of a read is the Esc key: terminals send a
-        // whole sequence in one write.
-        if self.pending.as_slice() == b"\x1b" {
+        // A lone ESC at the end of a whole read is the Esc key: terminals
+        // send a whole sequence in one write.
+        if whole && self.pending.as_slice() == b"\x1b" {
             out.push(Key::Esc);
             self.clear_pending();
         }
@@ -306,16 +348,29 @@ fn simple(last: u8) -> Decoded {
     })
 }
 
-/// After `ESC [`: parameters (digits and `;`), then one final byte.
+/// After `ESC [`: parameter and intermediate bytes (0x20 to 0x3f), then
+/// one final byte (0x40 to 0x7e), as ECMA-48 defines it, so a sequence
+/// not known here is dropped whole. Known ones have digits and `;`; a
+/// mouse report has `<` before them.
 fn csi(rest: &[u8]) -> Decoded {
-    let Some((&last, params)) = rest.split_last() else {
+    let Some((&last, body)) = rest.split_last() else {
         return Decoded::More;
     };
-    if last.is_ascii_digit() || last == b';' {
-        return Decoded::More;
+    match last {
+        0x20..=0x3f => return Decoded::More,
+        0x40..=0x7e => {}
+        // A control byte or beyond ASCII: not a sequence.
+        _ => return Decoded::Drop,
     }
+    let (report, params) = match body {
+        [b'<', params @ ..] => (true, params),
+        _ => (false, body),
+    };
     if !params.iter().all(|b| b.is_ascii_digit() || *b == b';') {
         return Decoded::Drop;
+    }
+    if report {
+        return mouse(params, last);
     }
     match (params, last) {
         (b"200", b'~') => Decoded::PasteStart,
@@ -334,6 +389,41 @@ fn csi(rest: &[u8]) -> Decoded {
         (_, b'A' | b'B' | b'C' | b'D' | b'H' | b'F') => simple(last),
         _ => Decoded::Drop,
     }
+}
+
+/// After `ESC [ <`: an SGR mouse report, `button ; column ; row` then
+/// `M` (pressed or moved) or `m` (released) (decision 0073). Button 0 is
+/// the left one, +32 when moved, 64 and 65 the wheel; any other button,
+/// or a modifier (+4, +8, +16), drops the report. Columns and rows count
+/// from 1 and have at most 5 digits; anything else drops it.
+fn mouse(params: &[u8], last: u8) -> Decoded {
+    let mut fields = params.split(|&b| b == b';').map(number);
+    let (Some(Some(button)), Some(Some(column)), Some(Some(row)), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Decoded::Drop;
+    };
+    let event = match (button, last) {
+        (0, b'M') => MouseEvent::Press,
+        (32, b'M') => MouseEvent::Drag,
+        (0, b'm') => MouseEvent::Release,
+        (64, b'M') => MouseEvent::WheelUp,
+        (65, b'M') => MouseEvent::WheelDown,
+        _ => return Decoded::Drop,
+    };
+    match (column.checked_sub(1), row.checked_sub(1)) {
+        (Some(column), Some(row)) => Decoded::Key(Key::Mouse { event, column, row }),
+        _ => Decoded::Drop,
+    }
+}
+
+/// A report's field: 1 to 5 digits (already checked to be digits) that
+/// fit in a `u16`.
+fn number(field: &[u8]) -> Option<u16> {
+    if field.is_empty() || field.len() > 5 {
+        return None;
+    }
+    std::str::from_utf8(field).ok()?.parse().ok()
 }
 
 /// The Shift variant of an arrow, Home or End.
@@ -357,7 +447,17 @@ mod tests {
         let mut decoder = Decoder::new();
         let mut out = Vec::new();
         for chunk in chunks {
-            decoder.feed(chunk, &mut out);
+            decoder.feed(chunk, true, &mut out);
+        }
+        out
+    }
+
+    /// Like `keys`, but every read except the last filled the buffer.
+    fn keys_in_full_reads(chunks: &[&[u8]]) -> Vec<Key> {
+        let mut decoder = Decoder::new();
+        let mut out = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            decoder.feed(chunk, i + 1 == chunks.len(), &mut out);
         }
         out
     }
@@ -513,7 +613,122 @@ mod tests {
         }
     }
 
+    fn mouse(event: MouseEvent, column: u16, row: u16) -> Key {
+        Key::Mouse { event, column, row }
+    }
+
+    #[test]
+    fn mouse_reports() {
+        use MouseEvent::*;
+        let cases: [(&[u8], MouseEvent, u16, u16); 6] = [
+            (b"\x1b[<0;1;1M", Press, 0, 0),
+            (b"\x1b[<32;10;3M", Drag, 9, 2),
+            (b"\x1b[<0;10;3m", Release, 9, 2),
+            (b"\x1b[<64;5;7M", WheelUp, 4, 6),
+            (b"\x1b[<65;5;7M", WheelDown, 4, 6),
+            (b"\x1b[<0;65535;65535M", Press, 65534, 65534),
+        ];
+        for (bytes, event, column, row) in cases {
+            assert_eq!(keys(&[bytes]), [mouse(event, column, row)], "{bytes:?}");
+            // Split anywhere by a full read: the same key.
+            for at in 1..bytes.len() {
+                let got = keys_in_full_reads(&[&bytes[..at], &bytes[at..]]);
+                assert_eq!(got, [mouse(event, column, row)], "{bytes:?} at {at}");
+            }
+        }
+    }
+
+    /// No part of a refused report is ever taken as typed text: the `a`
+    /// after it is the only key.
+    #[test]
+    fn refused_mouse_reports_leave_nothing() {
+        let refused: [&[u8]; 17] = [
+            b"\x1b[<1;1;1M",      // middle button
+            b"\x1b[<2;1;1M",      // right button
+            b"\x1b[<3;1;1M",      // no button
+            b"\x1b[<4;1;1M",      // Shift
+            b"\x1b[<8;1;1M",      // Alt
+            b"\x1b[<16;1;1M",     // Ctrl
+            b"\x1b[<35;1;1M",     // moved, no button held
+            b"\x1b[<32;1;1m",     // a release that moved
+            b"\x1b[<0;0;1M",      // column 0
+            b"\x1b[<0;1;0M",      // row 0
+            b"\x1b[<0;65536;1M",  // past u16
+            b"\x1b[<0;123456;1M", // 6 digits
+            b"\x1b[<0;1M",        // a field missing
+            b"\x1b[<0;1;1;1M",    // a field too many
+            b"\x1b[<0;;1M",       // an empty field
+            b"\x1b[<0;1;1X",      // another final byte
+            b"\x1b[<0;1:1M",      // not a digit
+        ];
+        for bytes in refused {
+            assert_eq!(keys(&[bytes, b"a"]), [Key::Char('a')], "{bytes:?}");
+        }
+    }
+
+    /// Sequences not known here, and CSI sequences too long to keep,
+    /// are dropped whole: the `a` after them is the only key.
+    #[test]
+    fn unknown_and_long_sequences_leave_nothing() {
+        let long = format!("\x1b[{}m", "1;".repeat(40));
+        let dropped: [&[u8]; 5] = [
+            b"\x1b[?25h",
+            b"\x1b[1:2A",
+            b"\x1b[ q",
+            b"\x1b[>0;1;2c",
+            long.as_bytes(),
+        ];
+        for bytes in dropped {
+            assert_eq!(keys(&[bytes, b"a"]), [Key::Char('a')], "{bytes:?}");
+            // Split anywhere by a full read: the same.
+            for at in 1..bytes.len() {
+                let got = keys_in_full_reads(&[&bytes[..at], &bytes[at..], b"a"]);
+                assert_eq!(got, [Key::Char('a')], "{bytes:?} at {at}");
+            }
+        }
+    }
+
+    /// A lone ESC ends a whole read as Esc; at the end of a full read it
+    /// waits, and a lone ESC then is Esc after the next whole read.
+    #[test]
+    fn esc_at_the_end_of_a_full_read_waits() {
+        assert_eq!(keys(&[b"\x1b"]), [Key::Esc]);
+        assert_eq!(keys_in_full_reads(&[b"\x1b", b"[A"]), [Key::Up]);
+        assert_eq!(
+            keys_in_full_reads(&[b"a\x1b", b""]),
+            [Key::Char('a'), Key::Esc]
+        );
+    }
+
+    #[test]
+    fn a_mouse_report_inside_a_paste_is_text() {
+        let got = keys(&[b"\x1b[200~x\x1b[<0;1;1My\x1b[201~"]);
+        assert_eq!(got.len(), 1);
+        assert!(matches!(&got[0], Key::Paste { .. }));
+        // The ESC is dropped by the cleaning, the rest stays text.
+        assert_eq!(text(&got[0]).unwrap(), "x[<0;1;1My");
+    }
+
     proptest::proptest! {
+        // Reports of any shape, split anywhere: at most one `Mouse` key
+        // and nothing else, never text.
+        #[test]
+        fn mouse_reports_never_become_text(
+            button in 0u16..300,
+            column in "[0-9]{0,7}",
+            row in "[0-9]{0,7}",
+            last in proptest::sample::select(vec![b'M', b'm', b'X']),
+            at in 0usize..32,
+        ) {
+            let mut bytes = format!("\x1b[<{button};{column};{row}").into_bytes();
+            bytes.push(last);
+            let at = at.min(bytes.len());
+            let got = keys_in_full_reads(&[&bytes[..at], &bytes[at..]]);
+            proptest::prop_assert!(got.len() <= 1, "{got:?}");
+            let only_mouse = got.iter().all(|k| matches!(k, Key::Mouse { .. }));
+            proptest::prop_assert!(only_mouse, "{got:?}");
+        }
+
         // Text with nothing to clean (no control or BiDi character but `\n`
         // and `\t`, valid UTF-8) arrives unchanged and is not marked.
         #[test]
@@ -543,7 +758,7 @@ mod tests {
             for cut in cuts {
                 let cut = cut.min(bytes.len());
                 if cut > at {
-                    decoder.feed(&bytes[at..cut], &mut out);
+                    decoder.feed(&bytes[at..cut], true, &mut out);
                     at = cut;
                 }
             }

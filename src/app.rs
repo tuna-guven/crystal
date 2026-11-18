@@ -287,7 +287,8 @@ fn run_loop(
             Event::Timeout => {}
             Event::Keys(n) => {
                 last_input = Idle::start();
-                decoder.feed(&input[..n], &mut keys);
+                // A read that filled `input` has more bytes waiting.
+                decoder.feed(&input[..n], n < input.len(), &mut keys);
                 for key in keys.drain(..) {
                     match &mut mode {
                         Mode::Shell => {

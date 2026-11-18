@@ -7,6 +7,8 @@
 use crate::age_v1::{self, Identity, Recipients, x25519};
 use crate::md::render::{Kind, render as render_note};
 use crate::md::safe::sanitize as sanitize_text;
+use crate::shell::keys::{Decoder, Key};
+use crate::ui::grid::is_forbidden;
 use crate::vault::{codec, padme};
 
 /// The renderer on hostile note text (A3): the first byte picks the
@@ -23,6 +25,29 @@ pub fn render(data: &[u8]) {
     };
     let text = String::from_utf8_lossy(text);
     let _ = render_note(&text, kind, u16::from(*width));
+}
+
+/// The key decoder on hostile terminal input: keys, pastes and mouse
+/// reports (decision 0073). The first byte cuts the rest into two reads,
+/// the first of them full, so a sequence split anywhere is reached. A
+/// paste never carries a control or BiDi character but `\n` and `\t`.
+pub fn keys(data: &[u8]) {
+    let [at, rest @ ..] = data else {
+        return;
+    };
+    let (first, second) = rest.split_at(usize::from(*at).min(rest.len()));
+    let mut decoder = Decoder::new();
+    let mut out = Vec::new();
+    decoder.feed(first, false, &mut out);
+    decoder.feed(second, true, &mut out);
+    for key in &out {
+        if let Key::Paste { text, .. } = key {
+            assert!(
+                !text.contains(|c: char| c != '\n' && c != '\t' && is_forbidden(c)),
+                "a paste kept a forbidden character"
+            );
+        }
+    }
 }
 
 /// The sanitizer on hostile text (A3).

@@ -131,6 +131,10 @@ impl Editor {
     }
 
     pub fn key(&mut self, key: Key, clipboard: &mut Clipboard) -> EditorAction {
+        // Mouse reports are not turned on yet (roadmap step X4).
+        if matches!(key, Key::Mouse { .. }) {
+            return EditorAction::Stay;
+        }
         self.notice = None;
         let quit_armed = std::mem::take(&mut self.quit_armed);
         let typing = matches!(
