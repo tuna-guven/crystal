@@ -31,13 +31,14 @@ type (Markdown or text), shown dimmed after every name.
 ## Steps X0 to X6 (the mouse in the editor)
 
 Approved 2026-11-18 (option C): a click puts the editor's cursor where it
-lands, a drag selects, the wheel moves the cursor. The user chose this
+lands, a drag selects, the wheel moves the cursor; double and triple
+clicks added 2026-11-19 (X4b) at the user's request. The user chose this
 knowing that it adds code, about 250 lines with tests, and brings no
 security benefit; earlier refusals: [0041](../decisions.md#0041),
 [0052](../decisions.md#0052), [0055](../decisions.md#0055). Scope is
 fixed. Not included: scrolling while dragging past the screen's edge
-(Shift+arrows extend the selection instead), double- and triple-click,
-Shift+click (VTE keeps it for its own selection), and the mouse in the
+(Shift+arrows extend the selection instead), dragging word by word after
+a double click, Shift+click (VTE keeps it for its own selection), and the mouse in the
 viewer, the shell or any prompt.
 
 Rules for every step: no new dependency, no new syscall, no change to
@@ -54,7 +55,8 @@ plan until it is fixed.
 | X2 (done) | Every place the terminal is handed back or a prompt is shown turns mouse reporting off: `LEAVE_SCREEN` (and so `restore_terminal` after a panic or signal), `CLEAR_SCREEN` (passphrase, lock screen, restore question) and `FULL_REDRAW`. Nothing turns it on yet. Prompts turn reports off, discard waiting input, then show themselves (`discard_input`), so reports sent before go too and nothing typed after the prompt appears is lost (discarding after showing it was tried and lost typed answers). About 20 lines and tests | A test that each of the three byte strings ends mouse reporting; check that prompts still flush pending input (`tcflush` in `term.rs`), so a late report cannot reach a passphrase (where ESC would cancel it) |
 | X3 (done) | `editor::View` keeps the area and top row of its last draw. `View::position_at(column, row)` maps a cell back to a byte offset in the text, matching `draw_row`: gutter, tabs, wide characters, hidden characters spelled out as `<U+XXXX>`, past a row's end, past the text's end. `Editor::mouse(event, at)`: a press places the cursor, a drag after a press on the text selects from it (the anchor kept), a release ends that, the wheel moves 3 lines; like a key it ends a typing run and disarms Ctrl+Q. Not wired in yet. About 90 lines | Property tests: every cell maps to a grapheme boundary inside the text; clicking the cell where the cursor is drawn leaves it there; a drag selection is always a valid range. A note with hostile characters maps the same as it draws |
 | X4 (done) | Turned on: `Screen` writes `ESC[?1002h ESC[?1006h` while the editor shows and the matching `l` codes when it does not (Ctrl+E preview, Ctrl+Q, lock, suspend). `app.rs` sends the editor's `Mouse` keys to `View` and `Editor`. Clicks on the status line or outside the text are ignored; a drag past the edge stops at the first or last row shown. Auto-lock counts mouse input as activity. About 40 lines. Found in the review: a CSI sequence too long to keep swallowed the ESC of the next one, whose tail became text; skipping now stops at any byte that is not part of a CSI sequence | A test of the bytes `Screen` writes across editor, then preview, then editor, then shell; a test, through the binary where the tests reach the editor, that the bytes after lock contain no turn-on code. Review the X1 to X4 diff (`/security-review`) |
-| X5 | `scripts/check-mouse.sh VAULT`, for what CI cannot click in Ptyxis: click, drag, wheel; Shift+drag copies out what is shown; the wheel still scrolls in the Ctrl+E preview; a click at the lock screen after auto-lock does nothing; after `kill -9`, record what the shell shows and that `reset` clears it. Testing chapter row | The user runs it and reports; any surprise goes back to the step it belongs to |
+| X4b (done) | Double click selects the word (Unicode word boundaries in its line; a run of spaces or a punctuation mark counts as one), triple click the line with its break, a fourth click starts over: presses at the same place under 400 ms apart, timed in `Editor::mouse` from a time `app.rs` passes in (the monotonic clock, already allowed), so tests set it. A key in between, a later or another place starts over; no drag after a double click. Decision 0073 corrected in place. About 50 lines | Unit test with set times (words, spaces, punctuation, line ends, `\r\n`, accents, a mid-character offset ignored); the property test with random gaps of 0 to 600 ms keeps cursor and selection on grapheme boundaries; the binary test replaces a word and a line |
+| X5 | `scripts/check-mouse.sh VAULT`, for what CI cannot click in Ptyxis: click, drag, wheel; Shift+drag copies out what is shown; the wheel still scrolls in the Ctrl+E preview; a click at the lock screen after auto-lock does nothing; Shift+click clears Ptyxis's own selection; after `kill -9`, record what the shell shows and that `reset` clears it. Testing chapter row | The user runs it and reports; any surprise goes back to the step it belongs to |
 | X6 | Acceptance: the setup guide's editor keys, the editor chapter as built, the status line and SUMMARY; all checks with `mdbook build`; the long property tests (`scripts/long-tests.sh`) and the `keys` fuzz target for an hour | A final review of the whole X0 to X6 diff for note text in escape sequences, for modes left on, and for `unsafe`, syscalls or dependencies (expected: none) |
 
 ## Steps K0 to H4 (Phase 8, keys and release)

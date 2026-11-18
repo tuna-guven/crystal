@@ -22,6 +22,7 @@ pub mod buffer;
 pub mod view;
 
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -44,6 +45,9 @@ pub enum EditorAction {
 
 /// Lines one step of the mouse wheel moves the cursor (decision 0073).
 const WHEEL_LINES: usize = 3;
+/// Presses at the same place closer together than this make a double or
+/// triple click: GTK's default (decision 0073).
+const MULTI_CLICK: Duration = Duration::from_millis(400);
 
 /// Rows a page moves until the view sets the real height.
 const DEFAULT_PAGE: usize = 20;
@@ -81,6 +85,9 @@ pub struct Editor {
     /// The left button went down on the text and is not released yet:
     /// only then does a drag select.
     pressed: bool,
+    /// The last press on the text: when, where, and its count (1 to 3),
+    /// for double and triple clicks. Any key forgets it.
+    last_press: Option<(Instant, usize, u8)>,
 }
 
 impl Editor {
@@ -95,6 +102,7 @@ impl Editor {
             notice: None,
             page: DEFAULT_PAGE,
             pressed: false,
+            last_press: None,
         })
     }
 
@@ -129,19 +137,43 @@ impl Editor {
 
     /// The mouse (decision 0073), its cell already turned into a byte
     /// offset by the view (`View::position_at`); `at` is `None` for a press
-    /// outside the text. A press puts the cursor there and drops the
-    /// selection; a drag after it selects from there; the wheel moves the
-    /// cursor `WHEEL_LINES` lines. Like a key, it ends a run of typing for
-    /// undo, clears the notice and disarms Ctrl+Q.
-    pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>) {
+    /// outside the text; `now` is when it arrived. A press puts the cursor
+    /// there and drops the selection; a drag after it selects from there;
+    /// a second press at the same place within `MULTI_CLICK` selects the
+    /// word there, a third the whole line with its line break, a fourth
+    /// starts over; the wheel moves the cursor `WHEEL_LINES` lines. Like a
+    /// key, it ends a run of typing for undo, clears the notice and
+    /// disarms Ctrl+Q.
+    pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>, now: Instant) {
         self.notice = None;
         self.quit_armed = false;
         self.buffer.commit();
-        let at = at.map(|at| self.snap(at.min(self.text().len())));
+        // The view gives char boundaries; anything else is ignored.
+        let at = at
+            .map(|at| at.min(self.text().len()))
+            .filter(|&at| self.text().is_char_boundary(at))
+            .map(|at| self.snap(at));
         match (event, at) {
             (MouseEvent::Press, Some(at)) => {
-                self.pressed = true;
-                self.move_to(at, false);
+                let count = match self.last_press {
+                    Some((then, place, count))
+                        if place == at
+                            && count < 3
+                            && now.saturating_duration_since(then) < MULTI_CLICK =>
+                    {
+                        count + 1
+                    }
+                    _ => 1,
+                };
+                self.last_press = Some((now, at, count));
+                // Only a single click starts a drag: one that moved while
+                // double-clicking would undo the word.
+                self.pressed = count == 1;
+                match count {
+                    1 => self.move_to(at, false),
+                    2 => self.select(self.word_at(at)),
+                    _ => self.select(self.line_at(at)),
+                }
             }
             (MouseEvent::Drag, Some(at)) if self.pressed => self.move_to(at, true),
             (MouseEvent::WheelUp, _) => self.vertical(false, WHEEL_LINES, false),
@@ -166,6 +198,8 @@ impl Editor {
         if matches!(key, Key::Mouse { .. }) {
             return EditorAction::Stay;
         }
+        // A key between two presses: no double click.
+        self.last_press = None;
         self.notice = None;
         let quit_armed = std::mem::take(&mut self.quit_armed);
         let typing = matches!(
@@ -417,6 +451,41 @@ impl Editor {
         }
         self.cursor = at;
         self.goal = None;
+    }
+
+    /// Selects `range`, the cursor at its end; an empty one only moves
+    /// the cursor.
+    fn select(&mut self, range: Range<usize>) {
+        let (start, end) = (self.snap(range.start), self.snap(range.end));
+        self.move_to(start, false);
+        if end > start {
+            self.move_to(end, true);
+        }
+    }
+
+    /// The word around `at` in its line, by Unicode word boundaries (a
+    /// run of spaces or one punctuation mark counts as a word too); empty
+    /// at the line's end.
+    fn word_at(&self, at: usize) -> Range<usize> {
+        let (start, end) = (self.line_start(at), self.line_end(at));
+        self.text()
+            .get(start..end)
+            .unwrap_or("")
+            .split_word_bound_indices()
+            .map(|(i, word)| start + i..start + i + word.len())
+            .find(|word| word.contains(&at))
+            .unwrap_or(at..at)
+    }
+
+    /// The line around `at`, with its line break if it has one.
+    fn line_at(&self, at: usize) -> Range<usize> {
+        let end = self.line_end(at);
+        let end = if end < self.text().len() {
+            self.buffer.next_grapheme(end)
+        } else {
+            end
+        };
+        self.line_start(at)..end
     }
 
     fn line_start(&self, at: usize) -> usize {
@@ -718,40 +787,108 @@ mod tests {
     #[test]
     fn mouse_presses_drags_and_wheels() {
         let (mut ed, mut clip) = editor("one\ntwo\nthree\nfour\nfive");
-        ed.mouse(MouseEvent::Drag, Some(6));
+        ed.mouse(MouseEvent::Drag, Some(6), Instant::now());
         assert_eq!((ed.cursor(), ed.selection()), (0, None), "no press yet");
-        ed.mouse(MouseEvent::Press, Some(5));
-        ed.mouse(MouseEvent::Drag, Some(9));
-        ed.mouse(MouseEvent::Drag, Some(10));
+        ed.mouse(MouseEvent::Press, Some(5), Instant::now());
+        ed.mouse(MouseEvent::Drag, Some(9), Instant::now());
+        ed.mouse(MouseEvent::Drag, Some(10), Instant::now());
         assert_eq!(selected(&ed), "wo\nth");
-        ed.mouse(MouseEvent::Release, Some(10));
-        ed.mouse(MouseEvent::Drag, Some(2));
+        ed.mouse(MouseEvent::Release, Some(10), Instant::now());
+        ed.mouse(MouseEvent::Drag, Some(2), Instant::now());
         assert_eq!(selected(&ed), "wo\nth", "released");
-        ed.mouse(MouseEvent::Press, None);
-        ed.mouse(MouseEvent::Drag, Some(2));
+        ed.mouse(MouseEvent::Press, None, Instant::now());
+        ed.mouse(MouseEvent::Drag, Some(2), Instant::now());
         assert_eq!(selected(&ed), "wo\nth", "pressed outside the text");
-        ed.mouse(MouseEvent::Press, Some(1));
+        ed.mouse(MouseEvent::Press, Some(1), Instant::now());
         assert_eq!((ed.cursor(), ed.selection()), (1, None));
-        ed.mouse(MouseEvent::WheelDown, None);
+        ed.mouse(MouseEvent::WheelDown, None, Instant::now());
         assert_eq!(ed.cursor(), 15, "three lines down, same column");
-        ed.mouse(MouseEvent::WheelUp, None);
+        ed.mouse(MouseEvent::WheelUp, None, Instant::now());
         assert_eq!(ed.cursor(), 1);
         // Past the end, and inside a grapheme: snapped.
         let (mut accent, _) = editor("e\u{301}x");
-        accent.mouse(MouseEvent::Press, Some(99));
+        accent.mouse(MouseEvent::Press, Some(99), Instant::now());
         assert_eq!(accent.cursor(), 4);
-        accent.mouse(MouseEvent::Press, Some(2));
+        accent.mouse(MouseEvent::Press, Some(1), Instant::now());
         assert_eq!(accent.cursor(), 3);
         // A typing run ends at a click; Ctrl+Q is disarmed.
         typed(&mut ed, &mut clip, "ab");
-        ed.mouse(MouseEvent::Press, Some(0));
+        ed.mouse(MouseEvent::Press, Some(0), Instant::now());
         typed(&mut ed, &mut clip, "c");
         keys(&mut ed, &mut clip, [Key::Ctrl('z')]);
         assert!(ed.text().starts_with("oab"), "only the c undone");
         keys(&mut ed, &mut clip, [Key::Ctrl('q')]);
         assert!(ed.notice().is_some());
-        ed.mouse(MouseEvent::WheelDown, None);
+        ed.mouse(MouseEvent::WheelDown, None, Instant::now());
         assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Stay);
+    }
+
+    /// Double and triple clicks (decision 0073): a second press at the
+    /// same place within 400 ms selects the word, a third the line with
+    /// its break, a fourth is a single click again. A later press, one
+    /// elsewhere, or a key in between starts over; a drag after a double
+    /// click changes nothing.
+    #[test]
+    fn double_clicks_select_words_and_triple_clicks_lines() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let (mut ed, mut clip) = editor("one two\nthree, four\n");
+        let press = |ed: &mut Editor, at, t| ed.mouse(MouseEvent::Press, Some(at), t);
+        press(&mut ed, 5, ms(0));
+        assert_eq!((ed.cursor(), ed.selection()), (5, None));
+        press(&mut ed, 5, ms(100));
+        assert_eq!(selected(&ed), "two");
+        ed.mouse(MouseEvent::Drag, Some(0), ms(150));
+        assert_eq!(selected(&ed), "two", "no drag after a double click");
+        press(&mut ed, 5, ms(200));
+        assert_eq!(selected(&ed), "one two\n");
+        press(&mut ed, 5, ms(300));
+        assert_eq!((ed.cursor(), ed.selection()), (5, None), "fourth: single");
+        // Too late, elsewhere, or a key between: single clicks.
+        press(&mut ed, 5, ms(1000));
+        press(&mut ed, 5, ms(1400));
+        assert_eq!(ed.selection(), None, "400 ms apart");
+        press(&mut ed, 5, ms(2000));
+        press(&mut ed, 6, ms(2100));
+        assert_eq!((ed.cursor(), ed.selection()), (6, None), "elsewhere");
+        press(&mut ed, 6, ms(3000));
+        keys(&mut ed, &mut clip, [Key::Esc]);
+        press(&mut ed, 6, ms(3100));
+        assert_eq!(ed.selection(), None, "a key between");
+        // A space run and a punctuation mark are words; past the line's
+        // end there is none.
+        let double = |ed: &mut Editor, at, t: u64| {
+            press(ed, at, ms(t));
+            press(ed, at, ms(t + 1));
+        };
+        double(&mut ed, 3, 5000);
+        assert_eq!(selected(&ed), " ");
+        double(&mut ed, 13, 6000);
+        assert_eq!(selected(&ed), ",");
+        double(&mut ed, 7, 7000);
+        assert_eq!((ed.cursor(), ed.selection()), (7, None));
+        // Typing replaces the word.
+        double(&mut ed, 8, 8000);
+        typed(&mut ed, &mut clip, "3");
+        assert_eq!(ed.text(), "one two\n3, four\n");
+        // The last line has no break; `\r\n` is taken whole; accents stay
+        // with their letter.
+        let (mut ed, _) = editor("ab\r\ncd\ne\u{301}x");
+        for t in 0..3 {
+            press(&mut ed, 0, ms(t));
+        }
+        assert_eq!(selected(&ed), "ab\r\n");
+        // Byte 8 starts the accent, inside the grapheme `e\u{301}`.
+        for t in 10..13 {
+            press(&mut ed, 8, ms(t));
+        }
+        assert_eq!(selected(&ed), "e\u{301}x");
+        double(&mut ed, 8, 100);
+        assert_eq!(selected(&ed), "e\u{301}x");
+        // Not a char boundary (inside the accent's two bytes): ignored.
+        press(&mut ed, 4, ms(200));
+        press(&mut ed, 9, ms(1000));
+        assert_eq!((ed.cursor(), ed.selection()), (4, None));
     }
 
     #[test]

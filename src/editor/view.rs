@@ -798,19 +798,20 @@ mod tests {
                     };
                     prop_assert!(text.is_char_boundary(at), "{at}");
                     let mut ed = Editor::new(&text).unwrap();
-                    ed.mouse(MouseEvent::Press, Some(at));
+                    ed.mouse(MouseEvent::Press, Some(at), std::time::Instant::now());
                     prop_assert!(bounds.contains(&ed.cursor()), "{}", ed.cursor());
                 }
             }
         }
 
-        /// Any presses, drags, releases and wheel steps on any cells, also
+        /// Any presses (double and triple clicks too), drags, releases and
+        /// wheel steps on any cells, also
         /// after the text changed under the last frame: the cursor stays on a
         /// grapheme boundary and the selection inside the text.
         #[test]
         fn any_mouse_keeps_cursor_and_selection_valid(
             text in "[ab\t\n\r\u{202e}\u{301}日😀]{0,60}",
-            events in prop::collection::vec((0u8..6, 0u16..40, 0u16..14), 0..40),
+            events in prop::collection::vec((0u8..6, 0u16..40, 0u16..14, 0u64..600), 0..40),
             width in 2u16..30,
             height in 3u16..12,
         ) {
@@ -818,7 +819,10 @@ mod tests {
             let mut clip = Clipboard::default();
             let mut view = View::default();
             drawn(&mut ed, &mut view, width, height);
-            for (kind, x, y) in events {
+            // Gaps of 0 to 600 ms: double and triple clicks happen.
+            let mut now = std::time::Instant::now();
+            for (kind, x, y, gap) in events {
+                now += std::time::Duration::from_millis(gap);
                 let event = match kind {
                     0 => MouseEvent::Press,
                     1 | 2 => MouseEvent::Drag,
@@ -831,7 +835,7 @@ mod tests {
                     }
                 };
                 let at = view.position_at(ed.text(), x, y, event != MouseEvent::Press);
-                ed.mouse(event, at);
+                ed.mouse(event, at, now);
                 let text = ed.text();
                 let on_boundary = |at: usize| {
                     at == text.len() || text.grapheme_indices(true).any(|(i, _)| i == at)

@@ -893,8 +893,11 @@ format).
 *2026-11-18.* While the editor is on screen, Crystal asks the terminal
 for mouse reports (mode 1002, button and drag events, with 1006, SGR
 coordinates): a left click puts the cursor on the clicked character, a
-drag selects from the press to the button's place, and the wheel moves
-the cursor three lines. Any other button, a held modifier and a report
+drag selects from the press to the button's place, a double click
+selects the word (Unicode word boundaries), a triple click the line with
+its line break (presses at the same place under 400 ms apart, timed by
+Crystal on the monotonic clock, since reports carry no click count), and
+the wheel moves the cursor three lines. Any other button, a held modifier and a report
 that does not parse are dropped; a report inside a bracketed paste is
 pasted text ([0047](#0047)). Reports carry a button and a cell, never
 note text, and no note text enters the sequences that turn the mode on
@@ -905,9 +908,11 @@ which also discard pending input, so a late report cannot reach a
 passphrase; leaving the screen, a panic and a fatal signal turn it off.
 After `kill -9` it stays on in the terminal until `reset`, as bracketed
 paste does. Copying out stays the terminal's own selection
-([0041](#0041)), with Shift held while dragging in the editor. Accepted
-at the user's request: about 250 lines with tests and one more input
+([0041](#0041)), with Shift held while dragging in the editor; a plain
+click no longer reaches the terminal, so its selection is cleared with a
+Shift+click. Accepted
+at the user's request: about 300 lines with tests and one more input
 parser, fuzzed, for no security benefit. Rejected: scrolling while
 dragging past the screen's edge (Shift+arrows extend the selection),
-double- and triple-click, Shift+click (VTE keeps it), and the mouse
-outside the editor.
+dragging word by word after a double click, Shift+click (VTE keeps it),
+and the mouse outside the editor.

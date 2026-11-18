@@ -436,7 +436,7 @@ fn run_loop(
                             if let Key::Mouse { event, column, row } = key {
                                 let clamp = event != MouseEvent::Press;
                                 let at = e.view.position_at(e.editor.text(), column, row, clamp);
-                                e.editor.mouse(event, at);
+                                e.editor.mouse(event, at, std::time::Instant::now());
                                 continue;
                             }
                             match e.editor.key(key, clipboard) {

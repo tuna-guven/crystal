@@ -1319,7 +1319,8 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
 }
 
 /// The mouse in the editor (decision 0073): a click places the cursor, a
-/// drag selects and typing replaces the selection. Reports are turned on
+/// drag selects, a double click a word, a triple click a line, and typing
+/// replaces the selection. Reports are turned on
 /// only while the editor shows: off in the Ctrl+E preview, off before the
 /// lock screen, and never on again in the viewer or shell after it.
 #[test]
@@ -1335,7 +1336,15 @@ fn mouse_clicks_and_drags_in_the_editor_only() {
     // `1 `, so `a` is at column 3. A click there, then X: `Xab`. A drag
     // from column 4 (`a`) to 5 (`b`) selects `a`; Y replaces it: `XYb`.
     let mut keys = b"ab\r\x1b[<0;3;2M\x1b[<0;3;2mX".to_vec();
-    keys.extend_from_slice(b"\x1b[<0;4;2M\x1b[<32;5;2M\x1b[<0;5;2mY\x13");
+    keys.extend_from_slice(b"\x1b[<0;4;2M\x1b[<32;5;2M\x1b[<0;5;2mY");
+    // To the line's end, ` old` and a line `gone`: a double click on
+    // `old` (column 8) and `new` replaces it; a triple click on `gone`
+    // (row 3) and `kept` replaces that line.
+    keys.extend_from_slice(b"\x1b[F old\rgone");
+    keys.extend_from_slice(&b"\x1b[<0;8;2M\x1b[<0;8;2m".repeat(2));
+    keys.extend_from_slice(b"new");
+    keys.extend_from_slice(&b"\x1b[<0;3;3M\x1b[<0;3;3m".repeat(3));
+    keys.extend_from_slice(b"kept\x13");
     steps.push(("Ctrl+S save", keys));
     steps.push(("Saved.", b"\x05".to_vec()));
     steps.push(("preview", b"\x05".to_vec()));
@@ -1343,7 +1352,7 @@ fn mouse_clicks_and_drags_in_the_editor_only() {
     steps.push((SHELL_READY, b"lock\r".to_vec()));
     steps.push((LOCKED, format!("{PASS}\r").into_bytes()));
     steps.push(("unlocked.", b"view plan\r".to_vec()));
-    steps.push(("XYb", b"q".to_vec()));
+    steps.push(("kept", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
@@ -1360,6 +1369,11 @@ fn mouse_clicks_and_drags_in_the_editor_only() {
     // Off before the lock screen; never on again after it.
     assert!(output[..locked].rfind(OFF) > output[..locked].rfind(ON));
     assert!(!output[locked..].contains(ON), "on after the lock");
+    // The saved note, as the viewer shows it after unlocking again.
+    let viewed = visible(&output[locked..]);
+    let note = &viewed[viewed.find("XYb").unwrap()..viewed.find("kept").unwrap()];
+    assert!(note.starts_with("XYb new"), "{note:?}");
+    assert!(!note.contains("old") && !note.contains("gone"), "{note:?}");
 }
 
 /// A session with the debug-only demo notes never saves: vault.age stays
