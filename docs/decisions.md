@@ -434,7 +434,12 @@ Home, End, PgUp and PgDn move, with Shift they select, Ctrl+A selects all,
 Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste Crystal's clipboard, Ctrl+Z
 and Ctrl+Y undo and redo, Ctrl+S saves, Ctrl+E switches to the rendered
 view of the unsaved text and back, and Ctrl+Q closes (twice to discard
-changes); any other key does nothing. A Helix-style modal editor was
+changes); any other key does nothing. The brackets `()`, `[]` and `{}`
+close as you type: an opening one brings its closer when whitespace, a
+closing bracket or the end follows (so `[[` gives `[[]]`) and wraps a
+selection, a typed closer steps over the same one, and Backspace in an
+empty pair deletes both; quotes are not paired, and pastes never are.
+A Helix-style modal editor was
 written in part and removed: far more code on hostile text. Ctrl+Z is a
 key, so keyboard suspend is gone (an outside `SIGTSTP` still works,
 [0048](#0048)). Undo is a log of edits, at most 200 steps and 64 MiB.

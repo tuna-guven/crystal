@@ -9,7 +9,7 @@
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
-| 4 Editor | Done (E0 to E7): the editor (decision 0045), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
+| 4 Editor | Done (E0 to E7): the editor (decision 0045; brackets close as you type since steps B1 to B6), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
 | 6 Sandbox | Done (S1 to S12; decisions 0059 to 0063): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests, run locally; the SELinux domain `crystal_t`; four fuzz targets, an hour clean; the optional bubblewrap launcher. Skipped by the user: CI (S0) and the `crystal_t` check through the launcher |
@@ -111,7 +111,7 @@ S12, then S10; S0 skipped. Phase 6 acceptance: every check in
 2026-11-16); CI and the `crystal_t` check through the launcher were
 skipped by the user.
 
-## Steps B1 to B6 (editor closes brackets)
+## Steps B1 to B6 (editor closes brackets; done)
 
 Asked 2026-11-18: the editor closes brackets as you type, so wikilinks
 (`[[` gives `[[]]`) and links (`[text](url)`) close too. Flagged as no
@@ -123,12 +123,12 @@ Code fences get no exception. No new decision (not security related):
 
 | Step | What | Why |
 | --- | --- | --- |
-| B1 | Typing `(`, `[` or `{` with no selection inserts the pair, cursor between, but only when the next character is whitespace, a closing bracket or the end of the text (`(word` stays `(word`) | The pairing itself, without getting in the way before a word |
-| B2 | Typing `)`, `]` or `}` when the same character follows the cursor steps over it | Otherwise the pair gives `))` |
-| B3 | Backspace between an empty pair (`(\|)`) deletes both | Undoes a pair typed by mistake in one key |
-| B4 | An opening bracket with a selection wraps it (`[` twice turns `Note` into `[[Note]]`), the wrapped text stays selected | Typing over a selection with `(` would otherwise delete it |
-| B5 | Undo: a pair, a step-over, a pair deleted and a wrap are each part of the typing run (one Ctrl+Z); the proptest's keys include the brackets, so cursor and selection stay on grapheme boundaries | The new paths handle every keystroke of note text |
-| B6 | Decision 0045 and the setup guide's `edit` row say what the editor closes; roadmap status; all checks | The log states only what is in force |
+| B1 (done) | Typing `(`, `[` or `{` with no selection inserts the pair, cursor between, but only when the next character is whitespace, a closing bracket or the end of the text (`(word` stays `(word`) | The pairing itself, without getting in the way before a word |
+| B2 (done) | Typing `)`, `]` or `}` when the same character follows the cursor steps over it | Otherwise the pair gives `))` |
+| B3 (done) | Backspace between an empty pair (`(\|)`) deletes both | Undoes a pair typed by mistake in one key |
+| B4 (done) | An opening bracket with a selection wraps it (`[` twice turns `Note` into `[[Note]]`), the wrapped text stays selected | Typing over a selection with `(` would otherwise delete it |
+| B5 (done) | Undo: a pair, a step-over, a pair deleted and a wrap are each part of the typing run (one Ctrl+Z); the proptest's keys include the brackets, so cursor and selection stay on grapheme boundaries | The new paths handle every keystroke of note text |
+| B6 (done) | Decision 0045 and the setup guide's `edit` row say what the editor closes; roadmap status; all checks | The log states only what is in force |
 
 ## Steps N1 to N5 (note types shown, not typed; done)
 
