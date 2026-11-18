@@ -22,6 +22,10 @@
 //! (measured in a release build). Accepted, as above: real notes are far
 //! smaller, and a kept count would need keeping in step with every edit.
 //!
+//! The mouse (decision 0073) finds the grapheme drawn at a cell by
+//! walking the rows of the last frame again (`View::position_at`), the
+//! same walk drawing does: no map of cells is kept.
+//!
 //! Scrolling works from the first row shown, so a key costs the rows on
 //! screen and the logical line around the cursor, not the whole note. The
 //! cursor's line is walked from its start on every key: linear in that
@@ -187,6 +191,9 @@ fn row_start(text: &str, at: usize, width: usize) -> usize {
 pub struct View {
     /// Where the first row shown starts.
     top: usize,
+    /// Where the last frame drew the text (right of the gutter); `None`
+    /// before the first frame or when the screen had no room for it.
+    area: Option<Rect>,
 }
 
 impl View {
@@ -207,6 +214,7 @@ impl View {
             None => grid.put_str(bottom.x, bottom.y, HINTS, HINT, bottom.width),
         };
         if rows == 0 || body.width < 2 {
+            self.area = None;
             return;
         }
 
@@ -221,6 +229,7 @@ impl View {
         };
         let area = Rect::new(body.x + gutter, body.y, body.width - gutter, body.height);
         let width = usize::from(area.width - 1);
+        self.area = Some(area);
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
         let mut number = lines::count(&text[..line_start(text, self.top)]);
@@ -240,6 +249,57 @@ impl View {
             draw_row(grid, Rect::new(area.x, y, area.width, 1), editor, &row);
             start = row.next;
         }
+    }
+
+    /// Where the grapheme drawn at the cell (`column`, `row`) in the last
+    /// frame starts in `text`, for the mouse (decision 0073): left of the
+    /// text (the gutter) is its row's start; right of it, the row's end
+    /// (on a wrapped row, its last grapheme, so the cursor stays on that
+    /// row); below the text, the text's end. A row above or below the text
+    /// area (the title and key lines) is `None`, unless `clamp`, which
+    /// takes the first or last row shown: a drag stops at the screen's
+    /// edge. `None` before the first frame. Always a char boundary in
+    /// `text`, even when `text` changed since that frame.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired to the mouse in roadmap step X4")
+    )]
+    pub fn position_at(&self, text: &str, column: u16, row: u16, clamp: bool) -> Option<usize> {
+        let area = self.area?;
+        if !clamp && !(area.y..area.bottom()).contains(&row) {
+            return None;
+        }
+        let y = row.clamp(area.y, area.bottom() - 1);
+        let width = usize::from(area.width - 1);
+        let top = if text.is_char_boundary(self.top) {
+            row_start(text, self.top, width)
+        } else {
+            0
+        };
+        let mut start = top;
+        for _ in area.y..y {
+            match row_at(text, start, width).next {
+                Some(next) => start = next,
+                None => return Some(text.len()),
+            }
+        }
+        let row = row_at(text, start, width);
+        let target = usize::from(column.saturating_sub(area.x));
+        // The column kept free on the right: the line's end, where the
+        // cursor is drawn there.
+        if target >= width && row.ends_line {
+            return Some(row.range.end);
+        }
+        let mut column = 0;
+        let mut last = row.range.start;
+        for (i, grapheme) in text[row.range.clone()].grapheme_indices(true) {
+            last = row.range.start + i;
+            column += width_at(grapheme, column);
+            if target < column {
+                return Some(last);
+            }
+        }
+        Some(if row.ends_line { row.range.end } else { last })
     }
 
     /// Moves `top` so the cursor's row is on screen.
@@ -369,7 +429,7 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::keys::Key;
+    use crate::shell::keys::{Key, MouseEvent};
     use crate::ui::clipboard::Clipboard;
     use crate::ui::grid::{is_invisible, is_pictographic};
     use proptest::prelude::*;
@@ -409,6 +469,65 @@ mod tests {
         let mut grid = Grid::new(width, height);
         view.draw(&mut grid, ed, "work/plan");
         grid
+    }
+
+    /// Cells map back to the grapheme drawn there (decision 0073): the
+    /// gutter to the row's start, a tab's or a wide character's every
+    /// cell to it, a spelled-out character's every cell to it, past a
+    /// line's end to its end, below the text to the text's end; the title
+    /// and key lines to nothing unless clamped.
+    #[test]
+    fn cells_map_to_what_is_drawn_there() {
+        let mut ed = Editor::new("a\tb\n日x\n\u{202e}z").unwrap();
+        let mut view = View::default();
+        assert_eq!(
+            view.position_at(ed.text(), 2, 1, true),
+            None,
+            "no frame yet"
+        );
+        // 30 by 6: the title on row 0, text on rows 1 to 4 right of the
+        // gutter's `1 `, the key line on row 5.
+        drawn(&mut ed, &mut view, 30, 6);
+        let at = |x, y| view.position_at(ed.text(), x, y, false);
+        let cases = [
+            ((0, 1), 0),  // gutter
+            ((2, 1), 0),  // a
+            ((3, 1), 1),  // tab, first cell
+            ((5, 1), 1),  // tab, last cell
+            ((6, 1), 2),  // b
+            ((7, 1), 3),  // past the line's end
+            ((3, 2), 4),  // 日, second cell
+            ((4, 2), 7),  // x
+            ((29, 2), 8), // the far right
+            ((9, 2), 8),
+            ((2, 3), 9),   // <U+202E>, first cell
+            ((9, 3), 9),   // <U+202E>, last cell
+            ((10, 3), 12), // z
+            ((2, 4), 13),  // below the text
+        ];
+        for ((x, y), want) in cases {
+            assert_eq!(at(x, y), Some(want), "cell {x},{y}");
+        }
+        assert_eq!(at(2, 0), None, "title");
+        assert_eq!(at(2, 5), None, "key line");
+        assert_eq!(view.position_at(ed.text(), 2, 0, true), Some(0));
+        assert_eq!(view.position_at(ed.text(), 2, 5, true), Some(13));
+    }
+
+    /// Past a wrapped row's end is its last grapheme, so a click keeps the
+    /// cursor on that row; past the last row's end is the text's end.
+    #[test]
+    fn past_a_wrapped_row_is_its_last_grapheme() {
+        // 6 columns, no gutter: 5 for the text and one kept free.
+        let mut ed = Editor::new("abcdef").unwrap();
+        let mut view = View::default();
+        drawn(&mut ed, &mut view, 6, 4);
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 6, 4))[1..3], ["abcde", "f"]);
+        let at = |x, y| view.position_at(ed.text(), x, y, false);
+        assert_eq!(at(4, 1), Some(4));
+        assert_eq!(at(5, 1), Some(4));
+        assert_eq!(at(1, 2), Some(6));
+        assert_eq!(at(5, 2), Some(6));
     }
 
     /// The gutter: the viewer's numbers (blank lines neither numbered nor
@@ -649,6 +768,85 @@ mod tests {
                     for x in 0..width {
                         prop_assert_ne!(grid.cell(x, y).unwrap().symbol(), "?");
                     }
+                }
+            }
+        }
+
+        /// Any text, screen size and scroll: every cell maps to a char
+        /// boundary inside the text, a press there leaves the cursor on a
+        /// grapheme boundary, and the cell the cursor is drawn on maps back
+        /// to the cursor (decision 0073).
+        #[test]
+        fn every_cell_maps_inside_the_text(
+            text in "[ab\t\n\r\u{1b}\u{202e}\u{200b}\u{301}日😀]{0,60}",
+            downs in 0usize..20,
+            width in 2u16..30,
+            height in 3u16..12,
+        ) {
+            let mut ed = Editor::new(&text).unwrap();
+            let mut clip = Clipboard::default();
+            let mut view = View::default();
+            for _ in 0..downs {
+                ed.key(Key::Down, &mut clip);
+            }
+            let grid = drawn(&mut ed, &mut view, width, height);
+            let (cx, cy) = cursor_cell(&grid).unwrap();
+            prop_assert_eq!(view.position_at(&text, cx, cy, false), Some(ed.cursor()));
+            let mut bounds: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+            bounds.push(text.len());
+            for y in 0..height {
+                for x in 0..width {
+                    let Some(at) = view.position_at(&text, x, y, true) else {
+                        prop_assert!(false, "a clamped cell maps");
+                        continue;
+                    };
+                    prop_assert!(text.is_char_boundary(at), "{at}");
+                    let mut ed = Editor::new(&text).unwrap();
+                    ed.mouse(MouseEvent::Press, Some(at));
+                    prop_assert!(bounds.contains(&ed.cursor()), "{}", ed.cursor());
+                }
+            }
+        }
+
+        /// Any presses, drags, releases and wheel steps on any cells, also
+        /// after the text changed under the last frame: the cursor stays on a
+        /// grapheme boundary and the selection inside the text.
+        #[test]
+        fn any_mouse_keeps_cursor_and_selection_valid(
+            text in "[ab\t\n\r\u{202e}\u{301}日😀]{0,60}",
+            events in prop::collection::vec((0u8..6, 0u16..40, 0u16..14), 0..40),
+            width in 2u16..30,
+            height in 3u16..12,
+        ) {
+            let mut ed = Editor::new(&text).unwrap();
+            let mut clip = Clipboard::default();
+            let mut view = View::default();
+            drawn(&mut ed, &mut view, width, height);
+            for (kind, x, y) in events {
+                let event = match kind {
+                    0 => MouseEvent::Press,
+                    1 | 2 => MouseEvent::Drag,
+                    3 => MouseEvent::Release,
+                    4 => MouseEvent::WheelDown,
+                    _ => {
+                        // Typing between frames moves the text under them.
+                        ed.key(Key::Char('日'), &mut clip);
+                        continue;
+                    }
+                };
+                let at = view.position_at(ed.text(), x, y, event != MouseEvent::Press);
+                ed.mouse(event, at);
+                let text = ed.text();
+                let on_boundary = |at: usize| {
+                    at == text.len() || text.grapheme_indices(true).any(|(i, _)| i == at)
+                };
+                prop_assert!(on_boundary(ed.cursor()));
+                if let Some(range) = ed.selection() {
+                    prop_assert!(range.end <= text.len());
+                    prop_assert!(on_boundary(range.start) && on_boundary(range.end));
+                }
+                if kind == 2 {
+                    drawn(&mut ed, &mut view, width, height);
                 }
             }
         }

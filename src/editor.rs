@@ -25,7 +25,7 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::shell::keys::Key;
+use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::clipboard::Clipboard;
 use crate::vault::codec::MAX_BODY_BYTES;
 use buffer::{Buffer, EditError};
@@ -41,6 +41,9 @@ pub enum EditorAction {
     /// Ctrl+E: show the current text in the viewer.
     View,
 }
+
+/// Lines one step of the mouse wheel moves the cursor (decision 0073).
+const WHEEL_LINES: usize = 3;
 
 /// Rows a page moves until the view sets the real height.
 const DEFAULT_PAGE: usize = 20;
@@ -75,6 +78,9 @@ pub struct Editor {
     quit_armed: bool,
     notice: Option<&'static str>,
     page: usize,
+    /// The left button went down on the text and is not released yet:
+    /// only then does a drag select.
+    pressed: bool,
 }
 
 impl Editor {
@@ -88,6 +94,7 @@ impl Editor {
             quit_armed: false,
             notice: None,
             page: DEFAULT_PAGE,
+            pressed: false,
         })
     }
 
@@ -118,6 +125,34 @@ impl Editor {
     /// The session saved the text.
     pub fn saved(&mut self) {
         self.dirty = false;
+    }
+
+    /// The mouse (decision 0073), its cell already turned into a byte
+    /// offset by the view (`View::position_at`); `at` is `None` for a press
+    /// outside the text. A press puts the cursor there and drops the
+    /// selection; a drag after it selects from there; the wheel moves the
+    /// cursor `WHEEL_LINES` lines. Like a key, it ends a run of typing for
+    /// undo, clears the notice and disarms Ctrl+Q.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired to the mouse in roadmap step X4")
+    )]
+    pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>) {
+        self.notice = None;
+        self.quit_armed = false;
+        self.buffer.commit();
+        let at = at.map(|at| self.snap(at.min(self.text().len())));
+        match (event, at) {
+            (MouseEvent::Press, Some(at)) => {
+                self.pressed = true;
+                self.move_to(at, false);
+            }
+            (MouseEvent::Drag, Some(at)) if self.pressed => self.move_to(at, true),
+            (MouseEvent::WheelUp, _) => self.vertical(false, WHEEL_LINES, false),
+            (MouseEvent::WheelDown, _) => self.vertical(true, WHEEL_LINES, false),
+            (MouseEvent::Press | MouseEvent::Release, _) => self.pressed = false,
+            (MouseEvent::Drag, _) => {}
+        }
     }
 
     /// Shows `notice` until the next key (the session's save results).
@@ -677,6 +712,50 @@ mod tests {
         keys(&mut ed, &mut clip, [Key::Ctrl('c'), Key::Ctrl('x')]);
         assert_eq!(clip.get(), Some("a"));
         assert_eq!(ed.text(), "lpha betaa");
+    }
+
+    /// The mouse (decision 0073): a press moves the cursor and drops the
+    /// selection, a drag after it selects from the press, a release ends
+    /// that; a drag without a press on the text, or after a press outside
+    /// it, does nothing; the wheel moves three lines. Each ends a typing
+    /// run for undo and disarms Ctrl+Q.
+    #[test]
+    fn mouse_presses_drags_and_wheels() {
+        let (mut ed, mut clip) = editor("one\ntwo\nthree\nfour\nfive");
+        ed.mouse(MouseEvent::Drag, Some(6));
+        assert_eq!((ed.cursor(), ed.selection()), (0, None), "no press yet");
+        ed.mouse(MouseEvent::Press, Some(5));
+        ed.mouse(MouseEvent::Drag, Some(9));
+        ed.mouse(MouseEvent::Drag, Some(10));
+        assert_eq!(selected(&ed), "wo\nth");
+        ed.mouse(MouseEvent::Release, Some(10));
+        ed.mouse(MouseEvent::Drag, Some(2));
+        assert_eq!(selected(&ed), "wo\nth", "released");
+        ed.mouse(MouseEvent::Press, None);
+        ed.mouse(MouseEvent::Drag, Some(2));
+        assert_eq!(selected(&ed), "wo\nth", "pressed outside the text");
+        ed.mouse(MouseEvent::Press, Some(1));
+        assert_eq!((ed.cursor(), ed.selection()), (1, None));
+        ed.mouse(MouseEvent::WheelDown, None);
+        assert_eq!(ed.cursor(), 15, "three lines down, same column");
+        ed.mouse(MouseEvent::WheelUp, None);
+        assert_eq!(ed.cursor(), 1);
+        // Past the end, and inside a grapheme: snapped.
+        let (mut accent, _) = editor("e\u{301}x");
+        accent.mouse(MouseEvent::Press, Some(99));
+        assert_eq!(accent.cursor(), 4);
+        accent.mouse(MouseEvent::Press, Some(2));
+        assert_eq!(accent.cursor(), 3);
+        // A typing run ends at a click; Ctrl+Q is disarmed.
+        typed(&mut ed, &mut clip, "ab");
+        ed.mouse(MouseEvent::Press, Some(0));
+        typed(&mut ed, &mut clip, "c");
+        keys(&mut ed, &mut clip, [Key::Ctrl('z')]);
+        assert!(ed.text().starts_with("oab"), "only the c undone");
+        keys(&mut ed, &mut clip, [Key::Ctrl('q')]);
+        assert!(ed.notice().is_some());
+        ed.mouse(MouseEvent::WheelDown, None);
+        assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Stay);
     }
 
     #[test]
