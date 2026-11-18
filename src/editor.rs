@@ -589,6 +589,34 @@ mod tests {
     }
 
     #[test]
+    fn brackets_undo_with_the_typing_around_them() {
+        // A pair and a step-over.
+        let (mut ed, mut clip) = editor("");
+        typed(&mut ed, &mut clip, "f(x) ");
+        assert_eq!(ed.text(), "f(x) ");
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), "");
+
+        // A pair deleted by Backspace.
+        let (mut ed, mut clip) = editor("");
+        typed(&mut ed, &mut clip, "a[");
+        ed.key(Key::Backspace, &mut clip);
+        typed(&mut ed, &mut clip, "b");
+        assert_eq!(ed.text(), "ab");
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), "");
+
+        // A wrap: two inserts, one step, both ways.
+        let (mut ed, mut clip) = editor("Note");
+        ed.key(Key::Ctrl('a'), &mut clip);
+        typed(&mut ed, &mut clip, "[[");
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), "Note");
+        ed.key(Key::Ctrl('y'), &mut clip);
+        assert_eq!(ed.text(), "[[Note]]");
+    }
+
+    #[test]
     fn a_full_note_takes_no_half_pair() {
         let (mut ed, mut clip) = editor(&"x".repeat(MAX_BODY_BYTES - 1));
         ed.key(Key::End, &mut clip);
@@ -787,7 +815,8 @@ mod tests {
 
     fn any_key() -> impl Strategy<Value = Key> {
         prop_oneof![
-            prop::sample::select(&['a', 'é', ' ', '😀', '\u{301}'][..]).prop_map(Key::Char),
+            prop::sample::select(&['a', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']'][..])
+                .prop_map(Key::Char),
             prop::sample::select(&['a', 'c', 'x', 'v', 'z', 'y', 'q', 's', 'e'][..])
                 .prop_map(Key::Ctrl),
             prop::sample::select(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15][..])
@@ -814,10 +843,11 @@ mod tests {
 
     proptest! {
         /// Any keys on any text: no panic, and the cursor and selection
-        /// stay inside the text on character boundaries.
+        /// ends stay inside the text on grapheme boundaries (brackets
+        /// included: they pair, step over, delete in pairs and wrap).
         #[test]
         fn any_keys_keep_cursor_and_selection_valid(
-            text in "[ab \r\n.é😀\u{301}]{0,30}",
+            text in "[ab \r\n.é😀\u{301}()\\[\\]]{0,30}",
             keys in prop::collection::vec(any_key(), 0..60),
         ) {
             let (mut ed, mut clip) = editor(&text);
@@ -825,13 +855,14 @@ mod tests {
                 ed.key(key, &mut clip);
                 let len = ed.text().len();
                 prop_assert!(ed.cursor() <= len && ed.text().is_char_boundary(ed.cursor()));
-                let on_grapheme = ed.cursor() == len
-                    || ed.text().grapheme_indices(true).any(|(i, _)| i == ed.cursor());
-                prop_assert!(on_grapheme, "cursor inside a grapheme");
+                let on_grapheme = |at: usize| {
+                    at == len || ed.text().grapheme_indices(true).any(|(i, _)| i == at)
+                };
+                prop_assert!(on_grapheme(ed.cursor()), "cursor inside a grapheme");
                 if let Some(range) = ed.selection() {
                     prop_assert!(range.end <= len);
-                    prop_assert!(ed.text().is_char_boundary(range.start));
-                    prop_assert!(ed.text().is_char_boundary(range.end));
+                    prop_assert!(on_grapheme(range.start), "selection starts inside a grapheme");
+                    prop_assert!(on_grapheme(range.end), "selection ends inside a grapheme");
                 }
             }
         }
