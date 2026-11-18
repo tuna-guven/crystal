@@ -4,8 +4,13 @@
 //! The cursor is a caret between graphemes (it may sit at the end of the
 //! text). A selection runs from an anchor to the cursor; Shift with a
 //! movement key starts or extends it, a movement key alone drops it, and
-//! typing replaces it. Only Ctrl+C and Ctrl+X copy, into Crystal's own
-//! clipboard; selecting copies nothing.
+//! typing replaces it (an opening bracket wraps it instead). Only Ctrl+C
+//! and Ctrl+X copy, into Crystal's own clipboard; selecting copies
+//! nothing.
+//!
+//! The brackets `()`, `[]` and `{}` close as you type: an opening one
+//! brings its closer, a typed closer steps over the same one, and
+//! Backspace in an empty pair deletes both.
 //!
 //! A run of typing (text, Enter, Tab, Backspace, Delete) is one undo step;
 //! any other key ends it. A paste is a step of its own.
@@ -22,6 +27,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::shell::keys::Key;
 use crate::ui::clipboard::Clipboard;
+use crate::vault::codec::MAX_BODY_BYTES;
 use buffer::{Buffer, EditError};
 
 /// What the session does after a key.
@@ -140,9 +146,11 @@ impl Editor {
                 let next = self.buffer.next_grapheme(self.cursor);
                 self.move_to(next, false);
             }
-            Key::Char(c) => match pair_of(c) {
-                // An opening bracket brings its closer, the cursor between.
-                Some(pair) if self.selection().is_none() && self.closes_here() => {
+            Key::Char(c) => match (pair_of(c), self.selection()) {
+                // An opening bracket wraps the selection...
+                (Some(pair), Some(range)) => self.wrap(pair, range),
+                // ...or brings its closer, the cursor between.
+                (Some(pair), None) if self.closes_here() => {
                     if self.replace_selection(pair) {
                         self.cursor -= 1;
                     }
@@ -252,6 +260,28 @@ impl Editor {
         }
     }
 
+    /// Puts the pair around the selection, which stays selected inside
+    /// it. The closer goes in first, so `range.start` still holds for the
+    /// opener; the room is checked first, so both go in or neither.
+    fn wrap(&mut self, pair: &str, range: Range<usize>) {
+        if self.text().len() + pair.len() > MAX_BODY_BYTES {
+            self.notice = Some(FULL);
+            return;
+        }
+        let (open, close) = pair.split_at(1);
+        let wrapped = self
+            .buffer
+            .replace(range.end..range.end, close)
+            .and_then(|()| self.buffer.replace(range.start..range.start, open));
+        if wrapped.is_ok() {
+            self.dirty = true;
+            // A bracket can join an accent beside it into one grapheme.
+            self.anchor = self.anchor.map(|at| self.snap(at + 1));
+            self.cursor = self.snap(self.cursor + 1);
+            self.goal = None;
+        }
+    }
+
     /// Whether an opening bracket typed here gets its closer: only before
     /// whitespace, a closing bracket or the end, so `(word` stays as typed.
     fn closes_here(&self) -> bool {
@@ -326,14 +356,20 @@ impl Editor {
     /// can be inside a grapheme (a letter typed before a combining accent
     /// joins it); the cursor then goes to that grapheme's end.
     fn collapse(&mut self, at: usize) {
-        self.cursor = if at == 0 {
+        self.cursor = self.snap(at);
+        self.anchor = None;
+        self.goal = None;
+    }
+
+    /// `at` if it is on a grapheme boundary, else the end of the grapheme
+    /// it is inside.
+    fn snap(&self, at: usize) -> usize {
+        if at == 0 {
             0
         } else {
             let start = self.buffer.prev_grapheme(at);
             self.buffer.next_grapheme(start).max(at)
-        };
-        self.anchor = None;
-        self.goal = None;
+        }
     }
 
     /// Moves the cursor; with Shift the selection grows from where it
@@ -517,6 +553,51 @@ mod tests {
             ed.key(key, &mut clip);
             assert_eq!(ed.text(), left, "{text:?}");
         }
+    }
+
+    #[test]
+    fn an_opening_bracket_wraps_the_selection() {
+        // `[` twice makes a wikilink; the name stays selected, either way.
+        for forward in [true, false] {
+            let (mut ed, mut clip) = editor("see Note now");
+            let at = if forward { 4 } else { 8 };
+            for _ in 0..at {
+                ed.key(Key::Right, &mut clip);
+            }
+            for _ in 0..4 {
+                let select = if forward {
+                    Key::ShiftRight
+                } else {
+                    Key::ShiftLeft
+                };
+                ed.key(select, &mut clip);
+            }
+            typed(&mut ed, &mut clip, "[[");
+            assert_eq!(ed.text(), "see [[Note]] now");
+            assert_eq!(selected(&ed), "Note");
+            assert_eq!(ed.cursor(), if forward { 10 } else { 6 });
+        }
+
+        // A bracket joining an accent: the selection ends stay on
+        // grapheme boundaries.
+        let (mut ed, mut clip) = editor("\u{301}");
+        ed.key(Key::Ctrl('a'), &mut clip);
+        typed(&mut ed, &mut clip, "(");
+        assert_eq!(ed.text(), "(\u{301})");
+        assert_eq!(ed.selection(), None);
+        assert_eq!(ed.cursor(), "(\u{301}".len());
+    }
+
+    #[test]
+    fn a_full_note_takes_no_half_pair() {
+        let (mut ed, mut clip) = editor(&"x".repeat(MAX_BODY_BYTES - 1));
+        ed.key(Key::End, &mut clip);
+        typed(&mut ed, &mut clip, "(");
+        ed.key(Key::Ctrl('a'), &mut clip);
+        typed(&mut ed, &mut clip, "[");
+        assert_eq!(ed.text().len(), MAX_BODY_BYTES - 1);
+        assert_eq!(ed.notice(), Some(FULL));
+        assert!(!ed.is_dirty());
     }
 
     #[test]
