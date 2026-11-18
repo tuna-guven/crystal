@@ -92,12 +92,10 @@ const SPACES: &str = "                ";
 
 const PLAIN: Style = Style::PLAIN;
 const DIM: Style = Style::PLAIN.mods(Mods::DIM);
-const CODE: Style = Style::PLAIN.fg(Color::Yellow);
 /// The background code stands out on: 256-color dark gray.
 const CODE_BG: Color = Color::Indexed(236);
-/// Inline code: no padding, as a padding space could be where the line
-/// wraps.
-const INLINE_CODE: Style = CODE.bg(CODE_BG);
+/// Inline code and the inside of a code block's box.
+const CODE: Style = Style::PLAIN.fg(Color::Yellow).bg(CODE_BG);
 const QUOTE_BAR: Style = Style::PLAIN.fg(Color::DarkGray);
 const LINK: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::UNDERLINED);
 
@@ -644,9 +642,11 @@ impl<'s> Builder<'s> {
                 let style = self.style();
                 self.add(run, style);
             }
+            // Inline code: no padding, as a padding space could be where
+            // the line wraps.
             Event::Code(t) => {
                 let run = self.text(&t);
-                self.add(run, INLINE_CODE);
+                self.add(run, CODE);
             }
             Event::Html(t) | Event::InlineHtml(t) => {
                 let run = self.text(&t);
@@ -1171,25 +1171,40 @@ impl<'s> Builder<'s> {
         }
     }
 
-    /// Draws the code block read so far: its lines, each wrapped on its
-    /// own. Wrapping starts over at every line break anyway, so this is
-    /// what wrapping the whole block gives; the lines are what a box
-    /// around the block is measured by.
+    /// Draws the code block read so far in a box as wide as its widest
+    /// line (`╭─╮`, `│ code │`, `╰─╯`), the inside gray; an empty block is
+    /// a box with one empty row. Border and padding are fixed text and
+    /// never numbered, so each row keeps its code line's number. A block
+    /// too wide for the box is drawn unboxed, each line wrapped.
     fn draw_code(&mut self) {
         let content = std::mem::take(&mut self.content);
-        if content.is_empty() {
+        let lines = self.split_lines(content);
+        let width = lines.iter().map(|l| self.cell_width(l)).max().unwrap_or(0);
+        // `│ ` before each line and ` │` after it.
+        if width + 4 <= usize::from(self.room()) {
+            self.border(&[width], "╭─", "", "─╮");
+            for line in lines {
+                let pad = width - self.cell_width(&line);
+                self.decorate(Text::Fixed("│"), QUOTE_BAR);
+                self.decorate(Text::Fixed(" "), CODE);
+                self.content.extend(line);
+                self.repeat(SPACES, pad + 1, CODE);
+                self.decorate(Text::Fixed("│"), QUOTE_BAR);
+                self.flush();
+            }
+            self.border(&[width], "╰─", "", "─╯");
             return;
         }
         let room = self.room();
-        let mut lines = Vec::new();
-        for line in self.split_lines(content) {
+        let mut wrapped = Vec::new();
+        for line in lines {
             if line.is_empty() {
-                lines.push(line);
+                wrapped.push(line);
             } else {
-                lines.extend(self.wrap_runs(&line, room));
+                wrapped.extend(self.wrap_runs(&line, room));
             }
         }
-        self.emit_rows(lines);
+        self.emit_rows(wrapped);
     }
 
     /// `content` cut at its line breaks (dropped) into lines of runs,
@@ -1425,8 +1440,8 @@ mod tests {
         assert!(styles.iter().any(|s| s.mods.contains(Mods::BOLD)));
         assert!(styles.iter().any(|s| s.mods.contains(Mods::ITALIC)));
         assert!(styles.iter().any(|s| s.mods.contains(Mods::CROSSED_OUT)));
-        assert!(styles.contains(&INLINE_CODE));
-        assert_eq!(INLINE_CODE.bg, CODE_BG);
+        assert!(styles.contains(&CODE));
+        assert_eq!(CODE.bg, CODE_BG);
     }
 
     #[test]
@@ -1450,8 +1465,22 @@ mod tests {
         assert_eq!(md("> a\n>> b", 20), ["│ a", "", "│ │ b"]);
         assert_eq!(
             md("```\nfn x() {\n    y\n}\n```", 20),
-            ["fn x() {", "    y", "}"]
+            [
+                "╭──────────╮",
+                "│ fn x() { │",
+                "│     y    │",
+                "│ }        │",
+                "╰──────────╯"
+            ]
         );
+        // An empty block is an empty box; one too wide for a box (8
+        // columns of code need 12) is drawn unboxed, as before.
+        assert_eq!(md("```\n```", 20), ["╭──╮", "│  │", "╰──╯"]);
+        assert_eq!(md("```\nfn x() {\n}\n```", 11), ["fn x() {", "}"]);
+        // The inside is gray to the border, padding included.
+        let page = render("```\nab\nc\n```", Kind::Markdown, 20);
+        let styles: Vec<Style> = page.line(2).iter().map(|r| r.style).collect();
+        assert_eq!(styles, [QUOTE_BAR, CODE, CODE, CODE, QUOTE_BAR]);
         assert_eq!(md("a\n\n---\n\nb", 5), ["a", "", "─────", "", "b"]);
     }
 
@@ -1980,16 +2009,26 @@ mod tests {
         // `\r\n` is one line break, as in the editor.
         assert_eq!(numbers("a\r\nb", Kind::Markdown, 9), [1, 2]);
         // Code keeps its lines; a blank one, or one of spaces only, has
-        // no number and is not counted, nor have its fences: no gap.
+        // no number and is not counted, nor have its fences, drawn as the
+        // box's borders: no gap.
         let code = "a\n\n```rust\nx\n\ny\n```\n\nb";
-        assert_eq!(numbers(code, Kind::Markdown, 9), [1, 0, 2, 0, 3, 0, 4]);
-        assert_eq!(numbers("```\nx\n   \ny\n```", Kind::Markdown, 9), [1, 0, 2]);
-        assert_eq!(numbers("> ~~~\n> x\n> ~~~", Kind::Markdown, 9), [1]);
-        // A fence on a list item's line: its first code line is drawn on
-        // the item's row, numbered next.
+        assert_eq!(
+            numbers(code, Kind::Markdown, 9),
+            [1, 0, 0, 2, 0, 3, 0, 0, 4]
+        );
+        assert_eq!(
+            numbers("```\nx\n   \ny\n```", Kind::Markdown, 9),
+            [0, 1, 0, 2, 0]
+        );
+        assert_eq!(numbers("> ~~~\n> x\n> ~~~", Kind::Markdown, 9), [0, 1, 0]);
+        // A fence on a list item's line: the box's top border is drawn on
+        // the item's row, its first code line numbered next.
         let item = "a\n\n- ```rust\n  x\n  ```\n- b";
-        assert_eq!(md(item, 20), ["a", "", "• x", "• b"]);
-        assert_eq!(numbers(item, Kind::Markdown, 20), [1, 0, 2, 3]);
+        assert_eq!(
+            md(item, 20),
+            ["a", "", "• ╭───╮", "  │ x │", "  ╰───╯", "• b"]
+        );
+        assert_eq!(numbers(item, Kind::Markdown, 20), [1, 0, 0, 2, 0, 3]);
         // A boxed table: rows numbered, borders not; the `|-|` line
         // under the header makes no row and is not counted: no gap.
         assert_eq!(
