@@ -270,6 +270,7 @@ impl Editor {
 
     /// Backspace and Delete: the selection, or one grapheme before or
     /// after the cursor.
+    /// Backspace in an empty pair, `(|)`, takes the closer too.
     fn delete(&mut self, forward: bool) {
         if self.selection().is_none() {
             let other = if forward {
@@ -277,9 +278,20 @@ impl Editor {
             } else {
                 self.buffer.prev_grapheme(self.cursor)
             };
+            if !forward && self.in_empty_pair() {
+                self.cursor = self.buffer.next_grapheme(self.cursor);
+            }
             self.anchor = Some(other);
         }
         self.replace_selection("");
+    }
+
+    /// Whether the graphemes around the cursor are exactly one of the
+    /// pairs: two bytes in all, so neither bracket carries an accent.
+    fn in_empty_pair(&self) -> bool {
+        let start = self.buffer.prev_grapheme(self.cursor);
+        let end = self.buffer.next_grapheme(self.cursor);
+        PAIRS.contains(&&self.text()[start..end])
     }
 
     /// Copies the selection into Crystal's clipboard; false if nothing is
@@ -478,6 +490,33 @@ mod tests {
         typed(&mut ed, &mut clip, "]");
         typed(&mut ed, &mut clip, ")");
         assert_eq!(ed.text(), "]))\u{301}");
+    }
+
+    #[test]
+    fn backspace_in_an_empty_pair_deletes_both() {
+        // A wikilink opened by mistake goes with two Backspaces.
+        let (mut ed, mut clip) = editor("");
+        typed(&mut ed, &mut clip, "a[[");
+        ed.key(Key::Backspace, &mut clip);
+        assert_eq!((ed.text(), ed.cursor()), ("a[]", 2));
+        ed.key(Key::Backspace, &mut clip);
+        assert_eq!((ed.text(), ed.cursor()), ("a", 1));
+
+        // Not in a pair: one grapheme, as before.
+        for (text, right, key, left) in [
+            ("()", 1, Key::Delete, "("),      // Delete takes only the closer
+            ("()", 2, Key::Backspace, "("),   // after the pair
+            ("(]", 1, Key::Backspace, "]"),   // brackets that don't match
+            ("(x)", 2, Key::Backspace, "()"), // not empty
+            ("()\u{301}", 1, Key::Backspace, ")\u{301}"), // an accented closer
+        ] {
+            let (mut ed, mut clip) = editor(text);
+            for _ in 0..right {
+                ed.key(Key::Right, &mut clip);
+            }
+            ed.key(key, &mut clip);
+            assert_eq!(ed.text(), left, "{text:?}");
+        }
     }
 
     #[test]
