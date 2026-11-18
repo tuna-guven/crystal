@@ -7,7 +7,7 @@
 | 0 Skeleton and policy | Done |
 | 1 Hardening bootstrap and terminal guard | Done |
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
-| 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041) |
+| 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041); code on a gray background since steps G1 to G5 |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
 | 4 Editor | Done (E0 to E7): the editor (decision 0045; brackets close as you type since steps B1 to B6), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
@@ -111,7 +111,7 @@ S12, then S10; S0 skipped. Phase 6 acceptance: every check in
 2026-11-16); CI and the `crystal_t` check through the launcher were
 skipped by the user.
 
-## Steps G1 to G5 (code stands out in the viewer)
+## Steps G1 to G5 (code stands out in the viewer; done)
 
 Asked 2026-11-18: code in a gray box with rounded corners. Flagged as no
 security benefit (about 80 to 120 lines in `src/md/render.rs` plus
@@ -128,8 +128,8 @@ background. No new decision (not security related).
 | G1 (done) | Inline code (`` `x` ``): yellow on a dark gray background (256-color 236), no padding (a padding space could be where a line wraps) | Visible in a line of text |
 | G2 (done) | A code block's lines are collected until its end, as a table's cells are, and drawn there; drawn exactly as today, so every existing test passes unchanged | The block needs the widest line first |
 | G3 (done) | A gray block: each line after a gray space, padded to the widest line plus one; no border (drawn first, then dropped by the user), so no extra rows and every line keeps its number; fenced and indented blocks alike, an empty block as one gray row | The block itself |
-| G4 | A line wider than the screen wraps inside the gray block; with fewer than `MIN_CELL` columns for text it is drawn unpadded (still gray); blocks inside lists and quotes take their prefix | Narrow windows and nesting |
-| G5 | Module comment, `dependencies.md` (renderer row), setup guide `view` row, roadmap; all checks, and the `render` fuzz target run (10 minutes) | The book states what is drawn |
+| G4 (done) | A line wider than the screen wraps inside the gray block; with fewer than `MIN_CELL` columns for text it is drawn unpadded (still gray); blocks inside lists and quotes take their prefix | Narrow windows and nesting |
+| G5 (done) | Module comment, `dependencies.md` (renderer row), setup guide `view` row, roadmap; all checks, and the `render` fuzz target run (10 minutes) | The book states what is drawn |
 
 ## Steps B1 to B6 (editor closes brackets; done)
 

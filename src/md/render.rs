@@ -4,7 +4,9 @@
 //! - **Markdown** (every note but `.txt`): pulldown-cmark events, a small
 //!   subset drawn as text with styles: headings (an icon and color per
 //!   level, their sections indented, decision 0052), emphasis, strong,
-//!   strikethrough, inline and block code, lists (nested, numbered, task
+//!   strikethrough, inline code on a gray background, code blocks as a
+//!   gray block (padded to their widest line, long lines wrapped inside
+//!   it), lists (nested, numbered, task
 //!   items), block quotes, rules, tables boxed with aligned columns, links
 //!   (clickable, decision 0054, when
 //!   `md::link::clickable` accepts the target, else with their address
