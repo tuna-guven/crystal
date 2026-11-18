@@ -4,9 +4,7 @@ plain a<U+0000>b text
 
   inline a<U+0000>b code
 
-  ╭────────────╮
-  │ a<U+0000>b │
-  ╰────────────╯
+   a<U+0000>b
 
   link a<U+0000>b
 

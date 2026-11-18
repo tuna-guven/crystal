@@ -1171,28 +1171,25 @@ impl<'s> Builder<'s> {
         }
     }
 
-    /// Draws the code block read so far in a box as wide as its widest
-    /// line (`╭─╮`, `│ code │`, `╰─╯`), the inside gray; an empty block is
-    /// a box with one empty row. Border and padding are fixed text and
-    /// never numbered, so each row keeps its code line's number. A block
-    /// too wide for the box is drawn unboxed, each line wrapped.
+    /// Draws the code block read so far as a gray block: each line after
+    /// a gray space and padded to the widest line plus one, so the block
+    /// is one gray rectangle; an empty block is one gray row. The padding
+    /// is fixed text and never numbered, and there are no extra rows, so
+    /// each row keeps its code line's number. A block too wide for that
+    /// is drawn unpadded, each line wrapped.
     fn draw_code(&mut self) {
         let content = std::mem::take(&mut self.content);
         let lines = self.split_lines(content);
         let width = lines.iter().map(|l| self.cell_width(l)).max().unwrap_or(0);
-        // `│ ` before each line and ` │` after it.
-        if width + 4 <= usize::from(self.room()) {
-            self.border(&[width], "╭─", "", "─╮");
+        // A gray space before each line and after the widest.
+        if width + 2 <= usize::from(self.room()) {
             for line in lines {
                 let pad = width - self.cell_width(&line);
-                self.decorate(Text::Fixed("│"), QUOTE_BAR);
                 self.decorate(Text::Fixed(" "), CODE);
                 self.content.extend(line);
                 self.repeat(SPACES, pad + 1, CODE);
-                self.decorate(Text::Fixed("│"), QUOTE_BAR);
                 self.flush();
             }
-            self.border(&[width], "╰─", "", "─╯");
             return;
         }
         let room = self.room();
@@ -1465,22 +1462,16 @@ mod tests {
         assert_eq!(md("> a\n>> b", 20), ["│ a", "", "│ │ b"]);
         assert_eq!(
             md("```\nfn x() {\n    y\n}\n```", 20),
-            [
-                "╭──────────╮",
-                "│ fn x() { │",
-                "│     y    │",
-                "│ }        │",
-                "╰──────────╯"
-            ]
+            [" fn x() {", "     y", " }"]
         );
-        // An empty block is an empty box; one too wide for a box (8
-        // columns of code need 12) is drawn unboxed, as before.
-        assert_eq!(md("```\n```", 20), ["╭──╮", "│  │", "╰──╯"]);
-        assert_eq!(md("```\nfn x() {\n}\n```", 11), ["fn x() {", "}"]);
-        // The inside is gray to the border, padding included.
+        // An empty block is one gray row; one too wide for the padding (8
+        // columns of code need 10) is drawn unpadded.
+        assert_eq!(md("```\n```", 20), [""]);
+        assert_eq!(md("```\nfn x() {\n}\n```", 9), ["fn x() {", "}"]);
+        // A short line is gray to the block's edge: space, code, padding.
         let page = render("```\nab\nc\n```", Kind::Markdown, 20);
-        let styles: Vec<Style> = page.line(2).iter().map(|r| r.style).collect();
-        assert_eq!(styles, [QUOTE_BAR, CODE, CODE, CODE, QUOTE_BAR]);
+        let styles: Vec<Style> = page.line(1).iter().map(|r| r.style).collect();
+        assert_eq!(styles, [CODE, CODE, CODE]);
         assert_eq!(md("a\n\n---\n\nb", 5), ["a", "", "─────", "", "b"]);
     }
 
@@ -2009,26 +2000,17 @@ mod tests {
         // `\r\n` is one line break, as in the editor.
         assert_eq!(numbers("a\r\nb", Kind::Markdown, 9), [1, 2]);
         // Code keeps its lines; a blank one, or one of spaces only, has
-        // no number and is not counted, nor have its fences, drawn as the
-        // box's borders: no gap.
+        // no number and is not counted, nor have its fences, which make
+        // no row: no gap.
         let code = "a\n\n```rust\nx\n\ny\n```\n\nb";
-        assert_eq!(
-            numbers(code, Kind::Markdown, 9),
-            [1, 0, 0, 2, 0, 3, 0, 0, 4]
-        );
-        assert_eq!(
-            numbers("```\nx\n   \ny\n```", Kind::Markdown, 9),
-            [0, 1, 0, 2, 0]
-        );
-        assert_eq!(numbers("> ~~~\n> x\n> ~~~", Kind::Markdown, 9), [0, 1, 0]);
-        // A fence on a list item's line: the box's top border is drawn on
-        // the item's row, its first code line numbered next.
+        assert_eq!(numbers(code, Kind::Markdown, 9), [1, 0, 2, 0, 3, 0, 4]);
+        assert_eq!(numbers("```\nx\n   \ny\n```", Kind::Markdown, 9), [1, 0, 2]);
+        assert_eq!(numbers("> ~~~\n> x\n> ~~~", Kind::Markdown, 9), [1]);
+        // A fence on a list item's line: its first code line is drawn on
+        // the item's row, numbered next.
         let item = "a\n\n- ```rust\n  x\n  ```\n- b";
-        assert_eq!(
-            md(item, 20),
-            ["a", "", "• ╭───╮", "  │ x │", "  ╰───╯", "• b"]
-        );
-        assert_eq!(numbers(item, Kind::Markdown, 20), [1, 0, 0, 2, 0, 3]);
+        assert_eq!(md(item, 20), ["a", "", "•  x", "• b"]);
+        assert_eq!(numbers(item, Kind::Markdown, 20), [1, 0, 2, 3]);
         // A boxed table: rows numbered, borders not; the `|-|` line
         // under the header makes no row and is not counted: no gap.
         assert_eq!(

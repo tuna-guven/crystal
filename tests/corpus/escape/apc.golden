@@ -4,9 +4,7 @@ plain <U+001B>_Gf=24;AAAA<U+001B>\ text
 
   inline <U+001B>_Gf=24;AAAA<U+001B>\ code
 
-  ╭──────────────────────────────╮
-  │ <U+001B>_Gf=24;AAAA<U+001B>\ │
-  ╰──────────────────────────────╯
+   <U+001B>_Gf=24;AAAA<U+001B>\
 
   [link <U+001B>_Gf=24;AAAA<U+001B>](https://example.org)
 
