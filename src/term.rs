@@ -22,12 +22,19 @@ use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
-/// Close any link a broken-off frame left open (`ui::frame`), turn
-/// bracketed paste off and show the cursor again (the shell turns one on
-/// and hides the other), clear the alternate screen while still on it,
-/// then leave it, so none of its content survives in terminals that keep
-/// it around.
-const LEAVE_SCREEN: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
+/// Turns mouse reports off (SGR, then button and drag events): only the
+/// editor turns them on (decision 0073), and every way out of the screen
+/// and every prompt ends them, so a click never reaches a passphrase or
+/// the shell the terminal returns to.
+pub const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l";
+
+/// Close any link a broken-off frame left open (`ui::frame`), mouse
+/// reports off (`MOUSE_OFF`), turn bracketed paste off and show the
+/// cursor again (the shell turns one on and hides the other), clear the
+/// alternate screen while still on it, then leave it, so none of its
+/// content survives in terminals that keep it around.
+const LEAVE_SCREEN: &[u8] =
+    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
 
 /// The controlling terminal, opened directly. Redirected stdin or stdout can
 /// then neither feed input (a passphrase) nor capture output (the UI).
@@ -467,12 +474,14 @@ impl TerminalGuard {
 pub const MAX_PASSPHRASE: usize = 1024;
 
 /// Before a prompt: any link a broken-off frame left open closed
-/// (`ui::frame`), bracketed paste off and the cursor shown, then clear
+/// (`ui::frame`), mouse reports off (`MOUSE_OFF`), bracketed paste off
+/// and the cursor shown, then clear
 /// the alternate screen, cursor to top left. The shell's frames turn
 /// paste on and hide the cursor (`ui::screen`); at a prompt after a lock,
 /// a paste would arrive wrapped in `ESC [ 200 ~`, and ESC cancels
 /// (decision 0048). The shell's next full redraw turns both back.
-const CLEAR_SCREEN: &[u8] = b"\x1b]8;;\x1b\\\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
+const CLEAR_SCREEN: &[u8] =
+    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
 
 const CTRL_C: u8 = 0x03;
 const BACKSPACE: u8 = 0x08;
@@ -609,7 +618,7 @@ impl TerminalGuard {
         signals: &Signals,
         prompt: &str,
     ) -> Result<Passphrase, PromptError> {
-        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
+        self.discard_input()?;
         self.show(prompt.as_bytes())?;
         let result = self
             .read_line_raw(signals, LineEditor::new())
@@ -637,6 +646,18 @@ impl TerminalGuard {
         } else {
             Err(PromptError::Mismatch)
         }
+    }
+
+    /// Before a prompt: mouse reports off, then the input waiting is
+    /// discarded, reports sent before that included (decision 0073). The
+    /// prompt is shown after this, so nothing typed once it is on screen is
+    /// lost; a report that still slips through can only cancel the prompt,
+    /// as its ESC does, never add to a passphrase.
+    fn discard_input(&mut self) -> Result<(), PromptError> {
+        self.tty
+            .write_all(MOUSE_OFF)
+            .map_err(|e| PromptError::Write(e.kind()))?;
+        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)
     }
 
     /// Clears the alternate screen (paste mode off, cursor shown) and
@@ -749,7 +770,7 @@ impl TerminalGuard {
         prompt: &str,
         limit: Option<std::time::Duration>,
     ) -> Result<Zeroizing<String>, PromptError> {
-        tcflush(&self.tty, QueueSelector::IFlush).map_err(PromptError::Flush)?;
+        self.discard_input()?;
         self.show(prompt.as_bytes())?;
         let mut line = PublicLine::default();
         let mut chunk = Zeroizing::new([0u8; PUBLIC_CHUNK]);
@@ -854,6 +875,16 @@ mod tests {
 
     /// Decision 0050: sleep counts (the wall clock ran on), and a clock set
     /// back cannot delay a lock (the monotonic clock still counts).
+    /// Every way out of the screen (`LEAVE_SCREEN`, also after a panic
+    /// or signal) and every prompt (`CLEAR_SCREEN`) turns mouse reports
+    /// off (decision 0073).
+    #[test]
+    fn leaving_and_prompts_turn_mouse_reports_off() {
+        for bytes in [LEAVE_SCREEN, CLEAR_SCREEN] {
+            assert!(bytes.windows(MOUSE_OFF.len()).any(|w| w == MOUSE_OFF));
+        }
+    }
+
     #[test]
     fn idle_time_is_the_longer_clock() {
         let min = |m: u64| std::time::Duration::from_secs(m * 60);

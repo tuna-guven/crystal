@@ -875,6 +875,8 @@ fn lock_screen_turns_off_paste_mode_and_shows_the_cursor() {
     let last = |s: &str| before.rfind(s).expect(s);
     assert!(last("\x1b[?2004l") > last("\x1b[?2004h"), "paste mode on");
     assert!(last("\x1b[?25h") > last("\x1b[?25l"), "cursor hidden");
+    // Mouse reports off after the last frame (decision 0073).
+    assert!(last("\x1b[?1002l") > last("\x1b[?2004h"), "mouse reports");
 }
 
 /// A resize while the passphrase prompt is open leaves it at the top
