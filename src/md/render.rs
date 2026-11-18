@@ -93,6 +93,11 @@ const SPACES: &str = "                ";
 const PLAIN: Style = Style::PLAIN;
 const DIM: Style = Style::PLAIN.mods(Mods::DIM);
 const CODE: Style = Style::PLAIN.fg(Color::Yellow);
+/// The background code stands out on: 256-color dark gray.
+const CODE_BG: Color = Color::Indexed(236);
+/// Inline code: no padding, as a padding space could be where the line
+/// wraps.
+const INLINE_CODE: Style = CODE.bg(CODE_BG);
 const QUOTE_BAR: Style = Style::PLAIN.fg(Color::DarkGray);
 const LINK: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::UNDERLINED);
 
@@ -641,7 +646,7 @@ impl<'s> Builder<'s> {
             }
             Event::Code(t) => {
                 let run = self.text(&t);
-                self.add(run, CODE);
+                self.add(run, INLINE_CODE);
             }
             Event::Html(t) | Event::InlineHtml(t) => {
                 let run = self.text(&t);
@@ -1351,7 +1356,8 @@ mod tests {
         assert!(styles.iter().any(|s| s.mods.contains(Mods::BOLD)));
         assert!(styles.iter().any(|s| s.mods.contains(Mods::ITALIC)));
         assert!(styles.iter().any(|s| s.mods.contains(Mods::CROSSED_OUT)));
-        assert!(styles.contains(&CODE));
+        assert!(styles.contains(&INLINE_CODE));
+        assert_eq!(INLINE_CODE.bg, CODE_BG);
     }
 
     #[test]
