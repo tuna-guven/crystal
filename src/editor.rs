@@ -45,6 +45,16 @@ const PASTE_TOO_LARGE: &str = "Not pasted: it is larger than a note can hold (8 
 pub const PASTE_CLEANED: &str = "Untrusted input sanitized and pasted safely.";
 const UNSAVED: &str = "Unsaved changes: Ctrl+S saves, Ctrl+Q again discards them.";
 
+/// The brackets the editor closes as you type (decision 0045). Each is
+/// two ASCII bytes, so the cursor fits between them. Quotes are left out:
+/// `don't` must not open a pair.
+const PAIRS: [&str; 3] = ["()", "[]", "{}"];
+
+/// The pair an opening bracket starts.
+fn pair_of(c: char) -> Option<&'static str> {
+    PAIRS.iter().copied().find(|pair| pair.starts_with(c))
+}
+
 /// One note being edited. No Debug: it holds note text.
 pub struct Editor {
     buffer: Buffer,
@@ -125,12 +135,24 @@ impl Editor {
             self.buffer.commit();
         }
         match key {
-            Key::Char(c) => {
-                let mut bytes = [0; 4];
-                self.replace_selection(c.encode_utf8(&mut bytes));
+            Key::Char(c) => match pair_of(c) {
+                // An opening bracket brings its closer, the cursor between.
+                Some(pair) if self.selection().is_none() && self.closes_here() => {
+                    if self.replace_selection(pair) {
+                        self.cursor -= 1;
+                    }
+                }
+                _ => {
+                    let mut bytes = [0; 4];
+                    self.replace_selection(c.encode_utf8(&mut bytes));
+                }
+            },
+            Key::Enter => {
+                self.replace_selection("\n");
             }
-            Key::Enter => self.replace_selection("\n"),
-            Key::Tab => self.replace_selection("\t"),
+            Key::Tab => {
+                self.replace_selection("\t");
+            }
             Key::Backspace => self.delete(false),
             Key::Delete => self.delete(true),
             Key::Paste { text, cut, cleaned } => {
@@ -204,20 +226,34 @@ impl Editor {
     }
 
     /// Replaces the selection, or inserts at the cursor, and leaves the
-    /// cursor after the new text. A refusal leaves everything as it was.
-    fn replace_selection(&mut self, text: &str) {
+    /// cursor after the new text; true if the text went in. A refusal
+    /// leaves everything as it was.
+    fn replace_selection(&mut self, text: &str) -> bool {
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
         if range.is_empty() && text.is_empty() {
-            return;
+            return false;
         }
         match self.buffer.replace(range.clone(), text) {
             Ok(()) => {
                 self.dirty = true;
                 self.collapse(range.start + text.len());
+                true
             }
-            Err(EditError::Full) => self.notice = Some(FULL),
-            Err(EditError::NotABoundary) => {}
+            Err(EditError::Full) => {
+                self.notice = Some(FULL);
+                false
+            }
+            Err(EditError::NotABoundary) => false,
         }
+    }
+
+    /// Whether an opening bracket typed here gets its closer: only before
+    /// whitespace, a closing bracket or the end, so `(word` stays as typed.
+    fn closes_here(&self) -> bool {
+        self.text()[self.cursor..]
+            .chars()
+            .next()
+            .is_none_or(|next| next.is_whitespace() || PAIRS.iter().any(|p| p.ends_with(next)))
     }
 
     /// Backspace and Delete: the selection, or one grapheme before or
@@ -384,6 +420,29 @@ mod tests {
         ed.key(Key::Ctrl('y'), &mut clip);
         assert_eq!(ed.text(), "hello");
         assert!(ed.is_dirty());
+    }
+
+    #[test]
+    fn opening_brackets_close_before_space_closers_and_the_end() {
+        // At the end, and nested: a wikilink closes as it is opened.
+        let (mut ed, mut clip) = editor("");
+        typed(&mut ed, &mut clip, "[[Note");
+        assert_eq!(ed.text(), "[[Note]]");
+        assert_eq!(ed.cursor(), "[[Note".len());
+
+        // Before whitespace, also a line break.
+        let (mut ed, mut clip) = editor("a b\n");
+        ed.key(Key::Right, &mut clip);
+        typed(&mut ed, &mut clip, "{");
+        ed.key(Key::End, &mut clip);
+        typed(&mut ed, &mut clip, "(");
+        assert_eq!(ed.text(), "a{} b()\n");
+        assert_eq!(ed.cursor(), "a{} b(".len());
+
+        // Before a word: no closer.
+        let (mut ed, mut clip) = editor("word");
+        typed(&mut ed, &mut clip, "(");
+        assert_eq!(ed.text(), "(word");
     }
 
     #[test]
