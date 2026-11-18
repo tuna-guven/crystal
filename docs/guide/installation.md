@@ -31,9 +31,10 @@ keys by eye, or put each line's key into a `.pub` file and run
 
 **Or build it yourself.** The build is reproducible ([decision
 0067](../decisions.md#0067)): the same commit gives the same bytes, so a
-binary you build must match the published `SHA256SUMS`. You need the
-toolchain from `rust-toolchain.toml` and `cargo-auditable` =0.7.7
-([Dependencies](../design/dependencies.md)).
+binary you build must match the published `SHA256SUMS`. You need only the
+toolchain from `rust-toolchain.toml`, which rustup installs by itself.
+The release's dependencies are that commit's `Cargo.lock`; `cargo audit`
+there checks them for advisories ([decision 0072](../decisions.md#0072)).
 
 ```sh
 git checkout <release commit>

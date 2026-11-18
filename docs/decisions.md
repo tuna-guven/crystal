@@ -795,25 +795,10 @@ not stable on 1.99. Builds by other people on other machines need the
 same toolchain version and the same `Cargo.lock`; the link uses the
 toolchain's own LLD, not the host's linker ([0071](#0071)).
 
-## 0068 The dependency list is embedded with `cargo auditable` {#0068}
-
-*2026-11-16.* Release builds run `cargo auditable build`
-(`cargo-auditable` =0.7.7, a build tool installed with `cargo install
---locked`, not a dependency: nothing enters `Cargo.lock` or Crystal's
-code), which puts the list of every crate and version compiled into the
-binary in a section of about 1 KiB (`.dep-v0`). `cargo audit bin` then
-checks a shipped or long-installed binary for advisories without its
-source or `Cargo.lock`. The list is public anyway (`Cargo.lock` is in
-the repository) and names no path or user. The build stays
-reproducible ([0067](#0067)); `packaging/build-release.sh` refuses to
-build without the tool, so no release lacks the list. Checked
-2026-11-16: two clean builds identical, `cargo audit bin` finds 64
-dependencies and no advisory.
-
 ## 0069 Releases are signed with SSH keys on YubiKeys {#0069}
 
 *2026-11-16.* A release is the binary from `packaging/build-release.sh`
-([0067](#0067), [0068](#0068)), its `SHA256SUMS`, and `SHA256SUMS.sig`,
+([0067](#0067)), its `SHA256SUMS`, and `SHA256SUMS.sig`,
 made by `packaging/sign-release.sh` with `ssh-keygen -Y sign`: OpenSSH,
 already on every Linux, so neither signer nor user needs another tool.
 The keys are two `ed25519-sk` keys, one on each of the user's two
@@ -854,11 +839,12 @@ they had run nothing and passed).
 *2026-11-18.* Crystal links with `rust-lld`, the LLD that ships with the
 pinned toolchain (`.cargo/config.toml`, `linker = "rust-lld"` for the musl
 target), for every build, so tests run the same binary a release ships.
-Before, rustc called the host's `cc` and GNU `ld`: the same commit gave
-`74e2abeb…` on the maintainer's Fedora (ld 2.47) and `eb701ded…` on
-GitHub's Ubuntu runner, so [0067](#0067) held only on one machine. No
-dependency compiles C, so with the linker from the toolchain nothing on
-the host enters the binary. A second builder checks this for every
+Before, rustc called the host's `cc` and GNU `ld` (ld 2.47 on the
+maintainer's Fedora, another version on GitHub's Ubuntu runner), so the
+host's linker was an input to the bytes. No dependency compiles C, so with
+the linker from the toolchain nothing on the host enters the binary;
+the other machine-dependent input, the install path of a build wrapper,
+is gone too ([0072](#0072)). A second builder checks this for every
 release: `.github/workflows/release-build.yml` builds each `v*` tag (and
 on demand) with `packaging/build-release.sh` and prints `release <tag>
 <commit> sha256 <hash>`. A release is signed only on the maintainer's
@@ -868,3 +854,29 @@ caught before signing. The workflow keeps a read-only token, signs
 nothing, uploads nothing and creates no release: every dependency's build
 script runs in it, so it must not hold a key or a token that can change
 releases.
+
+## 0072 No embedded dependency list: the build runs no wrapper {#0072}
+
+*2026-11-19.* Release builds are a plain `cargo build --locked --release`
+again; `cargo auditable` is gone (it replaced nothing else; decision 0068,
+which added it, is deleted). It runs as `RUSTC_WORKSPACE_WRAPPER`, and
+Cargo hashes that wrapper's path into the `-C metadata` of every
+workspace member, so `crystal` and `zalloc` got other crate hashes, and
+the binary another order of constants, wherever the tool was installed:
+`/home/user/.cargo/bin` on the maintainer's machine and
+`/home/runner/.cargo/bin` on GitHub's runner gave different hashes from
+the same commit, while two builds on one machine always agreed. Found by
+comparing CI's unstripped build and Cargo's verbose log with a local one
+(only those two crates differed) and confirmed locally (a copy of the
+tool elsewhere changed the hash). `build-release.sh` unsets
+`RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER`, so no wrapper sets the
+bytes. A release's dependency list is the `Cargo.lock` of the commit its
+notes name, which the reproducible build ties to the binary: `cargo
+audit` on that commit checks a release. Lost: `cargo audit bin` and
+scanners on a lone binary without its release page. Gained: anyone can
+rebuild a release with rustup alone and get the same bytes on any
+machine, which is what [0071](#0071)'s second builder checks. Rejected:
+`cargo-auditable` at one fixed, root-installed path for every builder
+(setup and root for no security gain), and writing the list into the
+binary ourselves after linking (new code matching another project's
+format).

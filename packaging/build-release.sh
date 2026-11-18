@@ -15,7 +15,9 @@
 # - the toolchain's rust-src, to which rustc maps its own /rustc/<commit>
 #   paths back when that component is installed, to /rustc/<commit> again.
 # Cargo's own trim-paths option is not stable on the pinned toolchain.
-# The build embeds its dependency list with cargo-auditable (decision 0068).
+# Plain `cargo build`, no wrapper: Cargo hashes a workspace wrapper's path
+# into Crystal's crate hashes, which would tie the bytes to where the
+# wrapper is installed (decision 0072).
 set -eu
 
 src=$(cd "${1:-$(dirname "$0")/..}" && pwd -P)
@@ -35,11 +37,6 @@ CARGO_ENCODED_RUSTFLAGS=$flags
 export CARGO_ENCODED_RUSTFLAGS
 unset RUSTFLAGS
 
-# cargo-auditable (decision 0068) embeds the dependency list, so
-# `cargo audit bin` can check the binary without its source.
-command -v cargo-auditable >/dev/null || {
-    echo "cargo-auditable is missing: cargo install --locked --version =0.7.7 cargo-auditable" >&2
-    exit 1
-}
-cargo auditable build --locked --release
+unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+cargo build --locked --release
 sha256sum target/x86_64-unknown-linux-musl/release/crystal
