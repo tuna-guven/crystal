@@ -374,8 +374,9 @@ program, and the Wayland or X11 protocol needs a socket through the
 sandbox, a library or an external program. To copy out, select with the
 mouse and use the terminal's copy key, which copies what is shown, with
 hidden characters spelled out. Text from other programs arrives as a
-bracketed paste, always text, never keys ([0047](#0047)). Crystal does
-not capture the mouse.
+bracketed paste, always text, never keys ([0047](#0047)). Crystal
+captures the mouse only in the editor, where copying out takes Shift
+while dragging ([0073](#0073)).
 
 ## 0042 Crystal's own implementation of the age v1 format {#0042}
 
@@ -886,3 +887,27 @@ machine, which is what [0071](#0071)'s second builder checks. Rejected:
 (setup and root for no security gain), and writing the list into the
 binary ourselves after linking (new code matching another project's
 format).
+
+## 0073 The editor takes the mouse: click, drag, wheel {#0073}
+
+*2026-11-18.* While the editor is on screen, Crystal asks the terminal
+for mouse reports (mode 1002, button and drag events, with 1006, SGR
+coordinates): a left click puts the cursor on the clicked character, a
+drag selects from the press to the button's place, and the wheel moves
+the cursor three lines. Any other button, a held modifier and a report
+that does not parse are dropped; a report inside a bracketed paste is
+pasted text ([0047](#0047)). Reports carry a button and a cell, never
+note text, and no note text enters the sequences that turn the mode on
+and off. The mode is off everywhere else: in the Ctrl+E preview and the
+viewer (the wheel still arrives as arrows and Ctrl+click still opens
+links, [0054](#0054)), the shell, the lock screen and every prompt,
+which also discard pending input, so a late report cannot reach a
+passphrase; leaving the screen, a panic and a fatal signal turn it off.
+After `kill -9` it stays on in the terminal until `reset`, as bracketed
+paste does. Copying out stays the terminal's own selection
+([0041](#0041)), with Shift held while dragging in the editor. Accepted
+at the user's request: about 250 lines with tests and one more input
+parser, fuzzed, for no security benefit. Rejected: scrolling while
+dragging past the screen's edge (Shift+arrows extend the selection),
+double- and triple-click, Shift+click (VTE keeps it), and the mouse
+outside the editor.
