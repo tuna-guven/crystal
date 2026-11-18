@@ -856,7 +856,7 @@ impl<'s> Builder<'s> {
                     r.end -= 1;
                 }
                 self.pop_style();
-                self.flush();
+                self.draw_code();
                 self.in_code = false;
                 self.blank = true;
             }
@@ -1137,13 +1137,22 @@ impl<'s> Builder<'s> {
         ) {
             vec![content]
         } else {
-            let room = match self.prefix_width() {
-                // No room for text beside the indent: no indent.
-                w if w >= self.width => self.width.max(1),
-                w => self.width - w,
-            };
-            self.wrap_runs(&content, room)
+            self.wrap_runs(&content, self.room())
         };
+        self.emit_rows(lines);
+    }
+
+    /// The columns for text beside the prefix.
+    fn room(&self) -> u16 {
+        match self.prefix_width() {
+            // No room for text beside the indent: no indent.
+            w if w >= self.width => self.width.max(1),
+            w => self.width - w,
+        }
+    }
+
+    /// Writes wrapped lines as rows, each after the prefix.
+    fn emit_rows(&mut self, lines: Vec<Vec<Run>>) {
         let indent = self.prefix_width() < self.width;
         for line in lines {
             let (prefix, _) = self.prefix();
@@ -1160,6 +1169,66 @@ impl<'s> Builder<'s> {
             }
             self.runs.extend(line);
         }
+    }
+
+    /// Draws the code block read so far: its lines, each wrapped on its
+    /// own. Wrapping starts over at every line break anyway, so this is
+    /// what wrapping the whole block gives; the lines are what a box
+    /// around the block is measured by.
+    fn draw_code(&mut self) {
+        let content = std::mem::take(&mut self.content);
+        if content.is_empty() {
+            return;
+        }
+        let room = self.room();
+        let mut lines = Vec::new();
+        for line in self.split_lines(content) {
+            if line.is_empty() {
+                lines.push(line);
+            } else {
+                lines.extend(self.wrap_runs(&line, room));
+            }
+        }
+        self.emit_rows(lines);
+    }
+
+    /// `content` cut at its line breaks (dropped) into lines of runs,
+    /// each a range of a run's text, numbered by where it begins.
+    fn split_lines(&self, content: Vec<Run>) -> Vec<Vec<Run>> {
+        let mut lines = Vec::new();
+        let mut line = Vec::new();
+        for run in content {
+            let (Text::Source(r) | Text::Extra(_, r)) = &run.text else {
+                line.push(run);
+                continue;
+            };
+            let mut start = r.start;
+            for (i, part) in self.text_of(&run.text).split('\n').enumerate() {
+                if i > 0 {
+                    lines.push(std::mem::take(&mut line));
+                }
+                if !part.is_empty() {
+                    let range = start..start + part.len();
+                    let text = match &run.text {
+                        Text::Extra(e, _) => Text::Extra(*e, range),
+                        _ => Text::Source(range),
+                    };
+                    // As in `wrap_runs`: note text by where this part is.
+                    let at = match &run.text {
+                        Text::Source(r) if run.at == Some(r.start) => Some(start),
+                        _ => run.at,
+                    };
+                    line.push(Run {
+                        text,
+                        at,
+                        ..run.clone()
+                    });
+                }
+                start += part.len() + 1;
+            }
+        }
+        lines.push(line);
+        lines
     }
 
     /// `content` wrapped to `room` columns: lines of runs, each a piece
