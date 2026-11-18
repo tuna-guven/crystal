@@ -135,6 +135,11 @@ impl Editor {
             self.buffer.commit();
         }
         match key {
+            // A closer typed before the same closer steps over it.
+            Key::Char(c) if self.selection().is_none() && self.closer_follows(c) => {
+                let next = self.buffer.next_grapheme(self.cursor);
+                self.move_to(next, false);
+            }
             Key::Char(c) => match pair_of(c) {
                 // An opening bracket brings its closer, the cursor between.
                 Some(pair) if self.selection().is_none() && self.closes_here() => {
@@ -254,6 +259,13 @@ impl Editor {
             .chars()
             .next()
             .is_none_or(|next| next.is_whitespace() || PAIRS.iter().any(|p| p.ends_with(next)))
+    }
+
+    /// Whether `c` is a closing bracket and the grapheme after the cursor
+    /// is that bracket alone (not `)` with a combining accent on it).
+    fn closer_follows(&self, c: char) -> bool {
+        let next = self.buffer.next_grapheme(self.cursor);
+        PAIRS.iter().any(|p| p.ends_with(c)) && self.text()[self.cursor..next].chars().eq([c])
     }
 
     /// Backspace and Delete: the selection, or one grapheme before or
@@ -443,6 +455,29 @@ mod tests {
         let (mut ed, mut clip) = editor("word");
         typed(&mut ed, &mut clip, "(");
         assert_eq!(ed.text(), "(word");
+    }
+
+    #[test]
+    fn a_typed_closer_steps_over_the_same_closer() {
+        // Typed in full, a wikilink and a call come out once.
+        let (mut ed, mut clip) = editor("");
+        typed(&mut ed, &mut clip, "[[Note]] f(x)");
+        assert_eq!(ed.text(), "[[Note]] f(x)");
+        assert_eq!(ed.cursor(), ed.text().len());
+
+        // Stepping over changes no text, so there is nothing to save.
+        let (mut ed, mut clip) = editor("()");
+        ed.key(Key::Right, &mut clip);
+        typed(&mut ed, &mut clip, ")");
+        assert_eq!(ed.text(), "()");
+        assert_eq!(ed.cursor(), 2);
+        assert!(!ed.is_dirty());
+
+        // Another closer, or one with an accent on it, is typed.
+        let (mut ed, mut clip) = editor(")\u{301}");
+        typed(&mut ed, &mut clip, "]");
+        typed(&mut ed, &mut clip, ")");
+        assert_eq!(ed.text(), "]))\u{301}");
     }
 
     #[test]
