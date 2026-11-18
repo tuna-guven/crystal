@@ -519,7 +519,7 @@ computer sleeps, only the OS's screen lock guards the notes.
 *2026-11-14.* Crystal's age code uses `chacha20poly1305` =0.11.0 (with
 its `zeroize` feature, so the AEAD key is still wiped), `scrypt` =0.12.0,
 `x25519-dalek` =3.0.0, `hkdf` =0.13.0, `hmac` =0.13.0, `sha2` =0.11.1,
-`subtle` =2.6.1 and `zeroize` =1.9.1, exactly pinned, on the lines
+`subtle` =2.6.1 and `zeroize` =1.9.2, exactly pinned, on the lines
 RustCrypto and dalek maintain. The move changed no behaviour: the
 C2SP/CCTV vectors and the stored age files pass unchanged, byte for byte.
 New transitive crates (`hybrid-array`, `ctutils`, `cmov`) were approved.
