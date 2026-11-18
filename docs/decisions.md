@@ -849,7 +849,8 @@ release: `.github/workflows/release-build.yml` builds each `v*` tag (and
 on demand) with `packaging/build-release.sh` and prints `release <tag>
 <commit> sha256 <hash>`. A release is signed only on the maintainer's
 machine, with a YubiKey ([0069](#0069)), and only if both hashes are the
-same; a compromised build machine or toolchain on either side is then
+same: `packaging/publish-release.sh` checks the tag, here and on GitHub,
+and CI's run, builds, compares, and only then signs and publishes; a compromised build machine or toolchain on either side is then
 caught before signing. The workflow keeps a read-only token, signs
 nothing, uploads nothing and creates no release: every dependency's build
 script runs in it, so it must not hold a key or a token that can change

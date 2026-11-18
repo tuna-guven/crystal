@@ -31,3 +31,4 @@
 
 - [Roadmap and status](development/roadmap.md)
 - [Testing and verification](development/testing.md)
+- [Making a release](development/releasing.md)
