@@ -10,8 +10,8 @@ text
   <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10
   A code
 
-  <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[10
-  A
+   <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>[
+   10A
 
   [link
   <U+001B>[2J<U+001B>[H<U+001B>[31mred<U+001B>[0m<U+001B>10A

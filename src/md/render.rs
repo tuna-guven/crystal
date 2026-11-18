@@ -1175,20 +1175,39 @@ impl<'s> Builder<'s> {
     /// a gray space and padded to the widest line plus one, so the block
     /// is one gray rectangle; an empty block is one gray row. The padding
     /// is fixed text and never numbered, and there are no extra rows, so
-    /// each row keeps its code line's number. A block too wide for that
-    /// is drawn unpadded, each line wrapped.
+    /// each row keeps its code line's number. A line wider than the screen
+    /// wraps inside the block; only with fewer than `MIN_CELL` columns for
+    /// code is the block drawn unpadded, each line wrapped.
     fn draw_code(&mut self) {
         let content = std::mem::take(&mut self.content);
         let lines = self.split_lines(content);
-        let width = lines.iter().map(|l| self.cell_width(l)).max().unwrap_or(0);
+        let widest = lines.iter().map(|l| self.cell_width(l)).max().unwrap_or(0);
         // A gray space before each line and after the widest.
-        if width + 2 <= usize::from(self.room()) {
+        let inner = match usize::from(self.room()).checked_sub(2) {
+            Some(most) if widest <= most => Some(widest),
+            Some(most) if most >= MIN_CELL => Some(most),
+            _ => None,
+        };
+        if let Some(inner) = inner {
             for line in lines {
-                let pad = width - self.cell_width(&line);
-                self.decorate(Text::Fixed(" "), CODE);
-                self.content.extend(line);
-                self.repeat(SPACES, pad + 1, CODE);
-                self.flush();
+                let parts = if self.cell_width(&line) <= inner {
+                    vec![line]
+                } else {
+                    // At most the screen's width, so it fits a u16.
+                    let room = u16::try_from(inner).unwrap_or(u16::MAX);
+                    let mut parts = self.wrap_runs(&line, room);
+                    for part in &mut parts {
+                        self.trim_end(part);
+                    }
+                    parts
+                };
+                for part in parts {
+                    let pad = inner.saturating_sub(self.cell_width(&part));
+                    self.decorate(Text::Fixed(" "), CODE);
+                    self.content.extend(part);
+                    self.repeat(SPACES, pad + 1, CODE);
+                    self.flush();
+                }
             }
             return;
         }
@@ -1464,10 +1483,24 @@ mod tests {
             md("```\nfn x() {\n    y\n}\n```", 20),
             [" fn x() {", "     y", " }"]
         );
-        // An empty block is one gray row; one too wide for the padding (8
-        // columns of code need 10) is drawn unpadded.
+        // An empty block is one gray row.
         assert_eq!(md("```\n```", 20), [""]);
-        assert_eq!(md("```\nfn x() {\n}\n```", 9), ["fn x() {", "}"]);
+        assert_eq!(md("```\nx\n```", 3), [" x"]);
+        // A line too wide wraps inside the block, which stays a gray
+        // rectangle to its last column; the line keeps one number.
+        let wide = "```\nab cd ef\n```";
+        assert_eq!(md(wide, 7), [" ab cd", " ef"]);
+        assert_eq!(numbers(wide, Kind::Markdown, 7), [1, 0]);
+        let page = render(wide, Kind::Markdown, 7);
+        let mut grid = Grid::new(7, 2);
+        let area = grid.area();
+        page.draw(&mut grid, area, 0);
+        assert_eq!(grid.cell(6, 1).unwrap().style(), CODE);
+        // In lists and quotes, after their prefix.
+        assert_eq!(md("- a\n\n  ```\n  xy\n  ```", 20), ["• a", "", "   xy"]);
+        assert_eq!(md("> ```\n> ab cd ef\n> ```", 9), ["│  ab cd", "│  ef"]);
+        // With fewer than `MIN_CELL` columns for code: unpadded.
+        assert_eq!(md("```\nab cd\n```", 4), ["ab", "cd"]);
         // A short line is gray to the block's edge: space, code, padding.
         let page = render("```\nab\nc\n```", Kind::Markdown, 20);
         let styles: Vec<Style> = page.line(1).iter().map(|r| r.style).collect();
