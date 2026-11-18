@@ -111,6 +111,25 @@ S12, then S10; S0 skipped. Phase 6 acceptance: every check in
 2026-11-16); CI and the `crystal_t` check through the launcher were
 skipped by the user.
 
+## Steps G1 to G5 (code stands out in the viewer)
+
+Asked 2026-11-18: code in a gray box with rounded corners. Flagged as no
+security benefit (about 80 to 120 lines in `src/md/render.rs` plus
+tests); the user chose both parts. It weakens nothing: the box only
+arranges already sanitized text and adds fixed characters, every cell
+goes through the grid, and the `render` fuzz target covers the new path.
+Inline code cannot have rounded corners (a cell is a rectangle, and
+Nerd Font half circles are not in standard fonts), so it gets a gray
+background. No new decision (not security related).
+
+| Step | What | Why |
+| --- | --- | --- |
+| G1 | Inline code (`` `x` ``): yellow on a dark gray background (256-color 236), no padding (a padding space could be where a line wraps) | Visible in a line of text |
+| G2 | A code block's lines are collected until its end, as a table's cells are, and drawn there; drawn exactly as today, so every existing test passes unchanged | The box needs the widest line first |
+| G3 | The box: `╭─╮`, `│ text │`, `╰─╯` in the table's border gray, as wide as the widest line, the inside on the gray background; fenced and indented blocks alike, an empty block as an empty box; borders have no line number, so j/k and `y` skip them like table borders | The box itself |
+| G4 | A line wider than the screen wraps inside the box; a box with fewer than `MIN_CELL` columns for text is drawn unboxed (still gray); boxes inside lists and quotes take their prefix like tables | Narrow windows and nesting |
+| G5 | Module comment, `dependencies.md` (renderer row), setup guide `view` row, roadmap; all checks, and the `render` fuzz target run (10 minutes) | The book states what is drawn |
+
 ## Steps B1 to B6 (editor closes brackets; done)
 
 Asked 2026-11-18: the editor closes brackets as you type, so wikilinks
