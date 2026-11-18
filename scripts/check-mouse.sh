@@ -46,10 +46,9 @@ Auto-lock (Crystal locks after 60 seconds without input):
   8. Type  edit hostile , click into it, then wait a minute without
      touching anything. The lock screen says your edits are lost (demo
      notes are never saved).
-  9. Click and drag on the lock screen: nothing is typed, the prompt
-     stays. Then turn the wheel once and note what happens. Expected:
-     Crystal quits, since VTE turns the wheel into arrow keys and the
-     passphrase prompt cancels on ESC (as before the mouse work).
+  9. Click, drag and turn the wheel on the lock screen: nothing is
+     typed, the prompt stays (the wheel's arrow keys are skipped,
+     decision 0074). Your passphrase still unlocks; Esc quits.
 
 After Crystal:
  10. Start this script again, open the editor, then in another terminal:

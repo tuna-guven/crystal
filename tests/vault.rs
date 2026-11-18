@@ -879,6 +879,21 @@ fn lock_screen_turns_off_paste_mode_and_shows_the_cursor() {
     assert!(last("\x1b[?1002l") > last("\x1b[?2004h"), "mouse reports");
 }
 
+/// The wheel on the lock screen arrives as arrow keys (the terminal
+/// turns it into them on the alternate screen): skipped, so Crystal
+/// stays and the passphrase typed with them unlocks (decision 0074).
+#[test]
+fn arrows_at_the_lock_screen_are_ignored() {
+    let (home, _) = home_with_vault("lock_arrows");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"lock\r".to_vec()));
+    let keys = format!("\x1b[A\x1b[A\x1b[B\x1bOB{PASS}\x1b[C\r");
+    steps.push((LOCKED, keys.into_bytes()));
+    steps.push(("unlocked.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
 /// A resize while the passphrase prompt is open leaves it at the top
 /// left, under the cow, and keeps the keys typed so far: half the
 /// passphrase typed at 80 columns, the rest after the window grew to 100,

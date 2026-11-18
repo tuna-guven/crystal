@@ -10,7 +10,8 @@
 //! (decision 0037): nothing hidden reaches the
 //! terminal or disguises the text, and every cursor position is visible.
 //! The terminal's own cursor stays hidden; the cursor is a reversed,
-//! underlined cell, and the selection is reversed.
+//! underlined cell, and the selection is reversed; a cursor just outside
+//! the selection is only underlined.
 //!
 //! A gutter left of the text shows the line numbers the viewer shows
 //! (`model::lines`, decision 0055): dim, right-aligned, on the first row
@@ -50,6 +51,10 @@ const HINT: Style = Style::PLAIN.mods(Mods::DIM);
 const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
 const CURSOR: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::UNDERLINED));
+/// The cursor just outside a selection (at its end after a drag, a double
+/// or a triple click): underlined only, so the cell after the selection
+/// does not look selected (decision 0073).
+const CURSOR_BESIDE: Style = Style::PLAIN.mods(Mods::UNDERLINED);
 const HINTS: &str = "Ctrl+S save · Ctrl+Q close · Ctrl+E view · Ctrl+C/X/V copy, cut, \
                      paste · Ctrl+Z/Y undo, redo";
 const TAB_STOP: usize = 4;
@@ -369,14 +374,11 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
 fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
     let text = editor.text();
     let selection = editor.selection().unwrap_or(0..0);
-    let style_at = |at: usize| {
-        if at == editor.cursor() {
-            CURSOR
-        } else if selection.contains(&at) {
-            SELECTED
-        } else {
-            Style::PLAIN
-        }
+    let style_at = |at: usize| match (at == editor.cursor(), selection.contains(&at)) {
+        (true, false) if !selection.is_empty() => CURSOR_BESIDE,
+        (true, _) => CURSOR,
+        (false, true) => SELECTED,
+        (false, false) => Style::PLAIN,
     };
     let mut column = 0;
     let mut buf = [0; ESCAPE_LEN];
@@ -411,7 +413,7 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
     if row.ends_line {
         let style = style_at(row.range.end);
         let shows_break = row.next.is_some() && style == SELECTED;
-        if style == CURSOR || shows_break {
+        if style == CURSOR || style == CURSOR_BESIDE || shows_break {
             // The column kept free on the right holds it, unless a single
             // grapheme wider than the row filled the row: then the last
             // cell, so the cursor is never off screen.
@@ -636,6 +638,17 @@ mod tests {
             "the selected line break"
         );
         assert_eq!(cursor_cell(&grid), Some((0, 2)));
+        // Just after the selection, the cursor is only underlined: `c`
+        // does not look selected. At its start, inside it, it is the
+        // selected, underlined cell.
+        assert_eq!(grid.cell(0, 2).unwrap().style(), CURSOR_BESIDE);
+        let mut back = Editor::new("ab\ncd").unwrap();
+        for key in [Key::End, Key::ShiftLeft, Key::ShiftLeft] {
+            back.key(key, &mut clip);
+        }
+        let grid = drawn(&mut back, &mut View::default(), 10, 4);
+        assert_eq!(grid.cell(0, 1).unwrap().style(), CURSOR);
+        assert_eq!(grid.cell(1, 1).unwrap().style(), SELECTED);
         ed.key(Key::End, &mut clip);
         ed.key(Key::Char('!'), &mut clip);
         let grid = drawn(&mut ed, &mut View::default(), 10, 4);

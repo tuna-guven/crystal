@@ -140,7 +140,8 @@ length), into one zeroizing 1024-byte buffer allocated once: longer input
 is refused, deleted bytes are zeroed at once, and on Enter the buffer
 itself becomes the `Passphrase`. Keys typed before the prompt appeared
 are discarded (`tcflush`), since the terminal already echoed them. Ctrl+C,
-Esc (so also any arrow key) or an exit signal cancels. A new passphrase is
+Esc or an exit signal cancels; arrow and function keys are skipped
+([0074](#0074)). A new passphrase is
 asked twice and compared in constant time. `rpassword` was rejected for
 giving less control over buffers and echo.
 
@@ -916,3 +917,21 @@ parser, fuzzed, for no security benefit. Rejected: scrolling while
 dragging past the screen's edge (Shift+arrows extend the selection),
 dragging word by word after a double click, Shift+click (VTE keeps it),
 and the mouse outside the editor.
+
+## 0074 Prompts skip escape sequences; only Esc alone cancels {#0074}
+
+*2026-11-19.* At the passphrase prompts (unlock, the lock screen,
+`init`, `passwd`) and the public-line prompts (the `restore` question), a
+filter in front of the line skips whole escape sequences: `ESC [`, its
+parameter and intermediate bytes and a final byte (ECMA-48), and `ESC O`
+with a final byte. None of their bytes is typed or kept. Esc alone, at
+the end of a read that did not fill the buffer, still cancels, and so do
+ESC with any other byte after it (Alt and a key) and a sequence broken by
+a control byte. Before, any ESC cancelled ([0016](#0016)), so an arrow
+key, and the wheel, which VTE sends as arrow keys on the alternate
+screen, quit Crystal at the lock screen (found with the mouse checklist
+of [0073](#0073)). The filter keeps only which part of a sequence it is
+in; a property test checks that only the typed characters reach the
+line, however the input is split into reads. Rejected: turning off the
+terminal's wheel-to-arrows mode at prompts (`ESC [ ? 1007 l`), which not
+every terminal knows and which would leave arrow keys quitting.

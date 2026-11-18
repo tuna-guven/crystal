@@ -554,6 +554,75 @@ enum Feed {
     TooLong,
 }
 
+/// Escape sequences at a prompt (decision 0074). Arrow and function keys,
+/// and the arrows the terminal sends for the mouse wheel, arrive as
+/// `ESC [ ... final` or `ESC O final` (ECMA-48): skipped whole, so none of
+/// their bytes is typed. ESC followed by anything else (Alt and a key)
+/// cancels, and so does a lone ESC at the end of a read that did not fill
+/// the buffer: the Esc key. Keeps no bytes, only where it is.
+#[derive(Default)]
+struct Escapes(Escape);
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    #[default]
+    None,
+    Esc,
+    Csi,
+    Ss3,
+}
+
+/// What `Escapes` makes of a byte.
+enum Step {
+    Key,
+    Skip,
+    Cancel,
+}
+
+impl Escapes {
+    fn step(&mut self, byte: u8) -> Step {
+        let (next, step) = match (self.0, byte) {
+            (Escape::None, ESC) => (Escape::Esc, Step::Skip),
+            (Escape::None, _) => (Escape::None, Step::Key),
+            (Escape::Esc, b'[') => (Escape::Csi, Step::Skip),
+            (Escape::Esc, b'O') => (Escape::Ss3, Step::Skip),
+            // Parameter and intermediate bytes, then a final byte.
+            (Escape::Csi, 0x20..=0x3f) => (Escape::Csi, Step::Skip),
+            (Escape::Csi | Escape::Ss3, 0x40..=0x7e) => (Escape::None, Step::Skip),
+            // Alt and a key, or a broken sequence.
+            (Escape::Esc | Escape::Csi | Escape::Ss3, _) => (Escape::None, Step::Cancel),
+        };
+        self.0 = next;
+        step
+    }
+}
+
+/// One read through `escapes` into `feed`, up to the byte that ends the
+/// line; `full` when the read filled its buffer, so a lone ESC at its end
+/// may start a sequence that the next read finishes.
+fn feed_read(
+    escapes: &mut Escapes,
+    bytes: &[u8],
+    full: bool,
+    mut feed: impl FnMut(u8) -> Feed,
+) -> Feed {
+    for &byte in bytes {
+        match escapes.step(byte) {
+            Step::Skip => {}
+            Step::Cancel => return Feed::Cancel,
+            Step::Key => match feed(byte) {
+                Feed::More => {}
+                done => return done,
+            },
+        }
+    }
+    if escapes.0 == Escape::Esc && !full {
+        Feed::Cancel
+    } else {
+        Feed::More
+    }
+}
+
 /// The typed passphrase, in a buffer of fixed capacity that is wiped on
 /// drop. Deleted bytes are zeroed at once, not just cut off, so the spare
 /// capacity never holds old input either.
@@ -587,7 +656,8 @@ impl LineEditor {
                 self.truncate(0);
                 Feed::More
             }
-            // Esc also starts arrow and function keys; any of them cancels.
+            // ESC is handled by `Escapes` first (decision 0074); here it
+            // only ever cancels.
             CTRL_C | ESC => Feed::Cancel,
             // Other control bytes (Tab, Ctrl+Z, ...) are ignored.
             0..0x20 => Feed::More,
@@ -740,17 +810,17 @@ impl TerminalGuard {
         mut line: LineEditor,
     ) -> Result<LineEditor, PromptError> {
         let mut chunk = Zeroizing::new([0u8; 64]);
+        let mut escapes = Escapes::default();
         loop {
             let Some(n) = self.next_keys(signals, &mut chunk[..], None)? else {
                 continue;
             };
-            for &byte in &chunk[..n] {
-                match line.feed(byte) {
-                    Feed::More => {}
-                    Feed::Enter => return Ok(line),
-                    Feed::Cancel => return Err(PromptError::Cancelled),
-                    Feed::TooLong => return Err(PromptError::TooLong),
-                }
+            let full = n == chunk.len();
+            match feed_read(&mut escapes, &chunk[..n], full, |b| line.feed(b)) {
+                Feed::More => {}
+                Feed::Enter => return Ok(line),
+                Feed::Cancel => return Err(PromptError::Cancelled),
+                Feed::TooLong => return Err(PromptError::TooLong),
             }
         }
     }
@@ -779,6 +849,7 @@ impl TerminalGuard {
         let mut chunk = Zeroizing::new([0u8; PUBLIC_CHUNK]);
         let mut echo = Zeroizing::new(Vec::with_capacity(ECHO_CAPACITY));
         let mut last_key = Idle::start();
+        let mut escapes = Escapes::default();
         let result = loop {
             // A resize leaves the public line as it is: what was typed is
             // on the screen and stays there.
@@ -787,24 +858,14 @@ impl TerminalGuard {
                 continue;
             };
             last_key = Idle::start();
-            let mut done = None;
-            for &byte in &chunk[..n] {
-                match line.feed(byte, &mut echo) {
-                    Feed::More => {}
-                    Feed::Enter => {
-                        done = Some(Ok(line.0.clone()));
-                        break;
-                    }
-                    Feed::Cancel => {
-                        done = Some(Err(PromptError::Cancelled));
-                        break;
-                    }
-                    Feed::TooLong => {
-                        done = Some(Err(PromptError::TooLong));
-                        break;
-                    }
-                }
-            }
+            let full = n == chunk.len();
+            let fed = feed_read(&mut escapes, &chunk[..n], full, |b| line.feed(b, &mut echo));
+            let done = match fed {
+                Feed::More => None,
+                Feed::Enter => Some(Ok(line.0.clone())),
+                Feed::Cancel => Some(Err(PromptError::Cancelled)),
+                Feed::TooLong => Some(Err(PromptError::TooLong)),
+            };
             self.tty
                 .write_all(&echo)
                 .map_err(|e| PromptError::Write(e.kind()))?;
@@ -953,6 +1014,100 @@ mod tests {
         assert_eq!(line.0.capacity(), line_capacity);
         assert_eq!(echo.capacity(), echo_capacity);
         assert!(echo.len() <= ECHO_CAPACITY, "{}", echo.len());
+    }
+
+    /// Reads through `Escapes` into a passphrase line, as `read_line_raw`
+    /// does: each slice one read, the last one not full.
+    fn prompt(reads: &[&[u8]]) -> (Feed, Vec<u8>) {
+        let mut line = LineEditor::new();
+        let mut escapes = Escapes::default();
+        for (i, read) in reads.iter().enumerate() {
+            let full = i + 1 < reads.len();
+            match feed_read(&mut escapes, read, full, |b| line.feed(b)) {
+                Feed::More => {}
+                done => return (done, line.0.to_vec()),
+            }
+        }
+        (Feed::More, line.0.to_vec())
+    }
+
+    /// Arrows, the wheel's arrows, function keys and mouse reports are
+    /// skipped whole at a prompt: none of their bytes is typed, and none
+    /// cancels (decision 0074).
+    #[test]
+    fn escape_sequences_are_skipped_at_prompts() {
+        let keys = b"ab\x1b[A\x1b[B\x1bOAc\x1b[1;5C\x1b[15~\x1b[<64;5;5Md\r";
+        assert_eq!(prompt(&[keys]), (Feed::Enter, b"abcd".to_vec()));
+        // Split anywhere by a full read: the same.
+        for at in 1..keys.len() {
+            assert_eq!(
+                prompt(&[&keys[..at], &keys[at..]]),
+                (Feed::Enter, b"abcd".to_vec())
+            );
+        }
+        // The public line echoes nothing for them either.
+        let mut line = PublicLine::default();
+        let mut echo = Vec::new();
+        let fed = feed_read(&mut Escapes::default(), b"x\x1b[Ay\r", false, |b| {
+            line.feed(b, &mut echo)
+        });
+        assert_eq!(
+            (fed, line.0.as_str(), echo.as_slice()),
+            (Feed::Enter, "xy", &b"xy"[..])
+        );
+    }
+
+    /// Esc alone cancels, at the end of a read that did not fill the
+    /// buffer; at the end of a full one it waits. Alt and a key, Esc
+    /// twice and a broken sequence cancel.
+    #[test]
+    fn esc_alt_keys_and_broken_sequences_cancel() {
+        assert_eq!(prompt(&[b"ab\x1b"]).0, Feed::Cancel);
+        assert_eq!(
+            prompt(&[b"ab\x1b", b"[Ac\r"]),
+            (Feed::Enter, b"abc".to_vec())
+        );
+        for keys in [&b"a\x1bx"[..], b"\x1b\x1b", b"\x1b[1\x03", b"\x1bO\r"] {
+            assert_eq!(prompt(&[keys]).0, Feed::Cancel, "{keys:?}");
+        }
+    }
+
+    proptest::proptest! {
+        /// Typed letters with any arrows, wheel arrows, function keys and
+        /// mouse reports between them, split into reads anywhere: the line
+        /// holds exactly the letters.
+        #[test]
+        fn only_typed_letters_reach_the_passphrase(
+            parts in proptest::collection::vec(
+                proptest::prop_oneof![
+                    proptest::strategy::Strategy::prop_map("[a-z0-9]{1,3}", String::into_bytes),
+                    proptest::sample::select(vec![
+                        b"\x1b[A".to_vec(), b"\x1b[B".to_vec(), b"\x1bOB".to_vec(),
+                        b"\x1b[3~".to_vec(), b"\x1b[1;2D".to_vec(),
+                        b"\x1b[<0;12;5M".to_vec(), b"\x1b[<65;1;1M".to_vec(),
+                    ]),
+                ],
+                0..20,
+            ),
+            cut in 0usize..200,
+        ) {
+            let mut keys: Vec<u8> = parts.concat();
+            keys.push(b'\r');
+            let cut = cut.min(keys.len() - 1);
+            let (fed, line) = prompt(&[&keys[..cut], &keys[cut..]]);
+            let typed: Vec<u8> = parts
+                .iter()
+                .filter(|p| p.first() != Some(&ESC))
+                .flatten()
+                .copied()
+                .collect();
+            if typed.is_empty() {
+                proptest::prop_assert_eq!(fed, Feed::More, "an empty line waits");
+            } else {
+                proptest::prop_assert_eq!(fed, Feed::Enter);
+                proptest::prop_assert_eq!(line, typed);
+            }
+        }
     }
 
     fn typed(keys: &[u8]) -> (LineEditor, Vec<Feed>) {
