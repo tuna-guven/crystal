@@ -406,8 +406,6 @@ struct Builder<'s> {
     links: Vec<Option<Text>>,
     /// A blank line goes before the next block.
     blank: bool,
-    /// Inside a code block: its text keeps its line breaks.
-    in_code: bool,
     /// The `[[link]]` being read, if any.
     current_link: Option<u32>,
     /// The clickable link being read, if any (an index into `urls`).
@@ -496,7 +494,6 @@ impl<'s> Builder<'s> {
             styles: vec![PLAIN],
             links: Vec::new(),
             blank: false,
-            in_code: false,
             current_link: None,
             current_url: None,
             urls: Vec::new(),
@@ -731,7 +728,6 @@ impl<'s> Builder<'s> {
             }
             Tag::CodeBlock(_) => {
                 self.start_block();
-                self.in_code = true;
                 self.push_style(|_| CODE);
             }
             Tag::List(first) => {
@@ -859,7 +855,6 @@ impl<'s> Builder<'s> {
                 }
                 self.pop_style();
                 self.draw_code();
-                self.in_code = false;
                 self.blank = true;
             }
             TagEnd::BlockQuote(_) => {
