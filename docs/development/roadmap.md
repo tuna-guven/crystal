@@ -28,6 +28,35 @@ suspended.
 rendered, Ctrl+Q closes), creating a missing note after asking for its
 type (Markdown or text), shown dimmed after every name.
 
+## Steps X0 to X6 (the mouse in the editor)
+
+Approved 2026-11-18 (option C): a click puts the editor's cursor where it
+lands, a drag selects, the wheel moves the cursor. The user chose this
+knowing that it adds code, about 250 lines with tests, and brings no
+security benefit; earlier refusals: [0041](../decisions.md#0041),
+[0052](../decisions.md#0052), [0055](../decisions.md#0055). Scope is
+fixed. Not included: scrolling while dragging past the screen's edge
+(Shift+arrows extend the selection instead), double- and triple-click,
+Shift+click (VTE keeps it for its own selection), and the mouse in the
+viewer, the shell or any prompt.
+
+Rules for every step: no new dependency, no new syscall, no change to
+Landlock, seccomp or hardening; mouse reports carry only numbers, and no
+note text goes into an escape sequence. Every step is one commit and
+leaves Crystal working. It ends with fmt, clippy, tests, deny and audit
+green, plus the security check in its row. A check that fails stops the
+plan until it is fixed.
+
+| Step | What | Security check before the commit |
+| --- | --- | --- |
+| X0 | Decision 0073: mouse capture in the editor only (mode 1002 for button and drag events, 1006 for SGR reports), never in the viewer, the shell, the lock screen or any prompt; copying out is Shift+drag, the terminal's own selection. 0041's last sentence is cut to point here. The editor chapter, the threat model (A3: a pasted mouse report stays text) and this plan. Docs only | The decision names every place the mode is turned off; `mdbook build` |
+| X1 | `shell::keys`: `Key::Mouse { event, column, row }` from `ESC [ < b ; x ; y M/m`. Events: press, drag and release of the left button, wheel up and down; any other button or a modifier held is dropped. Numbers longer than 5 digits, zero or past `u16`, and missing fields drop the report. `MAX_PENDING` grows from 16 to 24, since a full report is 18 bytes. Inside a bracketed paste a report is text. The shell, the pager and questions ignore `Mouse`. About 60 lines | Unit tests (reports split across reads, a report inside a paste, every malformed form); a property test that random bytes never panic and the pending buffer stays bounded; a fifth fuzz target `keys` (`src/fuzz.rs`), run for 10 minutes clean |
+| X2 | Every place the terminal is handed back or a prompt is shown turns mouse reporting off: `LEAVE_SCREEN` (and so `restore_terminal` after a panic or signal), `CLEAR_SCREEN` (passphrase, lock screen, restore question) and `FULL_REDRAW`. Nothing turns it on yet. About 5 lines and tests | A test that each of the three byte strings ends mouse reporting; check that prompts still flush pending input (`tcflush` in `term.rs`), so a late report cannot reach a passphrase (where ESC would cancel it) |
+| X3 | `editor::View` keeps the area and top row of its last draw. `View::position_at(column, row)` maps a cell back to a byte offset in the text, matching `draw_row`: gutter, tabs, wide characters, hidden characters spelled out as `<U+XXXX>`, past a row's end, past the text's end. `Editor::click`, `Editor::drag` (keeps the anchor), `Editor::wheel` (3 lines). Not wired in yet. About 90 lines | Property tests: every cell maps to a grapheme boundary inside the text; clicking the cell where the cursor is drawn leaves it there; a drag selection is always a valid range. A note with hostile characters maps the same as it draws |
+| X4 | Turned on: `Screen` writes `ESC[?1002h ESC[?1006h` while the editor shows and the matching `l` codes when it does not (Ctrl+E preview, Ctrl+Q, lock, suspend). `app.rs` sends the editor's `Mouse` keys to `View` and `Editor`. Clicks on the status line or outside the text are ignored; a drag past the edge stops at the first or last row shown. Auto-lock counts mouse input as activity. About 40 lines | A test of the bytes `Screen` writes across editor, then preview, then editor, then shell; a test, through the binary where the tests reach the editor, that the bytes after lock contain no turn-on code. Review the X1 to X4 diff (`/security-review`) |
+| X5 | `scripts/check-mouse.sh VAULT`, for what CI cannot click in Ptyxis: click, drag, wheel; Shift+drag copies out what is shown; the wheel still scrolls in the Ctrl+E preview; a click at the lock screen after auto-lock does nothing; after `kill -9`, record what the shell shows and that `reset` clears it. Testing chapter row | The user runs it and reports; any surprise goes back to the step it belongs to |
+| X6 | Acceptance: the setup guide's editor keys, the editor chapter as built, the status line and SUMMARY; all checks with `mdbook build`; the long property tests (`scripts/long-tests.sh`) and the `keys` fuzz target for an hour | A final review of the whole X0 to X6 diff for note text in escape sequences, for modes left on, and for `unsafe`, syscalls or dependencies (expected: none) |
+
 ## Steps K0 to H4 (Phase 8, keys and release)
 
 Approved 2026-11-16 with the user's answers: K4 as one fixed factor, log N 20; K5 dropped; R2 approved; hardware keys wanted (the user owns YubiKeys). Security
