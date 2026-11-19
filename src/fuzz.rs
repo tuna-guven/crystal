@@ -5,6 +5,7 @@
 //! allocate without bound; the round trips also check their results.
 
 use crate::age_v1::{self, Identity, Recipients, x25519};
+use crate::md::blocks::{add_id, blocks as note_blocks};
 use crate::md::render::{Kind, render as render_note};
 use crate::md::safe::sanitize as sanitize_text;
 use crate::shell::keys::{Decoder, Key};
@@ -46,6 +47,30 @@ pub fn keys(data: &[u8]) {
                 !text.contains(|c: char| c != '\n' && c != '\t' && is_forbidden(c)),
                 "a paste kept a forbidden character"
             );
+        }
+    }
+}
+
+/// The blocks a link can point into, on hostile note text (A3, decision
+/// 0075): every range is a char boundary inside the text, and `add_id`
+/// either refuses or puts the id exactly at the block's end.
+pub fn blocks(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    for block in note_blocks(&text) {
+        assert!(
+            text.get(block.text.clone()).is_some(),
+            "a block is not a range of the text"
+        );
+        if let Some(id) = &block.id {
+            assert!(
+                text.get(id.clone()).is_some(),
+                "an id is not a range of the text"
+            );
+        }
+        if let (Some(end), Some(new)) = (block.end(), add_id(&text, &block, "f0zz1d")) {
+            assert_eq!(&new[..end], &text[..end]);
+            assert_eq!(&new[end..end + 8], " ^f0zz1d");
+            assert_eq!(&new[end + 8..], &text[end..]);
         }
     }
 }
