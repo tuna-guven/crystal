@@ -19,6 +19,7 @@
 //! draws it; the session saves, closes, or shows the viewer.
 
 pub mod buffer;
+pub mod suggest;
 pub mod view;
 
 use std::ops::Range;
