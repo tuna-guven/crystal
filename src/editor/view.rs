@@ -23,6 +23,14 @@
 //! (measured in a release build). Accepted, as above: real notes are far
 //! smaller, and a kept count would need keeping in step with every edit.
 //!
+//! The list of link suggestions (`suggest`) is drawn over the frame
+//! after it (`View::draw_suggestions`): a gray box of at most
+//! `suggest::ROWS` names under the cursor's row, or above it when there
+//! is more room there, starting at the cursor's column and moved left to
+//! fit, at most half the screen wide. Folders are dimmed, the highlight is
+//! reversed, a name too long ends in `…`. Names go through
+//! `Grid::put_str` like the text, so the grid checks every character.
+//!
 //! The mouse (decision 0073) finds the grapheme drawn at a cell by
 //! walking the rows of the last frame again (`View::position_at`), the
 //! same walk drawing does: no map of cells is kept.
@@ -40,8 +48,12 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
+use super::suggest::ROWS;
 use crate::model::lines;
-use crate::ui::grid::{Color, Grid, Mods, Style, grapheme_width, hides_something, is_forbidden};
+use crate::notes::Notes;
+use crate::ui::grid::{
+    Color, Grid, Mods, Style, display_width, grapheme_width, hides_something, is_forbidden,
+};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
 
@@ -199,6 +211,9 @@ pub struct View {
     /// Where the last frame drew the text (right of the gutter); `None`
     /// before the first frame or when the screen had no room for it.
     area: Option<Rect>,
+    /// The cell the last frame drew the cursor in, for the suggestion
+    /// list; `None` when it was not drawn.
+    cursor: Option<(u16, u16)>,
 }
 
 impl View {
@@ -210,6 +225,7 @@ impl View {
         let (body, bottom) = rest.split_bottom(1);
         let rows = usize::from(body.height);
         editor.set_page(rows);
+        self.cursor = None;
 
         // `[+]` stays visible however long the name.
         let unsaved = if editor.is_dirty() { "[+]" } else { "" };
@@ -251,8 +267,98 @@ impl View {
                     grid.put_str(body.x, y, &shown, HINT, gutter - 1);
                 }
             }
-            draw_row(grid, Rect::new(area.x, y, area.width, 1), editor, &row);
+            if let Some(x) = draw_row(grid, Rect::new(area.x, y, area.width, 1), editor, &row) {
+                self.cursor = Some((x, y));
+            }
             start = row.next;
+        }
+    }
+
+    /// Draws the editor's suggestion list over the frame `draw` just made
+    /// (see the module comment), its names from `notes`. Nothing when the
+    /// list is closed, the cursor was not drawn, or there is no room.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into the session in roadmap step W5")
+    )]
+    pub fn draw_suggestions(&self, grid: &mut Grid, editor: &Editor, notes: &Notes) {
+        /// The suggestion list's rows: the gray of code blocks in the viewer.
+        const LIST: Style = Style::PLAIN.bg(Color::Indexed(236));
+        const LIST_FOLDER: Style = LIST.mods(Mods::DIM);
+        const LIST_HIGHLIGHT: Style = LIST.mods(Mods::REVERSED);
+        const LIST_HIGHLIGHT_FOLDER: Style = LIST.mods(Mods::REVERSED.union(Mods::DIM));
+        /// The narrowest list: a space each side and two columns, so a
+        /// name cut short still shows a character and `…`.
+        const LIST_MIN_WIDTH: u16 = 4;
+        let (Some(list), Some(area), Some((cursor_x, cursor_y))) =
+            (editor.suggestions(), self.area, self.cursor)
+        else {
+            return;
+        };
+        let screen = grid.area();
+        // Rows below the cursor's row and above it, inside the text area.
+        let below = area.bottom().saturating_sub(cursor_y + 1);
+        let above = cursor_y.saturating_sub(area.y);
+        let wanted =
+            u16::try_from(list.notes.len().saturating_sub(list.top).min(ROWS)).unwrap_or(u16::MAX);
+        let (rows, y) = if below >= wanted || below >= above {
+            (wanted.min(below), cursor_y + 1)
+        } else {
+            (wanted.min(above), cursor_y - wanted.min(above))
+        };
+        if rows == 0 {
+            return;
+        }
+        // The first row shown keeps the highlight in view when fewer
+        // than `ROWS` rows fit.
+        let first = list
+            .top
+            .max((list.highlight + 1).saturating_sub(usize::from(rows)));
+        let shown = list
+            .notes
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(usize::from(rows))
+            .filter(|&(_, &note)| note < notes.len());
+        let longest = shown
+            .clone()
+            .map(|(_, &note)| display_width(notes.name(note)))
+            .max()
+            .unwrap_or(0);
+        let width = u16::try_from(longest.saturating_add(2))
+            .unwrap_or(u16::MAX)
+            .max(LIST_MIN_WIDTH)
+            .min(screen.width / 2);
+        if width < LIST_MIN_WIDTH {
+            return;
+        }
+        let x = cursor_x.min(screen.right() - width);
+        for (row, (index, &note)) in (y..).zip(shown) {
+            let (plain, folder_style) = if index == list.highlight {
+                (LIST_HIGHLIGHT, LIST_HIGHLIGHT_FOLDER)
+            } else {
+                (LIST, LIST_FOLDER)
+            };
+            grid.fill(Rect::new(x, row, width, 1), plain);
+            let name = notes.name(note);
+            let room = width - 2;
+            let fits = display_width(name) <= usize::from(room);
+            // A name too long keeps its last column for `…`.
+            let mut left = if fits { room } else { room - 1 };
+            let (folder, title) = match name.rfind('/') {
+                Some(at) => name.split_at(at + 1),
+                None => ("", name),
+            };
+            let mut column = x + 1;
+            for (part, style) in [(folder, folder_style), (title, plain)] {
+                let used = grid.put_str(column, row, part, style, left);
+                column += used;
+                left -= used;
+            }
+            if !fits {
+                grid.put_str(x + width - 2, row, "…", plain, 1);
+            }
         }
     }
 
@@ -370,8 +476,10 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
 }
 
 /// Draws one row: its graphemes, the selection, and the cursor (after the
-/// last grapheme when it sits at the line's end).
-fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
+/// last grapheme when it sits at the line's end). Returns the column the
+/// cursor was drawn at, if on this row.
+fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) -> Option<u16> {
+    let mut cursor = None;
     let text = editor.text();
     let selection = editor.selection().unwrap_or(0..0);
     let style_at = |at: usize| match (at == editor.cursor(), selection.contains(&at)) {
@@ -389,6 +497,9 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
             .x
             .saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
         let room = area.width.saturating_sub(x - area.x);
+        if at == editor.cursor() {
+            cursor = Some(x);
+        }
         match shape(grapheme) {
             Shape::Text(g, _) => {
                 grid.put_str(x, area.y, g, style, room);
@@ -420,8 +531,12 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) {
             let column = u16::try_from(column).unwrap_or(u16::MAX);
             let x = area.x + column.min(area.width - 1);
             grid.put_str(x, area.y, " ", style, 1);
+            if style != SELECTED {
+                cursor = Some(x);
+            }
         }
     }
+    cursor
 }
 
 #[cfg(test)]
@@ -728,7 +843,191 @@ mod tests {
         );
     }
 
+    /// Notes named `names` (`folder/title`), and an editor on `text`
+    /// with the cursor at its end that has typed `typed` through
+    /// `key_in`, so the suggestion list is open.
+    fn listing(names: &[&str], text: &str, typed: &str) -> (Editor, crate::notes::Notes) {
+        use crate::notes::tests::{note, notes};
+        let n = notes(
+            names
+                .iter()
+                .zip(1u8..)
+                .map(|(name, id)| {
+                    let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
+                    note(id, folder, title, "")
+                })
+                .collect(),
+        );
+        let mut ed = Editor::new(text).unwrap();
+        let mut clip = Clipboard::default();
+        ed.key(Key::Ctrl('a'), &mut clip);
+        ed.key(Key::Right, &mut clip);
+        for c in typed.chars() {
+            ed.key_in(Key::Char(c), &mut clip, &n);
+        }
+        (ed, n)
+    }
+
+    /// The frame with the list drawn over it.
+    fn with_list(ed: &mut Editor, n: &crate::notes::Notes, width: u16, height: u16) -> Grid {
+        let mut view = View::default();
+        let mut grid = drawn(ed, &mut view, width, height);
+        view.draw_suggestions(&mut grid, ed, n);
+        grid
+    }
+
+    /// The cells of row `y` in the list's gray, as (first column, text).
+    fn gray_run(grid: &Grid, y: u16) -> Option<(u16, String)> {
+        let gray = |x: u16| grid.cell(x, y).unwrap().style().bg == Color::Indexed(236);
+        let first = (0..grid.width()).find(|&x| gray(x))?;
+        let text = (first..grid.width())
+            .take_while(|&x| gray(x))
+            .map(|x| grid.cell(x, y).unwrap().symbol())
+            .collect();
+        Some((first, text))
+    }
+
+    #[test]
+    fn list_opens_under_the_cursor() {
+        let (mut ed, n) = listing(&["plan", "work/plan", "Restic Backup"], "", "[[");
+        let grid = with_list(&mut ed, &n, 40, 10);
+        // `1 [[]]`: the cursor is after `[[`, column 4 on row 1.
+        assert_eq!(rows(&grid)[1], "1 [[]]");
+        assert_eq!(gray_run(&grid, 2), Some((4, " plan          ".into())));
+        assert_eq!(gray_run(&grid, 3), Some((4, " Restic Backup ".into())));
+        assert_eq!(gray_run(&grid, 4), Some((4, " work/plan     ".into())));
+        assert_eq!(gray_run(&grid, 5), None);
+        // The first row is highlighted; folders are dimmed.
+        let style = |x, y| grid.cell(x, y).unwrap().style().mods;
+        assert!(style(5, 2).contains(Mods::REVERSED));
+        assert!(!style(5, 3).contains(Mods::REVERSED));
+        assert!(style(5, 4).contains(Mods::DIM));
+        assert!(!style(10, 4).contains(Mods::DIM));
+        // The text and the key line are untouched.
+        assert!(rows(&grid)[9].starts_with("Ctrl+S save"));
+    }
+
+    #[test]
+    fn list_opens_above_when_there_is_more_room() {
+        let text = "\n".repeat(7);
+        let (mut ed, n) = listing(&["a", "b", "c"], &text, "[[");
+        // Rows 1 to 8 hold text, the cursor on row 8: no room below.
+        let grid = with_list(&mut ed, &n, 30, 10);
+        // Short names: the list is padded to its narrowest, 4 columns.
+        assert_eq!(gray_run(&grid, 5).map(|r| r.1), Some(" a  ".into()));
+        assert_eq!(gray_run(&grid, 7).map(|r| r.1), Some(" c  ".into()));
+        assert_eq!(gray_run(&grid, 8), None);
+        assert_eq!(gray_run(&grid, 9), None);
+    }
+
+    #[test]
+    fn list_moves_left_to_fit_and_cuts_long_names() {
+        let long = "a".repeat(30);
+        let (mut ed, n) = listing(&[&long, "b"], &"x".repeat(25), "[[");
+        // The cursor is at column 29; the list is half of 40 columns wide,
+        // so it ends at the right edge.
+        let grid = with_list(&mut ed, &n, 40, 6);
+        let (x, row) = gray_run(&grid, 2).unwrap();
+        assert_eq!(x, 20);
+        assert_eq!(row, format!(" {}… ", "a".repeat(17)));
+        assert_eq!(
+            gray_run(&grid, 3).unwrap().1,
+            format!(" b{} ", " ".repeat(17))
+        );
+    }
+
+    #[test]
+    fn wide_and_combining_names_cut_cleanly() {
+        let (mut ed, n) = listing(&["日本語のノート名", "e\u{301}te\u{301}"], "", "[[");
+        let grid = with_list(&mut ed, &n, 20, 6);
+        // No gutter (too narrow); 10 columns: a space, 7 for the name,
+        // `…`, a space. `é` (with a combining accent) sorts first; a wide
+        // character that does not fit whole becomes a space.
+        assert_eq!(
+            gray_run(&grid, 2).unwrap(),
+            (2, " e\u{301}te\u{301}      ".into())
+        );
+        assert_eq!(gray_run(&grid, 3).unwrap(), (2, " 日本語 … ".into()));
+    }
+
+    #[test]
+    fn fewer_rows_keep_the_highlight_shown() {
+        let names: Vec<String> = (0..12).map(|i| format!("n{i:02}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (mut ed, n) = listing(&names, "", "[[");
+        let mut clip = Clipboard::default();
+        for _ in 0..5 {
+            ed.key_in(Key::Down, &mut clip, &n);
+        }
+        // Three rows of text area, the cursor on the first: two below.
+        let grid = with_list(&mut ed, &n, 30, 5);
+        assert_eq!(gray_run(&grid, 2).unwrap().1, " n04 ");
+        assert_eq!(gray_run(&grid, 3).unwrap().1, " n05 ");
+        assert!(
+            grid.cell(6, 3)
+                .unwrap()
+                .style()
+                .mods
+                .contains(Mods::REVERSED)
+        );
+    }
+
+    #[test]
+    fn no_list_without_room() {
+        let (mut ed, n) = listing(&["plan"], "", "[[");
+        for (width, height) in [(1, 1), (1, 5), (7, 5), (40, 2), (40, 3)] {
+            let grid = with_list(&mut ed, &n, width, height);
+            for y in 0..height {
+                assert_eq!(gray_run(&grid, y), None, "{width}x{height}");
+            }
+        }
+        // A closed list draws nothing.
+        ed.key_in(Key::Esc, &mut Clipboard::default(), &n);
+        let grid = with_list(&mut ed, &n, 40, 10);
+        assert_eq!(gray_run(&grid, 2), None);
+    }
+
     proptest! {
+        /// Any screen size, names (wide, combining, emoji) and highlight:
+        /// the list stays off the title and key lines, never covers the
+        /// cursor, shows the highlight when drawn, and no cell holds a
+        /// control character.
+        #[test]
+        fn suggestion_list_stays_in_bounds(
+            width in 1u16..50,
+            height in 1u16..14,
+            names in prop::collection::btree_set("[a-c日é😀]{1,3}(\u{301})?[a-z]{0,20}", 1..15),
+            lines in 0usize..12,
+            downs in 0usize..20,
+        ) {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let text = "x\n".repeat(lines);
+            let (mut ed, n) = listing(&names, &text, "[[");
+            let mut clip = Clipboard::default();
+            for _ in 0..downs {
+                ed.key_in(Key::Down, &mut clip, &n);
+            }
+            let mut view = View::default();
+            let mut grid = drawn(&mut ed, &mut view, width, height);
+            let cursor = cursor_cell(&grid);
+            view.draw_suggestions(&mut grid, &ed, &n);
+            prop_assert_eq!(cursor_cell(&grid), cursor);
+            let mut highlighted = false;
+            let mut drawn_any = false;
+            for y in 0..height {
+                for x in 0..width {
+                    let cell = grid.cell(x, y).unwrap();
+                    prop_assert!(!cell.symbol().chars().any(char::is_control));
+                    if cell.style().bg == Color::Indexed(236) {
+                        drawn_any = true;
+                        prop_assert!(y > 0 && y + 1 < height, "list on row {y}");
+                        highlighted |= cell.style().mods.contains(Mods::REVERSED);
+                    }
+                }
+            }
+            prop_assert_eq!(drawn_any, highlighted);
+        }
+
         /// The single walk picks the same first row as the reference, on
         /// any text, cursor, width and height.
         #[test]
