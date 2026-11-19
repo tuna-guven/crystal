@@ -314,20 +314,24 @@ impl View {
         let first = list
             .top
             .max((list.highlight + 1).saturating_sub(usize::from(rows)));
-        // Each row's text from the editor: a dimmed part (a folder, `# `)
-        // and the rest. An entry without one stays a blank row, so rows
+        // Each row's text from the editor: a dimmed part (a folder, `# `),
+        // the text, and a dimmed end (a block's ` ^id`). An entry without one stays a blank row, so rows
         // and `suggestion_at` agree.
         let shown = (first..list.entries.len())
             .take(usize::from(rows))
             .map(|index| {
                 (
                     index,
-                    editor.suggestion_label(index, notes).unwrap_or(("", "")),
+                    editor
+                        .suggestion_label(index, notes)
+                        .unwrap_or(("", "", "")),
                 )
             });
         let longest = shown
             .clone()
-            .map(|(_, (dim, rest))| display_width(dim) + display_width(rest))
+            .map(|(_, (dim, text, end))| {
+                display_width(dim) + display_width(text) + display_width(end)
+            })
             .max()
             .unwrap_or(0);
         let width = u16::try_from(longest.saturating_add(2))
@@ -339,7 +343,7 @@ impl View {
         }
         let x = cursor_x.min(screen.right() - width);
         let mut drawn = 0;
-        for (row, (index, (folder, title))) in (y..).zip(shown) {
+        for (row, (index, (folder, title, end))) in (y..).zip(shown) {
             drawn += 1;
             let (plain, folder_style) = if index == list.highlight {
                 (LIST_HIGHLIGHT, LIST_HIGHLIGHT_FOLDER)
@@ -348,11 +352,12 @@ impl View {
             };
             grid.fill(Rect::new(x, row, width, 1), plain);
             let room = width - 2;
-            let fits = display_width(folder) + display_width(title) <= usize::from(room);
+            let fits = display_width(folder) + display_width(title) + display_width(end)
+                <= usize::from(room);
             // A name too long keeps its last column for `…`.
             let mut left = if fits { room } else { room - 1 };
             let mut column = x + 1;
-            for (part, style) in [(folder, folder_style), (title, plain)] {
+            for (part, style) in [(folder, folder_style), (title, plain), (end, folder_style)] {
                 let used = grid.put_str(column, row, part, style, left);
                 column += used;
                 left -= used;
@@ -1055,12 +1060,22 @@ mod tests {
             names in prop::collection::btree_set("[a-c日é😀]{1,3}(\u{301})?[a-z]{0,20}", 1..15),
             lines in 0usize..12,
             downs in 0usize..20,
-            headings in any::<bool>(),
+            kind in 0u8..3,
+            hostile in prop::collection::vec(
+                "[a-c\u{0}-\u{1f}\u{7f}-\u{9f}\u{202e}\u{2066}\u{200b}日é😀\t]{1,12}",
+                1..8,
+            ),
         ) {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let text = "x\n".repeat(lines);
-            let body: String = names.iter().map(|name| format!("# {name}\n")).collect();
-            let typed = if headings { format!("[[{}#", names[0]) } else { "[[".to_owned() };
+            // Its headings: the names; its blocks: hostile paragraphs.
+            let mut body: String = names.iter().map(|name| format!("# {name}\n\n")).collect();
+            body.push_str(&hostile.join("\n\n"));
+            let typed = match kind {
+                0 => "[[".to_owned(),
+                1 => format!("[[{}#", names[0]),
+                _ => format!("[[{}#^", names[0]),
+            };
             let (mut ed, n) = listing_with(&names, &body, &text, &typed);
             let mut clip = Clipboard::default();
             for _ in 0..downs {
@@ -1073,15 +1088,23 @@ mod tests {
             prop_assert_eq!(cursor_cell(&grid), cursor);
             let mut highlighted = false;
             let mut drawn_any = false;
-            let list = ed.suggestions().unwrap();
-            prop_assert_eq!(
-                list.source == crate::editor::suggest::Source::Notes,
-                !headings
-            );
+            use crate::editor::suggest::Source;
+            let Some(list) = ed.suggestions() else {
+                // Hostile paragraphs can all be code or HTML: no blocks.
+                prop_assert_eq!(kind, 2);
+                return Ok(());
+            };
+            let expected = match kind {
+                0 => matches!(list.source, Source::Notes),
+                1 => matches!(list.source, Source::Headings(_)),
+                _ => matches!(list.source, Source::Blocks(_)),
+            };
+            prop_assert!(expected);
             for y in 0..height {
                 for x in 0..width {
                     let cell = grid.cell(x, y).unwrap();
                     prop_assert!(!cell.symbol().chars().any(char::is_control));
+                    prop_assert!(!cell.symbol().chars().any(crate::ui::grid::is_forbidden));
                     let gray = cell.style().bg == Color::Indexed(236);
                     // The mouse finds an entry exactly where one is drawn,
                     // and the highlighted entry is the reversed row.

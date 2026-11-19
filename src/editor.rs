@@ -101,6 +101,10 @@ pub struct Editor {
     /// Where the link starts whose list `own_headings` were scanned for:
     /// typing on in that link reuses them (`suggest`).
     own_headings_at: Option<usize>,
+    /// The blocks a list of them points into, as ranges, and what they
+    /// were parsed from (`suggest::BlocksFor`).
+    blocks: Vec<crate::md::blocks::Block>,
+    blocks_for: Option<suggest::BlocksFor>,
     /// The note shown, if saved, and whether it is Markdown (`set_note`).
     own: Option<usize>,
     markdown: bool,
@@ -122,6 +126,8 @@ impl Editor {
             suggestions: None,
             own_headings: Vec::new(),
             own_headings_at: None,
+            blocks: Vec::new(),
+            blocks_for: None,
             own: None,
             markdown: true,
         })
@@ -166,9 +172,7 @@ impl Editor {
     /// key, it ends a run of typing for undo, clears the notice and
     /// disarms Ctrl+Q; it closes the list of link suggestions.
     pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>, now: Instant) {
-        self.suggestions = None;
-        self.own_headings = Vec::new();
-        self.own_headings_at = None;
+        self.close_list();
         self.notice = None;
         self.quit_armed = false;
         self.buffer.commit();
@@ -1056,7 +1060,9 @@ mod tests {
     fn any_key() -> impl Strategy<Value = Key> {
         prop_oneof![
             prop::sample::select(
-                &['a', 'p', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']', '#'][..]
+                &[
+                    'a', 'p', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']', '#', '^'
+                ][..]
             )
             .prop_map(Key::Char),
             prop::sample::select(&['a', 'c', 'x', 'v', 'z', 'y', 'q', 's', 'e'][..])
@@ -1096,7 +1102,10 @@ mod tests {
         fn any_keys_keep_cursor_and_selection_valid(
             text in "[ab \r\n.é😀\u{301}()\\[\\]]{0,30}",
             keys in prop::collection::vec(any_key(), 0..60),
+            prefix in prop::sample::select(vec!["", "[[", "[[#", "[[#^", "[[pa#", "[[pa#^"]),
         ) {
+            // A heading and blocks of its own, for `[[#` and `[[#^`.
+            let text = format!("{text}\n\n# Own head\n\nown para ^o1\n\nown plain\n");
             let (mut ed, mut clip) = editor(&text);
             // More notes than the list shows, some starting with `p`.
             let names = ["pa", "pb", "a/pc", "b/pa", "pe", "pf", "pg", "ph", "pi", "x"];
@@ -1108,10 +1117,18 @@ mod tests {
                         let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
                         // Headings to list after `[[pa#`, one that cannot
                         // be linked (`]`).
-                        crate::notes::tests::note(id, folder, title, "# pa\n## a p\n# x]y\n")
+                        crate::notes::tests::note(
+                            id,
+                            folder,
+                            title,
+                            "# pa\n## a p\n# x]y\n\npara ^p1\n\nplain a\n",
+                        )
                     })
                     .collect(),
             );
+            // Often into a heading or block list first: random keys alone
+            // seldom type `[[#^`.
+            let keys = prefix.chars().map(Key::Char).chain(keys);
             for key in keys {
                 // Up, Down and Esc on an open list never change the text.
                 let moves_list = ed.suggestions().is_some()
@@ -1126,7 +1143,18 @@ mod tests {
                     prop_assert!(list.highlight < list.entries.len());
                     prop_assert!(list.top <= list.highlight);
                     prop_assert!(list.highlight < list.top + suggest::ROWS);
-                    // Every entry has its text: a note or a heading.
+                    // The edited text's blocks, kept and moved while typing
+                    // in the link, are those a fresh parse finds.
+                    if matches!(list.source, suggest::Source::Blocks(None)) {
+                        let kept: Vec<_> =
+                            ed.blocks.iter().map(|b| (b.text.clone(), b.id.clone())).collect();
+                        let fresh: Vec<_> = crate::md::blocks::blocks(ed.text())
+                            .into_iter()
+                            .map(|b| (b.text, b.id))
+                            .collect();
+                        prop_assert_eq!(kept, fresh);
+                    }
+                    // Every entry has its text: a note, heading or block.
                     prop_assert!((0..list.entries.len()).all(|i| ed.suggestion_label(i, &notes).is_some()));
                     prop_assert!(suggest::target(ed.text(), ed.cursor()).is_some());
                 }

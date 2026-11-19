@@ -17,6 +17,8 @@ use std::ops::Range;
 use std::time::Instant;
 
 use super::{Editor, EditorAction};
+use crate::md::blocks::{Block, blocks};
+use crate::md::render::{Kind, kind_of};
 use crate::notes::{Found, Notes, cmp_ci, headings_in};
 use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::clipboard::Clipboard;
@@ -36,7 +38,23 @@ pub enum Source {
     /// The headings of a saved note (`Notes::headings`), or with `None`
     /// those of the note being edited, scanned from its text.
     Headings(Option<usize>),
+    /// The blocks (`md::blocks`) of a saved note, or with `None` of the
+    /// editor's text, kept as ranges in `Editor::blocks`.
+    Blocks(Option<usize>),
 }
+
+/// Whose blocks `Editor::blocks` holds, for which link, and how long the
+/// editor's text was then: typing in that link reuses them, shifted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct BlocksFor {
+    note: Option<usize>,
+    link: usize,
+    len: usize,
+}
+
+/// Shown when a block without an id is chosen, until roadmap steps J5
+/// and J6 give it one.
+const NO_ID: &str = "That paragraph has no ^id to link to yet.";
 
 /// The open list. No Debug, like the editor that holds it.
 pub struct List {
@@ -91,12 +109,13 @@ impl Editor {
     pub fn key_in(&mut self, key: Key, clipboard: &mut Clipboard, notes: &Notes) -> EditorAction {
         let list_key = matches!(key, Key::Up | Key::Down | Key::Enter | Key::Tab | Key::Esc);
         if list_key && let Some(list) = &mut self.suggestions {
+            // Cleared first: choosing can leave a notice.
+            self.notice = None;
             match key {
                 Key::Up | Key::Down => list.step(key == Key::Down),
                 Key::Enter | Key::Tab => self.accept(notes),
                 _ => self.close_list(),
             }
-            self.notice = None;
             self.quit_armed = false;
             self.last_press = None;
             self.buffer.commit();
@@ -143,6 +162,8 @@ impl Editor {
             self.mouse(event, at, now);
             return;
         };
+        // Cleared first: choosing can leave a notice.
+        self.notice = None;
         match event {
             MouseEvent::Press => {
                 list.highlight = entry;
@@ -154,7 +175,6 @@ impl Editor {
             // No drag starts on the list: nothing to do.
             MouseEvent::Drag | MouseEvent::Release => {}
         }
-        self.notice = None;
         self.quit_armed = false;
         self.last_press = None;
         self.pressed = false;
@@ -167,25 +187,54 @@ impl Editor {
     }
 
     /// The text of the open list's entry at `row` (an index into
-    /// `entries`), for the view: a dimmed part and the rest. A note is its
-    /// folder and title, a heading `# ` and its text. None past the list or
-    /// for an index its source does not have.
+    /// `entries`), for the view: a dimmed part, the text, and a dimmed end.
+    /// A note is its folder and title, a heading `# ` and its text, a
+    /// block its first line and its ` ^id`. None past the list or for an
+    /// index its source does not have.
     pub fn suggestion_label<'a>(
         &'a self,
         row: usize,
         notes: &'a Notes,
-    ) -> Option<(&'a str, &'a str)> {
+    ) -> Option<(&'a str, &'a str, &'a str)> {
         let list = self.suggestions.as_ref()?;
         let &entry = list.entries.get(row)?;
         match list.source {
             Source::Notes => {
                 let name = (entry < notes.len()).then(|| notes.name(entry))?;
-                Some(match name.rfind('/') {
+                let (folder, title) = match name.rfind('/') {
                     Some(at) => name.split_at(at + 1),
                     None => ("", name),
-                })
+                };
+                Some((folder, title, ""))
             }
-            Source::Headings(note) => Some(("# ", self.heading(note, entry, notes)?)),
+            Source::Headings(note) => Some(("# ", self.heading(note, entry, notes)?, "")),
+            Source::Blocks(note) => {
+                let body = self.blocks_text(note, notes)?;
+                let block = self.blocks.get(entry)?;
+                let text = body.get(block.text.clone())?;
+                let first = text.split('\n').next().unwrap_or("").trim_end();
+                // ` ^id`: the id and the ` ^` before it.
+                let id = block
+                    .id
+                    .clone()
+                    .and_then(|id| body.get(id.start.checked_sub(2)?..id.end));
+                let first = match (id, text.contains('\n')) {
+                    // On one line, the text stops before its id.
+                    (Some(id), false) => first.strip_suffix(id).unwrap_or(first).trim_end(),
+                    _ => first,
+                };
+                Some(("", first, id.unwrap_or("")))
+            }
+        }
+    }
+
+    /// The text `Source::Blocks(note)` ranges point into: a saved note's
+    /// body, or the editor's text.
+    fn blocks_text<'a>(&'a self, note: Option<usize>, notes: &'a Notes) -> Option<&'a str> {
+        match note {
+            Some(note) if note < notes.len() => Some(notes.note(note).body.as_str()),
+            Some(_) => None,
+            None => Some(self.text()),
         }
     }
 
@@ -204,11 +253,74 @@ impl Editor {
         all.get(entry).map(|h| h.as_str())
     }
 
-    /// Closes the list and drops the headings scanned for it.
-    fn close_list(&mut self) {
+    /// Closes the list and drops the headings and blocks scanned for it.
+    pub(super) fn close_list(&mut self) {
         self.suggestions = None;
         self.own_headings = Vec::new();
         self.own_headings_at = None;
+        self.blocks = Vec::new();
+        self.blocks_for = None;
+    }
+
+    /// Loads the blocks of `note` (or of the editor's text) for the link
+    /// starting at `link`: parsed once per link; while typing in that
+    /// link the editor's text changes only after `link`, so the kept
+    /// ranges past it move by the change in length (each use checks its
+    /// range again). A plain-text note has none.
+    fn load_blocks(&mut self, note: Option<usize>, link: usize, notes: &Notes) {
+        let len = self.text().len();
+        match self.blocks_for {
+            Some(f) if f.note == note && f.link == link => {
+                if note.is_none() && f.len != len {
+                    // The line typed in, as the parser ends lines (`\n`,
+                    // `\r`); it ended `len - f.len` earlier before.
+                    let text = self.text();
+                    let ends = ['\n', '\r'];
+                    let line_start = text[..link].rfind(ends).map_or(0, |at| at + 1);
+                    let line_end = text[self.cursor..]
+                        .find(ends)
+                        .map_or(len, |at| self.cursor + at);
+                    let old_line_end = (line_end + f.len).saturating_sub(len);
+                    let trimmed_end = line_start + text[line_start..line_end].trim_end().len();
+                    let moved = |at: usize| match at {
+                        at if at <= link => at,
+                        at if len > f.len => at + (len - f.len),
+                        at => at.saturating_sub(f.len - len),
+                    };
+                    for block in &mut self.blocks {
+                        // A block ending on that line ends where the line's
+                        // text does, trailing space left out, as `blocks`
+                        // finds it: typing a space there moves nothing,
+                        // typing after spaces moves it past them (found by
+                        // the editor's property test).
+                        let end = block.text.end;
+                        let end = if end > link && end <= old_line_end {
+                            trimmed_end
+                        } else {
+                            moved(end)
+                        };
+                        block.text = moved(block.text.start)..end;
+                        block.id = block.id.clone().map(|id| moved(id.start)..moved(id.end));
+                    }
+                }
+            }
+            _ => {
+                self.blocks = match note {
+                    Some(note) if note < notes.len() => {
+                        let saved = notes.note(note);
+                        if kind_of(saved.title.as_str()) == Kind::Markdown {
+                            blocks(saved.body.as_str())
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                    Some(_) => Vec::new(),
+                    None if self.markdown => blocks(self.text()),
+                    None => Vec::new(),
+                };
+            }
+        }
+        self.blocks_for = Some(BlocksFor { note, link, len });
     }
 
     /// Opens the list for the cursor's place: only with nothing selected,
@@ -223,7 +335,7 @@ impl Editor {
         let (source, found) = match q.fragment {
             None => (Source::Notes, matches(&self.text()[q.name], notes)),
             Some((Part::Heading, typed)) => {
-                let Some(note) = self.heading_note(&self.text()[q.name.clone()], notes) else {
+                let Some(note) = self.fragment_note(&self.text()[q.name.clone()], notes) else {
                     return;
                 };
                 // Scanned once per link (`key_in` keeps them while typing
@@ -243,8 +355,17 @@ impl Editor {
                 let found = heading_matches(&self.text()[typed], all);
                 (Source::Headings(note), found)
             }
-            // Blocks: roadmap step J4.
-            Some((Part::Block, _)) => return,
+            Some((Part::Block, typed)) => {
+                let Some(note) = self.fragment_note(&self.text()[q.name.clone()], notes) else {
+                    return;
+                };
+                self.load_blocks(note, q.name.start, notes);
+                let Some(body) = self.blocks_text(note, notes) else {
+                    return;
+                };
+                let found = block_matches(&self.text()[typed], body, &self.blocks);
+                (Source::Blocks(note), found)
+            }
         };
         if found.is_empty() {
             self.close_list();
@@ -258,10 +379,11 @@ impl Editor {
         }
     }
 
-    /// Whose headings `[[name#` lists: `Some(None)` for the note being
-    /// edited (an empty name, or its own), `Some(Some(note))` for the one
-    /// other note `name` finds, `None` when it finds none or several.
-    fn heading_note(&self, name: &str, notes: &Notes) -> Option<Option<usize>> {
+    /// Whose headings or blocks `[[name#` lists: `Some(None)` for the
+    /// note being edited (an empty name, or its own), `Some(Some(note))`
+    /// for the one other note `name` finds, `None` when it finds none or
+    /// several.
+    fn fragment_note(&self, name: &str, notes: &Notes) -> Option<Option<usize>> {
         if name.is_empty() {
             return Some(None);
         }
@@ -279,10 +401,13 @@ impl Editor {
     fn accept(&mut self, notes: &Notes) {
         let list = self.suggestions.take();
         let own_headings = std::mem::take(&mut self.own_headings);
-        self.own_headings_at = None;
+        let all_blocks = std::mem::take(&mut self.blocks);
+        self.close_list();
         let (Some(list), Some(q)) = (list, target(self.text(), self.cursor)) else {
             return;
         };
+        // A block's id, copied out of the text it may be in (zeroizing).
+        let id: Zeroizing<String>;
         // The list was made from these notes and this text; the checks
         // keep a stale index from panicking.
         let Some(&entry) = list.entries.get(list.highlight) else {
@@ -300,6 +425,22 @@ impl Editor {
                     return;
                 };
                 (typed, heading.as_str())
+            }
+            (Source::Blocks(note), Some((Part::Block, typed))) => {
+                let Some(block) = all_blocks.get(entry) else {
+                    return;
+                };
+                let found = self
+                    .blocks_text(note, notes)
+                    .zip(block.id.clone())
+                    .and_then(|(body, range)| body.get(range));
+                let Some(found) = found else {
+                    // Roadmap steps J5 and J6 give it one.
+                    self.notice = Some(NO_ID);
+                    return;
+                };
+                id = Zeroizing::new(found.to_owned());
+                (typed, id.as_str())
             }
             _ => return,
         };
@@ -333,6 +474,22 @@ pub fn heading_matches(query: &str, all: &[Zeroizing<String>]) -> Vec<usize> {
         .collect();
     // Stable: the note's order within each group.
     found.sort_by_key(|&i| !starts_ci(&all[i], whole));
+    found.truncate(MAX_MATCHES);
+    found
+}
+
+/// The blocks among `all` (ranges into `body`) whose text holds every
+/// word of `query`, ignoring case, as indexes: those starting with the
+/// whole query first, then in the note's order; at most `MAX_MATCHES`.
+pub fn block_matches(query: &str, body: &str, all: &[Block]) -> Vec<usize> {
+    let whole = query.trim();
+    let text = |i: usize| body.get(all[i].text.clone());
+    let mut found: Vec<usize> = (0..all.len())
+        .filter(|&i| {
+            text(i).is_some_and(|t| query.split_whitespace().all(|word| contains_ci(t, word)))
+        })
+        .collect();
+    found.sort_by_key(|&i| !text(i).is_some_and(|t| starts_ci(t, whole)));
     found.truncate(MAX_MATCHES);
     found
 }
@@ -899,8 +1056,8 @@ mod tests {
         ed.suggestions().map_or_else(Vec::new, |list| {
             (0..list.entries.len())
                 .map(|i| {
-                    let (dim, rest) = ed.suggestion_label(i, n).unwrap();
-                    format!("{dim}{rest}")
+                    let (dim, text, end) = ed.suggestion_label(i, n).unwrap();
+                    format!("{dim}{text}{end}")
                 })
                 .collect()
         })
@@ -1022,6 +1179,92 @@ mod tests {
         assert!(ed.own_headings.is_empty());
     }
 
+    /// Notes with blocks: `plan` (ids on some), a text note.
+    fn with_blocks() -> Notes {
+        notes(vec![
+            note(
+                1,
+                "",
+                "plan",
+                "# Title\n\nFirst paragraph ^p1\n\nTwo lines\nend here ^p2\n\nNo id here\n\n- item ^i-1\n- other item\n",
+            ),
+            note(2, "", "todo.txt", "line ^t\n"),
+        ])
+    }
+
+    #[test]
+    fn caret_lists_the_notes_blocks() {
+        let n = with_blocks();
+        let (mut ed, mut clip) = at_end("see ");
+        send(&mut ed, &mut clip, &n, chars("[[plan#^"));
+        assert_eq!(
+            rows_of(&ed, &n),
+            [
+                "First paragraph ^p1",
+                "Two lines ^p2",
+                "No id here",
+                "item ^i-1",
+                "other item"
+            ]
+        );
+        assert!(matches!(
+            ed.suggestions().unwrap().source,
+            Source::Blocks(Some(0))
+        ));
+        // The id is the dimmed end, apart from the text.
+        assert_eq!(
+            ed.suggestion_label(1, &n).map(|l| (l.1, l.2)),
+            Some(("Two lines", " ^p2"))
+        );
+        // Filtered by the words of the whole block.
+        send(&mut ed, &mut clip, &n, chars("end"));
+        assert_eq!(rows_of(&ed, &n), ["Two lines ^p2"]);
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "see [[plan#^p2]]");
+        assert!(n.resolve(1, "plan#^p2").is_ok());
+    }
+
+    #[test]
+    fn a_block_without_id_is_not_linked_yet() {
+        let n = with_blocks();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[plan#^no"));
+        assert_eq!(rows_of(&ed, &n), ["No id here"]);
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "[[plan#^no]]");
+        assert!(ed.suggestions().is_none());
+        assert_eq!(ed.notice(), Some(NO_ID));
+        // No blocks in a text note, or for a missing note.
+        for typed in ["[[todo.txt#^", "[[nope#^"] {
+            let (mut ed, mut clip) = at_end("");
+            send(&mut ed, &mut clip, &n, chars(typed));
+            assert!(ed.suggestions().is_none(), "{typed}");
+        }
+    }
+
+    #[test]
+    fn caret_alone_lists_the_edited_texts_blocks_while_typing() {
+        let n = with_blocks();
+        let (mut ed, mut clip) = at_end("Kept one ^k\n\nAfter\n\nsee ");
+        send(&mut ed, &mut clip, &n, chars("[[#^"));
+        // Its own blocks, the one being typed in too.
+        assert_eq!(rows_of(&ed, &n), ["Kept one ^k", "After", "see [[#^]]"]);
+        let link = ed.blocks_for.map(|f| f.link);
+        // Typed and deleted in the link: the same parse, its ranges moved.
+        // All three hold an `e`; none starts with one: the note's order.
+        send(&mut ed, &mut clip, &n, chars("e"));
+        assert_eq!(rows_of(&ed, &n), ["Kept one ^k", "After", "see [[#^e]]"]);
+        send(&mut ed, &mut clip, &n, chars("x"));
+        assert_eq!(rows_of(&ed, &n), ["see [[#^ex]]"]);
+        send(&mut ed, &mut clip, &n, [Key::Backspace, Key::Backspace]);
+        assert_eq!(rows_of(&ed, &n), ["Kept one ^k", "After", "see [[#^]]"]);
+        assert_eq!(ed.blocks_for.map(|f| f.link), link);
+        // Without the `^` it is a heading list: none here, so closed.
+        send(&mut ed, &mut clip, &n, [Key::Backspace]);
+        assert!(ed.suggestions().is_none());
+        assert!(ed.blocks.is_empty());
+    }
+
     #[test]
     fn a_click_links_a_heading() {
         let n = with_headings();
@@ -1130,6 +1373,46 @@ mod tests {
             let link = &text[text.rfind("[[").unwrap() + 2..text.len() - 2];
             // Resolved as the saved vault would: the note holding the
             // final text when it is the edited one.
+            let resolved = if own {
+                notes(vec![note(1, "", "t", &text)]).resolve(0, link).map(|(to, f)| (to, f.is_some()))
+            } else {
+                n.resolve(0, link).map(|(to, f)| (to, f.is_some()))
+            };
+            prop_assert_eq!(resolved, Ok((0, true)), "{:?}", link);
+        }
+
+        /// Any blocks: a block chosen with Enter writes a link that
+        /// resolves to that note when it has an id, and changes nothing
+        /// (a notice) when it has none; in another note and in the edited
+        /// one.
+        #[test]
+        fn block_links_resolve(
+            paragraphs in prop::collection::vec("(- )?[a-cé `*]{1,8}( \\^[a-z0-9]{1,4})?", 1..6),
+            pick in any::<prop::sample::Index>(),
+            own in any::<bool>(),
+        ) {
+            let body = paragraphs.join("\n\n");
+            let own_start = format!("{body}\n\n");
+            let (start, typed) = if own { (own_start.as_str(), "[[#^") } else { ("", "[[t#^") };
+            let n = notes(vec![note(1, "", "t", &body)]);
+            let (mut ed, mut clip) = at_end(start);
+            ed.set_note(own.then_some(0), true);
+            send(&mut ed, &mut clip, &n, chars(typed));
+            let Some(list) = ed.suggestions() else {
+                return Ok(());
+            };
+            let downs = pick.index(list.entries.len());
+            let has_id = !ed.suggestion_label(downs, &n).unwrap().2.is_empty();
+            let before = ed.text().to_owned();
+            send(&mut ed, &mut clip, &n, (0..downs).map(|_| Key::Down));
+            send(&mut ed, &mut clip, &n, [Key::Enter]);
+            let text = ed.text().to_owned();
+            if !has_id {
+                prop_assert_eq!(&text, &before);
+                prop_assert_eq!(ed.notice(), Some(NO_ID));
+                return Ok(());
+            }
+            let link = &text[text.rfind("[[").unwrap() + 2..text.len() - 2];
             let resolved = if own {
                 notes(vec![note(1, "", "t", &text)]).resolve(0, link).map(|(to, f)| (to, f.is_some()))
             } else {
