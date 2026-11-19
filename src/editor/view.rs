@@ -57,6 +57,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
+use super::buffer::Change;
 use super::live::layout::{Layout, Piece};
 use super::live::{self, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
@@ -170,6 +171,33 @@ struct Live {
     raw: Vec<Range<usize>>,
     hidden: Vec<Range<usize>>,
     layout: Layout,
+    /// The folded sections (step LF1), in order.
+    folds: Vec<Fold>,
+}
+
+/// A folded section: its heading's line and the lines it hides.
+struct Fold {
+    /// The heading line's start, and where its line break starts.
+    heading: usize,
+    end: usize,
+    /// From the line after the heading to the next heading of its level
+    /// or above, or the text's end.
+    hidden: Range<usize>,
+}
+
+/// The folds kept by heading line start, moved by `change`: one at or
+/// after the change moves with it, one inside what it removed is dropped.
+fn shift(folds: &mut Vec<usize>, change: Change) {
+    folds.retain_mut(|fold| {
+        if *fold < change.at {
+            true
+        } else if *fold >= change.at + change.removed {
+            *fold = *fold - change.removed + change.inserted;
+            true
+        } else {
+            false
+        }
+    });
 }
 
 /// Indents are slices of this.
@@ -228,7 +256,13 @@ impl Live {
     /// overlaps, and a line's markup when the cursor is in it, the
     /// selection or a revealed element (a heading, a code block) overlaps
     /// it. Every other line's markup is hidden.
-    fn new(parsed: Parsed, cursor: usize, selection: &Range<usize>) -> Self {
+    fn new(
+        parsed: Parsed,
+        text: &str,
+        cursor: usize,
+        selection: &Range<usize>,
+        kept: &mut Vec<usize>,
+    ) -> Self {
         let selected = |r: &Range<usize>| selection.start < r.end && r.start < selection.end;
         let elements = parsed
             .elements
@@ -250,12 +284,69 @@ impl Live {
                 hidden.push(markup.clone());
             }
         }
+        // Folds: only on a heading that opens a section and has lines to
+        // hide; one the cursor or the selection is in opens, for good.
+        let headings = &parsed.layout.headings;
+        let mut folds = Vec::new();
+        kept.retain(|&start| {
+            let Ok(i) = headings.binary_search_by_key(&start, |&(line, _)| line) else {
+                return false;
+            };
+            let level = headings[i].1;
+            let Some(newline) = text[start..].find('\n').map(|n| start + n) else {
+                return false;
+            };
+            let end = if text[..newline].ends_with('\r') {
+                newline - 1
+            } else {
+                newline
+            };
+            let section_end = headings[i + 1..]
+                .iter()
+                .find(|&&(_, l)| l <= level)
+                .map_or(text.len(), |&(line, _)| line);
+            let hidden = newline + 1..section_end;
+            let entered = hidden.contains(&cursor)
+                || (hidden.end == text.len() && cursor == text.len())
+                || selected(&hidden);
+            if hidden.is_empty() || entered {
+                return false;
+            }
+            folds.push(Fold {
+                heading: start,
+                end,
+                hidden,
+            });
+            true
+        });
         Self {
             runs: parsed.runs,
             raw: merged(raw),
             hidden,
             layout: parsed.layout,
+            folds,
         }
+    }
+
+    /// The end of the folded section starting at `at`, if one does.
+    fn skip(&self, at: usize) -> Option<usize> {
+        self.folds
+            .iter()
+            .find(|fold| fold.hidden.start == at)
+            .map(|fold| fold.hidden.end)
+    }
+
+    /// The heading line of the folded section `at` is in, if any.
+    fn folded_heading(&self, at: usize) -> Option<usize> {
+        self.folds
+            .iter()
+            .find(|fold| fold.hidden.contains(&at))
+            .map(|fold| fold.heading)
+    }
+
+    /// Whether a folded heading's line ends at `end`.
+    fn folded_end(&self, end: usize) -> bool {
+        self.folds.iter().any(|fold| fold.end == end)
     }
 
     /// The prefix of the row starting at `start`: a line's first row gets
@@ -356,10 +447,16 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
     for (i, grapheme) in rest.grapheme_indices(true) {
         let at = start + i;
         if matches!(shape(grapheme), Shape::Break) {
+            // A folded heading's row is followed by its section's end.
             let next = at + grapheme.len();
+            let next = match live.skip(next) {
+                Some(end) if end >= text.len() => None,
+                Some(end) => Some(end),
+                None => Some(next),
+            };
             return Row {
                 range: start..at,
-                next: Some(next),
+                next,
                 ends_line: true,
                 indent,
             };
@@ -391,7 +488,10 @@ fn line_start(text: &str, at: usize) -> usize {
 
 /// The start of the row the cursor at `at` is drawn on.
 fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
-    let mut start = line_start(text, at);
+    // Inside a folded section: its heading's row.
+    let mut start = live
+        .folded_heading(at)
+        .unwrap_or_else(|| line_start(text, at));
     loop {
         let row = row_at(text, start, width, live);
         match row.next {
@@ -420,6 +520,8 @@ pub struct View {
     live: bool,
     /// Live mode's runs, from the last frame; empty when not live.
     look: Live,
+    /// Folded headings, by their line's start (step LF1).
+    folds: Vec<usize>,
 }
 
 impl View {
@@ -428,6 +530,21 @@ impl View {
         Self {
             live: true,
             ..Self::default()
+        }
+    }
+
+    /// Folds the section of the heading whose line starts at `heading`,
+    /// or unfolds it (step LF1). Takes effect on the next frame, which
+    /// drops it if no heading with lines to hide is there, or opens it if
+    /// the cursor is inside.
+    // Clicked from step LF2 on; until then only tests fold.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub fn toggle_fold(&mut self, heading: usize) {
+        match self.folds.iter().position(|&fold| fold == heading) {
+            Some(i) => {
+                self.folds.remove(i);
+            }
+            None => self.folds.push(heading),
         }
     }
 
@@ -444,6 +561,11 @@ impl View {
         let (body, bottom) = rest.split_bottom(1);
         let rows = usize::from(body.height);
         editor.set_page(rows);
+        // Taken every frame, live or not, so they never pile up; the
+        // folds move with them.
+        for change in editor.take_changes() {
+            shift(&mut self.folds, change);
+        }
         self.cursor = None;
         self.list = None;
 
@@ -495,7 +617,8 @@ impl View {
         if live {
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
-            self.look = Live::new(live::parse(text), cursor, &selection);
+            let parsed = live::parse(text);
+            self.look = Live::new(parsed, text, cursor, &selection, &mut self.folds);
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
@@ -736,6 +859,10 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
         need -= last.len();
         // `line - 1` is the `\n` ending the line above (also inside `\r\n`).
         line = line_start(text, line - 1);
+        // A folded section's lines are its heading's row.
+        if let Some(heading) = live.folded_heading(line) {
+            line = heading;
+        }
         until = None;
     }
 }
@@ -819,6 +946,12 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
             let fill = u16::try_from(fill).unwrap_or(u16::MAX);
             grid.fill(Rect::new(x, area.y, fill, 1), crate::md::render::CODE);
         }
+    }
+    // A folded heading: ` …` after it, as in the viewer.
+    if row.ends_line && live.folded_end(row.range.end) {
+        let x = area.x + u16::try_from(column).unwrap_or(u16::MAX);
+        let room = area.right().saturating_sub(x);
+        grid.put_str(x, area.y, " …", Style::PLAIN.mods(Mods::DIM), room);
     }
     // The line's end: the cursor there, or a selected line break.
     if row.ends_line {
@@ -1682,7 +1815,14 @@ mod tests {
                 };
                 ed.key(key, &mut clip);
             }
-            let grid = drawn(&mut ed, &mut View::live(), width, height);
+            // Every section folded (step LF1): one the cursor is in opens.
+            let mut view = View::live();
+            for (heading, _) in live::parse(ed.text()).layout.headings {
+                view.toggle_fold(heading);
+            }
+            drawn(&mut ed, &mut view, width, height);
+            ed.key(Key::Up, &mut clip);
+            let grid = drawn(&mut ed, &mut view, width, height);
             // The cursor: underlined cells in the default color, on one
             // row (a link is underlined too, but cyan).
             let cursor: Vec<(u16, u16)> = (0..height)
@@ -1931,5 +2071,93 @@ mod tests {
             assert!(seen.is_some(), "{word} not in the viewer");
             assert_eq!(shown, seen, "{word}");
         }
+    }
+
+    /// Folds (step LF1): a folded section's lines are not drawn and its
+    /// heading ends in ` …`; a section reaching the text's end folds too;
+    /// a line typed above moves the fold; the cursor entering opens it.
+    #[test]
+    fn live_folds_hide_sections_until_the_cursor_enters() {
+        let mut clip = Clipboard::default();
+        let (h1, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        let mut ed = Editor::new("# A\nbody1\nbody2\n# B\nafter").unwrap();
+        // The cursor in `A`'s text, so the heading stays styled.
+        for key in [Key::Right, Key::Right] {
+            ed.key(key, &mut clip);
+        }
+        let mut view = View::live();
+        view.toggle_fold(0);
+        let grid = drawn(&mut ed, &mut view, 30, 7);
+        assert_eq!(
+            rows(&grid)[1..5],
+            [
+                format!("  {h1}A …"),
+                format!("  {h1}B"),
+                "    after".into(),
+                String::new()
+            ]
+        );
+        // A line typed above the heading: the fold moves with it.
+        for key in [
+            Key::Home,
+            Key::Char('z'),
+            Key::Enter,
+            Key::Right,
+            Key::Right,
+        ] {
+            ed.key(key, &mut clip);
+        }
+        let grid = drawn(&mut ed, &mut view, 30, 7);
+        assert_eq!(rows(&grid)[1..3], ["  z".to_owned(), format!("  {h1}A …")]);
+        // Down into the section: it opens.
+        ed.key(Key::Down, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 7);
+        assert_eq!(
+            rows(&grid)[2..5],
+            [format!("  {h1}A"), "    body1".into(), "    body2".into()]
+        );
+        // The last section, reaching the text's end.
+        let mut ed = Editor::new("# A\nx\n# B\ny\nz").unwrap();
+        for key in [Key::Right, Key::Right] {
+            ed.key(key, &mut clip);
+        }
+        let mut view = View::live();
+        view.toggle_fold(6);
+        let grid = drawn(&mut ed, &mut view, 30, 7);
+        assert_eq!(
+            rows(&grid)[1..5],
+            [
+                format!("  {h1}A"),
+                "    x".into(),
+                format!("  {h1}B …"),
+                String::new()
+            ]
+        );
+    }
+
+    /// Folds move with each change: kept before it, moved after it,
+    /// dropped inside what it removed.
+    #[test]
+    fn folds_move_with_changes() {
+        let mut folds = vec![10, 20, 30];
+        shift(
+            &mut folds,
+            Change {
+                at: 15,
+                removed: 10,
+                inserted: 2,
+            },
+        );
+        assert_eq!(folds, [10, 22]);
+        // Typed at a heading's start (a line break before it): it moves.
+        shift(
+            &mut folds,
+            Change {
+                at: 10,
+                removed: 0,
+                inserted: 1,
+            },
+        );
+        assert_eq!(folds, [11, 23]);
     }
 }

@@ -32,6 +32,32 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps LF1 to LF4 (live editing: folding and links as in the viewer)
+
+Asked for by the user (2026-11-20) after a complexity warning: in live
+mode, whatever is not being edited works as in the viewer. Headings
+fold: the viewer's marker shows in the gutter under the mouse (bold
+orange `v` open, `>` folded), a click on it folds or unfolds the
+section, a folded heading ends in ` …`. A click on an internal link
+(not drawn as written) follows it: its note opens live, at its heading
+or block; with unsaved changes Crystal says to save first, as Ctrl+E
+does. Web links are the terminal's (Ctrl+click), their address hidden
+(decision 0054). What cannot work as in the viewer, since keys type
+text in the editor: Tab, n/N, Enter, Backspace (back), y and Y; and a
+click on a heading's text places the cursor, so only the marker folds.
+A fold opens when the cursor or the selection enters its section (Up,
+Down, a paste, undo), so the cursor is never hidden. No security
+benefit; about 330 lines of code and 300 of tests. Rules as for LE1 to
+LE7; motion reports in the editor follow decision 0076's rule (they
+never count as activity).
+
+| Step | What | Check |
+| --- | --- | --- |
+| LF1 (done) | Folds: the buffer records each change's offsets (never text) for the view; the layout lists headings outside quotes and lists; the view keeps folded headings by offset, moved with each change, dropped when their heading goes, opened when the cursor or selection enters; the row walk skips a folded section, its heading ends in a dimmed ` …`. About 120 lines | Unit tests: fold and unfold, edits above and inside move or drop the fold, the cursor entering opens it, scrolling past a fold; the cursor property test with folds |
+| LF2 | Markers: motion reports on in the live editor (buttons only in the plain one, as now), the marker on the hovered heading's gutter cell, a click on it folds or unfolds. About 70 lines | Unit tests: hover, click, clicks elsewhere place the cursor as before |
+| LF3 | Links: `live::parse` records each link's element and whether it is internal; a click on a link not drawn as written follows it (internal: its note live at its heading or block, unsaved changes: save first; web: Ctrl+click it); web links carry the terminal's hyperlink as in the viewer. About 140 lines | Unit tests: which clicks follow; a binary test: a click follows a `[[note#heading]]`, motion reports off after leaving the editor |
+| LF4 | Decisions 0045 and 0076 updated in place (motion reports in the live editor), setup guide, `scripts/check-mouse.sh` items, fmt, clippy, test, deny, audit, mdbook | Review of the diff for mode sequences left on, the activity rule, note text in strings, `unsafe`, syscalls, dependencies |
+
 ## Steps LR1 and LI1 to LI3 (live editing: reveal by word, viewer indentation; done)
 
 Asked for by the user (2026-11-19) after trying `edit --live`, with a

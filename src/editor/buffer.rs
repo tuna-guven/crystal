@@ -57,6 +57,15 @@ struct Edit {
     inserted: Zeroizing<String>,
 }
 
+/// Where the text changed: at `at`, `removed` bytes became `inserted`
+/// bytes. Offsets only, never text: for the view's folds (step LF1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub at: usize,
+    pub removed: usize,
+    pub inserted: usize,
+}
+
 /// The text bytes a step keeps.
 fn step_bytes(step: &[Edit]) -> usize {
     step.iter()
@@ -74,6 +83,8 @@ pub struct Buffer {
     redo: Vec<Vec<Edit>>,
     /// Text bytes in `open`, `undo` and `redo`.
     logged: usize,
+    /// The changes since `take_changes` last ran.
+    changes: Vec<Change>,
 }
 
 impl Buffer {
@@ -90,11 +101,17 @@ impl Buffer {
             undo: VecDeque::new(),
             redo: Vec::new(),
             logged: 0,
+            changes: Vec::new(),
         })
     }
 
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+
+    /// The changes made since the last call, in order (edits, undo, redo).
+    pub fn take_changes(&mut self) -> Vec<Change> {
+        std::mem::take(&mut self.changes)
     }
 
     /// Replaces `range` with `text`, as part of the open undo step. A new
@@ -196,6 +213,11 @@ impl Buffer {
     /// caller has checked boundaries and the limit (undo and redo return
     /// to texts that were within it).
     fn apply(&mut self, at: usize, remove: usize, insert: &str) {
+        self.changes.push(Change {
+            at,
+            removed: remove,
+            inserted: insert.len(),
+        });
         self.remove(at, at + remove);
         self.reserve(insert.len());
         // Fits the capacity, so `insert_str` moves bytes but never

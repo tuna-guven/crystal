@@ -57,6 +57,9 @@ pub struct Line {
 pub struct Layout {
     pub lines: Vec<Line>,
     pub pieces: Vec<Piece>,
+    /// The headings that open a section (outside quotes and lists, as in
+    /// the viewer): their line's start and level, in order (step LF1).
+    pub headings: Vec<(usize, u8)>,
 }
 
 impl Layout {
@@ -178,6 +181,8 @@ impl<'a> Builder<'a> {
                 // Only a heading outside quotes and lists opens a section.
                 if self.containers.is_empty() {
                     self.section = 2 * (*level as u16 - 1);
+                    let line = self.text[..at].rfind('\n').map_or(0, |i| i + 1);
+                    self.layout.headings.push((line, *level as u8));
                 }
                 self.hide_bare = true;
                 self.containers.push(Container::Item {

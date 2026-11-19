@@ -144,6 +144,12 @@ impl Editor {
         })
     }
 
+    /// The text's changes since the last call (offsets only), for the
+    /// view's folds; the view takes them every frame.
+    pub fn take_changes(&mut self) -> Vec<buffer::Change> {
+        self.buffer.take_changes()
+    }
+
     pub fn text(&self) -> &str {
         self.buffer.as_str()
     }
