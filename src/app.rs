@@ -268,6 +268,9 @@ fn run_loop(
                             Target::New { name, .. } => name.as_str(),
                         });
                         e.view.draw(grid, &mut e.editor, name);
+                        // The link suggestions over it, named from the
+                        // session's notes (borrowed, never copied).
+                        e.view.draw_suggestions(grid, &e.editor, notes);
                     }
                 },
             }
@@ -432,14 +435,18 @@ fn run_loop(
                             }
                             // The cell, as the last frame drew it, to the
                             // text; a press must land on the text, a drag
-                            // stops at its edge (decision 0073).
+                            // stops at its edge (decision 0073). The list
+                            // of link suggestions, drawn over the text,
+                            // comes first.
                             if let Key::Mouse { event, column, row } = key {
                                 let clamp = event != MouseEvent::Press;
                                 let at = e.view.position_at(e.editor.text(), column, row, clamp);
-                                e.editor.mouse(event, at, std::time::Instant::now());
+                                let entry = e.view.suggestion_at(column, row);
+                                let now = std::time::Instant::now();
+                                e.editor.mouse_in(event, at, entry, now, session.notes());
                                 continue;
                             }
-                            match e.editor.key(key, clipboard) {
+                            match e.editor.key_in(key, clipboard, session.notes()) {
                                 EditorAction::Stay => {}
                                 EditorAction::Close => mode = Mode::Shell,
                                 EditorAction::View => match e.target {

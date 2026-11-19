@@ -13,11 +13,6 @@
 //! an entry links that note and the wheel over the list moves the
 //! highlight; anything else closes it and acts as always.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into the session in roadmap step W5")
-)]
-
 use std::ops::Range;
 use std::time::Instant;
 

@@ -857,7 +857,8 @@ mod tests {
     /// vault with a note holding the canary (in its title, its text, a
     /// heading, a tag and a link), saved; the shell's completion names,
     /// `search CANARY` typed into the shell (line, history, output); the
-    /// pager's rendering; the editor, typed into, and Crystal's clipboard
+    /// pager's rendering; the editor, typed into (its link suggestions
+    /// open on the canary's note, drawn and taken), and Crystal's clipboard
     /// filled from it. Then what `lock` does (decision 0048), step by step
     /// as `app::run` and `crystal::run` (src/lib.rs) do it: the editor, pager and grid
     /// dropped, the clipboard wiped, the shell dropped, the session ended
@@ -922,14 +923,22 @@ mod tests {
             let mut pager = Pager::open(0);
             pager.draw(&mut grid, session.notes(), None);
 
+            // The editor as app::run drives it, with link suggestions:
+            // `[[` and the canary open the list on the canary's note; it is
+            // drawn, and Enter links the note, so its name is copied into
+            // the text.
             let mut clipboard = Clipboard::default();
             let mut editor = Editor::new(&body).unwrap();
             let mut view = View::default();
-            for c in canary.chars() {
-                editor.key(Key::Char(c), &mut clipboard);
+            for c in "[[".chars().chain(canary.chars()) {
+                editor.key_in(Key::Char(c), &mut clipboard, session.notes());
             }
-            editor.key(Key::Ctrl('a'), &mut clipboard);
-            editor.key(Key::Ctrl('c'), &mut clipboard);
+            assert!(editor.suggestions().is_some(), "the list is open");
+            view.draw(&mut grid, &mut editor, "plan");
+            view.draw_suggestions(&mut grid, &editor, session.notes());
+            editor.key_in(Key::Enter, &mut clipboard, session.notes());
+            editor.key_in(Key::Ctrl('a'), &mut clipboard, session.notes());
+            editor.key_in(Key::Ctrl('c'), &mut clipboard, session.notes());
             view.draw(&mut grid, &mut editor, "plan");
             assert!(
                 in_memory(&CANARY_MASKED).is_some(),

@@ -281,10 +281,6 @@ impl View {
     /// Draws the editor's suggestion list over the frame `draw` just made
     /// (see the module comment), its names from `notes`. Nothing when the
     /// list is closed, the cursor was not drawn, or there is no room.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the session in roadmap step W5")
-    )]
     pub fn draw_suggestions(&mut self, grid: &mut Grid, editor: &Editor, notes: &Notes) {
         /// The suggestion list's rows: the gray of code blocks in the viewer.
         const LIST: Style = Style::PLAIN.bg(Color::Indexed(236));
@@ -374,10 +370,6 @@ impl View {
     /// The suggestion list's entry (an index into `List::notes`) drawn at
     /// the cell (`column`, `row`) in the last frame, if the list was drawn
     /// there (decision 0073's mouse).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired into the session in roadmap step W5")
-    )]
     pub fn suggestion_at(&self, column: u16, row: u16) -> Option<usize> {
         let (area, first) = self.list?;
         let inside =

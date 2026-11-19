@@ -1391,6 +1391,51 @@ fn mouse_clicks_and_drags_in_the_editor_only() {
     assert!(!note.contains("old") && !note.contains("gone"), "{note:?}");
 }
 
+/// Link suggestions in the editor (roadmap W1 to W6): `[[` and a few
+/// letters, Enter links the first match; `[[`, the list shows both notes,
+/// a click on its second row links that one. Saved, both links resolve.
+#[test]
+fn link_suggestions_complete_links_by_key_and_click() {
+    let (home, _) = home_with_vault("editor_suggest");
+    // One session per note: after the editor the shell is drawn again
+    // with the earlier question, which a later wait for "Create" would
+    // match too early.
+    for name in ["garden", "plan"] {
+        let mut steps = pass_step(PASS);
+        steps.push((SHELL_READY, format!("edit {name}\r").into_bytes()));
+        steps.push(("Create", b"y\r".to_vec()));
+        steps.push(("Markdown", b"\r".to_vec()));
+        steps.push(("Ctrl+S save", format!("# {name}\x13\x11").into_bytes()));
+        steps.push((SHELL_READY, b"quit\r".to_vec()));
+        let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+        assert!(ok, "{output}");
+    }
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit today\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    // `[[ga` and Enter: `[[garden]]`. Then ` and [[`: the text is
+    // `1 see [[garden]] and [[]]` on row 2, the cursor after `[[` at
+    // column 23 (1-based); the list opens below it, `garden` on row 3,
+    // `plan` on row 4. Once it shows (only the list shows `plan`), a
+    // press and release on `plan`, then Ctrl+S. Waits are single words:
+    // the frame skips cells already blank.
+    steps.push(("Ctrl+S save", b"see [[ga\r and [[".to_vec()));
+    steps.push(("plan", b"\x1b[<0;24;4M\x1b[<0;24;4m\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"links\r".to_vec()));
+    steps.push(("broken", b"view today\r".to_vec()));
+    // The viewer's key line; its text is drawn over the shell's, so only
+    // the changed cells, and `see` can come in pieces.
+    steps.push(("follow", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    // The viewer's frame comes after the answer to `links`.
+    let viewed = visible(&output[output.find("broken").unwrap()..]);
+    assert!(viewed.contains("garden and plan"), "{viewed:?}");
+}
+
 /// A session with the debug-only demo notes never saves: vault.age stays
 /// byte for byte the same.
 #[test]
