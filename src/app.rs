@@ -256,11 +256,13 @@ fn run_loop(
     // A SIGTSTP sent during the passphrase prompt was not acted on there.
     signals.forget_suspend();
     loop {
-        // Mouse reports only while the editor itself shows (decision 0073).
-        let mouse = if matches!(&mode, Mode::Edit(e) if e.preview.is_none()) {
-            Mouse::Buttons
-        } else {
-            Mouse::Off
+        // Mouse reports only while the editor (decision 0073) or the
+        // viewer, the preview too (decision 0076), shows; never in the
+        // shell.
+        let mouse = match &mode {
+            Mode::Edit(e) if e.preview.is_none() => Mouse::Buttons,
+            Mode::Edit(_) | Mode::View(_) => Mouse::Motion,
+            Mode::Shell => Mouse::Off,
         };
         screen.frame(terminal.output(), mouse, |grid| {
             let notes = session.notes();

@@ -1448,6 +1448,71 @@ fn create_note(home: &Path, name: &str, body: &str) {
     assert!(ok, "{output}");
 }
 
+/// The mouse in the viewer (decision 0076): a click on `[[plan#Checks]]`
+/// opens `plan` at that heading, a click on the heading's `>` folds it
+/// (` …`), Backspace goes back. The viewer turns every-motion reports on;
+/// back in the shell they are off again.
+#[test]
+fn viewer_clicks_follow_links_and_fold() {
+    let (home, _) = home_with_vault("viewer_mouse");
+    create_note(&home, "plan", "# Plan\r\r## Checks\r\rlast");
+    // Ctrl+S closes the link suggestions over `[[plan#Checks]]` and saves.
+    create_note(&home, "today", "see [[plan#Checks");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"view today\r".to_vec()));
+    // `  see plan#Checks` on row 2: the link from column 7 (1-based).
+    steps.push(("q shell", b"\x1b[<0;8;2M\x1b[<0;8;2m".to_vec()));
+    // `plan`: `◉ Plan` on row 2, `○ Checks` on row 4; its `>` in column 1.
+    steps.push(("Plan", b"\x1b[<0;1;4M\x1b[<0;1;4m".to_vec()));
+    steps.push(("…", b"\x7f".to_vec()));
+    steps.push(("see", b"q".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let on = output
+        .find("\x1b[?1003h")
+        .expect("motion reports on in the viewer");
+    assert!(output.rfind("\x1b[?1003l").unwrap() > output.rfind("\x1b[?1003h").unwrap());
+    // On with the viewer's first frame, before its key line.
+    assert!(on < output.find("q shell").unwrap());
+}
+
+/// The mouse moving with no button held is not activity (decision 0076):
+/// with auto-lock after 3 seconds, the viewer open and a motion report
+/// every second for 5 seconds, the lock comes anyway, so the `q` sent
+/// after them lands on the lock screen, never back in the shell. If
+/// moving counted, `q` would close the viewer first.
+#[test]
+#[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
+fn moving_the_mouse_does_not_hold_off_auto_lock() {
+    let (home, _) = home_with_vault("auto_lock_motion");
+    create_note(&home, "x", "text");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"view x\r".to_vec()));
+    steps.push(("q shell", Vec::new()));
+    for _ in 0..5 {
+        steps.push(("", PAUSE_ONE_SECOND.to_vec()));
+        steps.push(("", b"\x1b[<35;5;5M".to_vec()));
+    }
+    steps.push(("", b"q".to_vec()));
+    steps.push((
+        "5 minutes idle; notes and history were wiped",
+        b"\x1b".to_vec(),
+    ));
+    let cmd = format!("'{BIN}' unlock --lock-after-for-test 3 diary");
+    let (ok, output) = dialog(&cmd, &home, &steps);
+    assert!(ok, "{output}");
+    let viewer = output.find("q shell").unwrap();
+    let locked = output.find("5 minutes idle").unwrap();
+    assert!(
+        !output[viewer..locked].contains(SHELL_READY),
+        "back in the shell before the lock: {output}"
+    );
+    // Motion reports off before the lock screen.
+    let before = &output[..locked];
+    assert!(before.rfind("\x1b[?1003l").unwrap() > before.rfind("\x1b[?1003h").unwrap());
+}
+
 /// A heading chosen by a click (roadmap J7): `[[plan#` lists `plan`'s
 /// headings, the key line names the list, a click on the second row
 /// links `[[plan#Checks]]`; unlocked again, `links` finds it.

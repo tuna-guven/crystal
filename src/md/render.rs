@@ -129,6 +129,25 @@ struct Run {
     at: Option<usize>,
 }
 
+/// A link as drawn: its row, first column and width, and what it is. A
+/// click on its cells follows it (decision 0076).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clickable {
+    pub y: u16,
+    pub x: u16,
+    pub columns: u16,
+    pub target: LinkTarget,
+}
+
+/// What a drawn link leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A `[[link]]`: an index into the page's links.
+    Note(usize),
+    /// A web link, opened by the terminal (Ctrl+click), never by Crystal.
+    Web,
+}
+
 /// An Obsidian `[[link]]` on the page: its target as written (`name`,
 /// `name#Heading`, `name#^id`, `#Heading`) and the first line it is on.
 struct PageLink {
@@ -275,7 +294,8 @@ impl Page {
     }
 
     /// Draws line `index` at (x, y), at most `width` columns, with link
-    /// `selected` (if any) reversed. Returns the columns used.
+    /// `selected` (if any) reversed, and adds the links drawn to
+    /// `clickable`. Returns the columns used.
     pub fn draw_line(
         &self,
         grid: &mut Grid,
@@ -283,6 +303,7 @@ impl Page {
         width: u16,
         index: usize,
         selected: Option<usize>,
+        clickable: &mut Vec<Clickable>,
     ) -> u16 {
         let selected = selected.and_then(|s| u32::try_from(s).ok());
         let mut used = 0;
@@ -309,6 +330,19 @@ impl Page {
                 let link = grid.add_link(self.text_of(url));
                 grid.set_link(x, y, columns, link);
             }
+            let target = match (run.link, run.url) {
+                (Some(link), _) => Some(LinkTarget::Note(link as usize)),
+                (None, Some(_)) => Some(LinkTarget::Web),
+                (None, None) => None,
+            };
+            if let Some(target) = target.filter(|_| columns > 0) {
+                clickable.push(Clickable {
+                    y,
+                    x,
+                    columns,
+                    target,
+                });
+            }
             used += columns;
         }
         used
@@ -318,7 +352,7 @@ impl Page {
     #[cfg(test)]
     pub fn draw(&self, grid: &mut Grid, area: Rect, scroll: usize) {
         for (y, index) in (area.y..area.bottom()).zip(scroll..self.line_count()) {
-            self.draw_line(grid, (area.x, y), area.width, index, None);
+            self.draw_line(grid, (area.x, y), area.width, index, None, &mut Vec::new());
         }
     }
 }
@@ -1748,7 +1782,21 @@ mod tests {
         // The selected link is drawn reversed; the other is not.
         let mut grid = Grid::new(12, u16::try_from(page.line_count()).unwrap());
         let row = u16::try_from(page.link_line(1).unwrap()).unwrap();
-        page.draw_line(&mut grid, (0, row), 12, usize::from(row), Some(1));
+        let mut clickable = Vec::new();
+        page.draw_line(
+            &mut grid,
+            (0, row),
+            12,
+            usize::from(row),
+            Some(1),
+            &mut clickable,
+        );
+        // Both links are clickable where they are drawn.
+        assert!(
+            clickable
+                .iter()
+                .any(|c| c.target == LinkTarget::Note(1) && c.y == row)
+        );
         let reversed: Vec<bool> = (0..12)
             .map(|x| {
                 grid.cell(x, row)

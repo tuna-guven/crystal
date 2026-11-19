@@ -26,7 +26,7 @@
 
 use zeroize::Zeroizing;
 
-use crate::md::render::{Page, Section, kind_of, render, shown};
+use crate::md::render::{Clickable, LinkTarget, Page, Section, kind_of, render, shown};
 use crate::notes::{Fragment, Notes};
 use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::grid::{Color, Grid, Mods, Style};
@@ -44,6 +44,9 @@ const GUTTER: u16 = 2;
 /// (256-color 245), bold while the mouse is over it (decision 0076).
 const MARKER: Style = Style::PLAIN.fg(Color::Indexed(245));
 const MARKER_HOVER: Style = MARKER.mods(Mods::BOLD);
+/// Shown on a click on a web link: the terminal opens it, never Crystal
+/// (decision 0076).
+const WEB_LINK: &str = "Web links open with Ctrl+click: the terminal opens them, not Crystal.";
 /// Rows one step of the mouse wheel scrolls (as in the editor, 0073).
 const WHEEL_ROWS: usize = 3;
 const HINTS: &str = "q shell · j/k scroll · Tab fold · n/N links · Enter follow · \
@@ -94,6 +97,8 @@ pub struct Pager {
     top_row: u16,
     /// The screen row whose heading marker the mouse is over.
     hover: Option<u16>,
+    /// The links as last drawn, for clicks.
+    clickable: Vec<Clickable>,
     selected: Option<usize>,
     jump: Option<Jump>,
     backlinks: Option<Backlinks>,
@@ -115,6 +120,7 @@ impl Pager {
             drawn: Vec::new(),
             top_row: 0,
             hover: None,
+            clickable: Vec::new(),
             selected: None,
             jump: None,
             backlinks: None,
@@ -206,7 +212,7 @@ impl Pager {
     pub fn key(&mut self, key: Key, notes: &Notes) -> PagerAction {
         // Mouse reports (decision 0076).
         if let Key::Mouse { event, column, row } = key {
-            return self.mouse(event, column, row);
+            return self.mouse(event, column, row, notes);
         }
         let key = key.without_shift();
         self.notice = None;
@@ -407,9 +413,11 @@ impl Pager {
 
     /// A mouse report (decision 0076), at a cell counted from 0: moving
     /// over a heading's marker makes it bold, a press on it folds or
-    /// unfolds its section, the wheel scrolls `WHEEL_ROWS`. Anything else
-    /// does nothing. A press, like a key, clears the notice.
-    pub fn mouse(&mut self, event: MouseEvent, column: u16, row: u16) -> PagerAction {
+    /// unfolds its section, a press on a `[[link]]` follows it as Enter
+    /// does (on a web link it says to Ctrl+click), the wheel scrolls
+    /// `WHEEL_ROWS`. Anything else does nothing. A press, like a key,
+    /// clears the notice.
+    fn mouse(&mut self, event: MouseEvent, column: u16, row: u16, notes: &Notes) -> PagerAction {
         // On a heading's marker: its section.
         let marker = (column < GUTTER)
             .then(|| row.checked_sub(self.top_row))
@@ -424,8 +432,20 @@ impl Pager {
             MouseEvent::Move => self.hover = marker.map(|_| row),
             MouseEvent::Press => {
                 self.notice = None;
-                if let Some(i) = marker {
-                    self.toggle(i);
+                let link = self
+                    .clickable
+                    .iter()
+                    .find(|c| c.y == row && c.x <= column && column - c.x < c.columns)
+                    .map(|c| c.target)
+                    .filter(|_| self.backlinks.is_none());
+                match (marker, link) {
+                    (Some(i), _) => self.toggle(i),
+                    (None, Some(LinkTarget::Note(link))) => {
+                        self.selected = Some(link);
+                        self.follow(notes);
+                    }
+                    (None, Some(LinkTarget::Web)) => self.notice = Some(WEB_LINK),
+                    (None, None) => {}
                 }
             }
             MouseEvent::WheelUp | MouseEvent::WheelDown if self.backlinks.is_none() => {
@@ -449,6 +469,9 @@ impl Pager {
         let (top, rest) = area.split_top(1);
         let (body, bottom) = rest.split_bottom(1);
         self.rows = usize::from(body.height).max(1);
+        // What the mouse can point at: only what this frame draws.
+        self.drawn.clear();
+        self.clickable.clear();
         let previewing = self.preview == Some(self.note) && editor_text.is_some();
         if self.page.is_none() || self.width != body.width {
             let note = notes.note(self.note);
@@ -516,7 +539,6 @@ impl Pager {
             // a section; the note in the rest.
             let (gutter, text_area) = body.split_left(GUTTER);
             let mut line = Some(self.scroll).filter(|&l| l < page.line_count());
-            self.drawn.clear();
             self.top_row = body.y;
             for y in body.y..body.bottom() {
                 let Some(index) = line else { break };
@@ -530,7 +552,14 @@ impl Pager {
                     grid.put_str(gutter.x, y, ">", style, gutter.width);
                 }
                 let (x, width) = (text_area.x, text_area.width);
-                let used = page.draw_line(grid, (x, y), width, index, self.selected);
+                let used = page.draw_line(
+                    grid,
+                    (x, y),
+                    width,
+                    index,
+                    self.selected,
+                    &mut self.clickable,
+                );
                 let folded = self
                     .folded
                     .iter()
@@ -914,6 +943,39 @@ mod tests {
         p.key(at(MouseEvent::WheelDown, 5, 5), &n);
         p.key(at(MouseEvent::Press, 0, 1), &n);
         assert!(p.backlinks.is_some() && p.folded.is_empty());
+    }
+
+    /// A press on a `[[link]]` follows it as Enter does, a broken one
+    /// says why; on a web link it only says to Ctrl+click; next to a link,
+    /// nothing.
+    #[test]
+    fn a_click_follows_a_link() {
+        let n = notes(vec![
+            note(
+                1,
+                "",
+                "home",
+                "See [[b]] or [web](https://example.org).\n\n[[gone]]",
+            ),
+            note(2, "", "b", "# B\n\nbody"),
+        ]);
+        let mut p = Pager::open(0);
+        let shown = rows(&mut p, &n, 60, 10);
+        // `  See b or web.`: `b` at column 6, `web` from 11.
+        assert_eq!(shown[1], "  See b or web.");
+        for column in [5, 7] {
+            p.key(at(MouseEvent::Press, column, 1), &n);
+        }
+        assert_eq!(p.note, 0, "beside the link");
+        p.key(at(MouseEvent::Press, 11, 1), &n);
+        assert_eq!((p.note, p.notice), (0, Some(WEB_LINK)));
+        p.key(at(MouseEvent::Press, 6, 1), &n);
+        assert_eq!(rows(&mut p, &n, 60, 10)[0], " b");
+        p.key(Key::Backspace, &n);
+        rows(&mut p, &n, 60, 10);
+        p.key(at(MouseEvent::Press, 4, 3), &n);
+        assert_eq!(p.notice, Some("no note with that name"));
+        assert_eq!(p.note, 0);
     }
 
     /// With folds, paging and the ends count shown lines only, and the
