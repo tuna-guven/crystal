@@ -23,6 +23,9 @@
 //! draws it; the session saves, closes, or shows the viewer.
 
 pub mod buffer;
+// Drawn from step LE3 on; until then only its tests use it.
+#[cfg_attr(not(test), expect(dead_code))]
+pub mod live;
 pub mod suggest;
 pub mod view;
 

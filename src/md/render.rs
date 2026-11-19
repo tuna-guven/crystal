@@ -97,9 +97,29 @@ const DIM: Style = Style::PLAIN.mods(Mods::DIM);
 /// The background code stands out on: 256-color dark gray.
 const CODE_BG: Color = Color::Indexed(236);
 /// Inline code and the inside of a code block's box.
-const CODE: Style = Style::PLAIN.fg(Color::Yellow).bg(CODE_BG);
+pub const CODE: Style = Style::PLAIN.fg(Color::Yellow).bg(CODE_BG);
 const QUOTE_BAR: Style = Style::PLAIN.fg(Color::DarkGray);
-const LINK: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::UNDERLINED);
+pub const LINK: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::UNDERLINED);
+
+/// A heading's icon and style, per level (decision 0052); the editor's
+/// live mode uses the same.
+pub fn heading_mark(level: HeadingLevel) -> (&'static str, Style) {
+    let (icon, color) = match level {
+        HeadingLevel::H1 => ("◉ ", Color::Yellow),
+        HeadingLevel::H2 => ("○ ", Color::Green),
+        HeadingLevel::H3 => ("● ", Color::Red),
+        HeadingLevel::H4 => ("✿ ", Color::Blue),
+        HeadingLevel::H5 => ("◆ ", Color::Magenta),
+        HeadingLevel::H6 => ("◇ ", Color::Cyan),
+    };
+    (icon, PLAIN.fg(color).mods(Mods::BOLD))
+}
+
+/// The Markdown the renderer reads; the editor's live mode reads the same.
+pub const OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_WIKILINKS);
 
 /// Where a run's text comes from.
 #[derive(Clone)]
@@ -655,10 +675,7 @@ impl<'s> Builder<'s> {
     }
 
     fn markdown(&mut self) {
-        let options = Options::ENABLE_TABLES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_WIKILINKS;
+        let options = OPTIONS;
         // The parser borrows the sanitized text for 's, apart from `self`.
         let source: &'s SafeText = self.source;
         for (event, range) in Parser::new_ext(source.as_str(), options).into_offset_iter() {
@@ -723,15 +740,7 @@ impl<'s> Builder<'s> {
             }
             Tag::Heading { level, .. } => {
                 self.start_block();
-                let (icon, color) = match level {
-                    HeadingLevel::H1 => ("◉ ", Color::Yellow),
-                    HeadingLevel::H2 => ("○ ", Color::Green),
-                    HeadingLevel::H3 => ("● ", Color::Red),
-                    HeadingLevel::H4 => ("✿ ", Color::Blue),
-                    HeadingLevel::H5 => ("◆ ", Color::Magenta),
-                    HeadingLevel::H6 => ("◇ ", Color::Cyan),
-                };
-                let style = PLAIN.fg(color).mods(Mods::BOLD);
+                let (icon, style) = heading_mark(level);
                 let level = level as u8;
                 // Only a heading outside quotes and lists opens a section:
                 // it is drawn two columns per level in, and what follows
