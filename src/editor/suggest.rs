@@ -180,15 +180,63 @@ impl Editor {
 /// them, nor `[` (decision 0034).
 const ENDS_NAME: &[char] = &['[', ']', '|', '#', '^'];
 
-/// The query: the bytes from just after the last `[[` before `cursor`
-/// on its line, up to `cursor`, when none of `ENDS_NAME` lies between.
-/// `![[` (an embed) counts too, since it ends in `[[`. None when the
-/// cursor is not inside a link's name, or not on a char boundary.
-pub fn query(text: &str, cursor: usize) -> Option<Range<usize>> {
+/// What a link's fragment points into (decision 0075).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// `#text`: a heading.
+    Heading,
+    /// `#^text`: a block.
+    Block,
+}
+
+/// The link the cursor is typing (`target`): ranges into the text, never
+/// copies. No Debug, as it points into note text.
+pub struct Query {
+    /// The note's name as typed; empty before `#` for the note being
+    /// edited.
+    pub name: Range<usize>,
+    /// After `#` (or `#^`): what kind, and the text typed after it, which
+    /// ends at the cursor.
+    pub fragment: Option<(Part, Range<usize>)>,
+}
+
+/// The link the cursor is typing: from just after the last `[[` before
+/// `cursor` on its line (`![[` counts too) up to `cursor`. A name is
+/// followed by at most one `#`: `name#text` is a heading, `name#^text` a
+/// block, with an empty name for the note being edited. None when the
+/// cursor is not inside such a link, or not on a char boundary: `[`, `]`
+/// or `|` anywhere, a second `#`, or a `^` anywhere else.
+pub fn target(text: &str, cursor: usize) -> Option<Query> {
     let before = text.get(..cursor)?;
     let line = before.rfind('\n').map_or(0, |at| at + 1);
     let start = line + before[line..].rfind("[[")? + 2;
-    (!before[start..].contains(ENDS_NAME)).then_some(start..cursor)
+    let typed = &before[start..];
+    let Some(hash) = typed.find('#') else {
+        return (!typed.contains(ENDS_NAME)).then_some(Query {
+            name: start..cursor,
+            fragment: None,
+        });
+    };
+    let name = start..start + hash;
+    let after = start + hash + 1;
+    let (part, from) = if before[after..].starts_with('^') {
+        (Part::Block, after + 1)
+    } else {
+        (Part::Heading, after)
+    };
+    let valid = !text[name.clone()].contains(ENDS_NAME) && !before[from..].contains(ENDS_NAME);
+    valid.then_some(Query {
+        name,
+        fragment: Some((part, from..cursor)),
+    })
+}
+
+/// A note name the cursor is typing, with no fragment after it: the
+/// query for the list of notes (W1). None anywhere else.
+pub fn query(text: &str, cursor: usize) -> Option<Range<usize>> {
+    target(text, cursor)
+        .filter(|q| q.fragment.is_none())
+        .map(|q| q.name)
 }
 
 /// The notes whose full name holds every word of `query`, ignoring case,
@@ -288,6 +336,54 @@ mod tests {
         assert_eq!(q("[[é", 3), None);
         // Past the end.
         assert_eq!(q("[[", 3), None);
+    }
+
+    /// `target` as text: (name, fragment kind, fragment text).
+    fn t(text: &str) -> Option<(&str, Option<(Part, &str)>)> {
+        target(text, text.len())
+            .map(|q| (&text[q.name], q.fragment.map(|(part, r)| (part, &text[r]))))
+    }
+
+    #[test]
+    fn fragments_after_the_name() {
+        use Part::{Block, Heading};
+        assert_eq!(t("[[plan#"), Some(("plan", Some((Heading, "")))));
+        assert_eq!(t("[[plan#Che"), Some(("plan", Some((Heading, "Che")))));
+        assert_eq!(
+            t("[[plan#two words"),
+            Some(("plan", Some((Heading, "two words"))))
+        );
+        assert_eq!(t("[[plan#^"), Some(("plan", Some((Block, "")))));
+        assert_eq!(t("[[plan#^ab"), Some(("plan", Some((Block, "ab")))));
+        assert_eq!(t("[[#Che"), Some(("", Some((Heading, "Che")))));
+        assert_eq!(t("[[#^x"), Some(("", Some((Block, "x")))));
+        assert_eq!(
+            t("see ![[work/plan#é"),
+            Some(("work/plan", Some((Heading, "é"))))
+        );
+        // No fragment: as before.
+        assert_eq!(t("[[pla"), Some(("pla", None)));
+        // `query` is only the name with no fragment.
+        assert_eq!(q("[[plan#x", 8), None);
+        assert_eq!(q("[[plan", 6), Some("plan"));
+    }
+
+    #[test]
+    fn what_ends_a_fragment() {
+        for text in [
+            "[[plan#a#b",
+            "[[plan#a^b",
+            "[[plan#^a^b",
+            "[[plan#^a#b",
+            "[[plan#a]",
+            "[[plan#a|b",
+            "[[plan#a[",
+            "[[pl^an#a",
+            "[[pl]an#a",
+            "[[plan#a\nb",
+        ] {
+            assert_eq!(t(text), None, "{text:?}");
+        }
     }
 
     fn sample() -> Notes {
@@ -672,6 +768,33 @@ mod tests {
                 prop_assert!(!name.unwrap().contains(ENDS_NAME));
                 prop_assert!(!name.unwrap().contains('\n'));
                 prop_assert_eq!(&text[r.start - 2..r.start], "[[");
+            }
+        }
+
+        /// Any text and cursor: no panic, and a target's name and
+        /// fragment are char-boundary ranges after `[[`, in order, the
+        /// last one ending at the cursor; neither holds a character that
+        /// ends it, and only the fragment's own `#` (and `^`) lie between.
+        #[test]
+        fn target_ranges_are_valid(
+            text in "[ab \n\\[\\]|#^!é😀]{0,24}",
+            cursor in 0usize..40,
+        ) {
+            if let Some(Query { name, fragment }) = target(&text, cursor) {
+                prop_assert_eq!(&text[name.start - 2..name.start], "[[");
+                prop_assert!(!text[name.clone()].contains(ENDS_NAME));
+                prop_assert!(!text[name.clone()].contains('\n'));
+                match fragment {
+                    None => prop_assert_eq!(name.end, cursor),
+                    Some((part, r)) => {
+                        prop_assert_eq!(r.end, cursor);
+                        let between = &text[name.end..r.start];
+                        let expected = match part { Part::Heading => "#", Part::Block => "#^" };
+                        prop_assert_eq!(between, expected);
+                        prop_assert!(!text[r.clone()].contains(ENDS_NAME));
+                        prop_assert!(!text[r].contains('\n'));
+                    }
+                }
             }
         }
 
