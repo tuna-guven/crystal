@@ -23,7 +23,7 @@
 //! (`model::lines`, decision 0055): dim, right-aligned, on the first row
 //! of each line with text; none on blank lines or wrapped rows. It is as
 //! wide as the last number, and left out if fewer than `MIN_TEXT` columns
-//! would stay for the text. Its width and first number cost a pass over
+//! would stay for the text, and in live mode, as in the viewer. Its width and first number cost a pass over
 //! the text and one over the text above the screen per frame: under 1 ms
 //! for 8 MiB of long lines, about 18 ms each for 8 MiB of the shortest
 //! (measured in a release build). Accepted, as above: real notes are far
@@ -295,6 +295,11 @@ impl View {
         }
     }
 
+    /// Whether this view was opened live (`edit --live`).
+    pub fn is_live(&self) -> bool {
+        self.live
+    }
+
     /// Draws `editor` on `grid`, with `name` on the top row, and tells the
     /// editor how many rows a page is.
     pub fn draw(&mut self, grid: &mut Grid, editor: &mut Editor, name: &str) {
@@ -334,7 +339,8 @@ impl View {
         // The gutter: the last number's digits and a space.
         let digits = lines::count(text).max(1).ilog10() + 1;
         let gutter = u16::try_from(digits).unwrap_or(u16::MAX).saturating_add(1);
-        let gutter = if body.width >= gutter.saturating_add(MIN_TEXT) {
+        // Live mode shows no line numbers, as the viewer.
+        let gutter = if !live && body.width >= gutter.saturating_add(MIN_TEXT) {
             gutter
         } else {
             0
@@ -1426,7 +1432,8 @@ mod tests {
 
     /// Live mode (step LE3): lines away from the cursor have their markup
     /// hidden and styled; the cursor's line, and every line a selection
-    /// touches, is drawn as written.
+    /// touches, is drawn as written. No line numbers when live; as written,
+    /// they are back.
     #[test]
     fn live_mode_styles_lines_away_from_the_cursor() {
         let mut clip = Clipboard::default();
@@ -1439,29 +1446,25 @@ mod tests {
         assert_eq!(
             rows(&grid)[1..4],
             [
-                format!("1 {icon}Title"),
-                "2 bold and alias".into(),
-                "3 last".into()
+                format!("{icon}Title"),
+                "bold and alias".into(),
+                "last".into()
             ]
         );
-        assert_eq!(style_at(&grid, 4, 1), heading, "the heading's T");
-        assert!(style_at(&grid, 2, 2).mods.contains(Mods::BOLD), "b");
-        assert_eq!(
-            style_at(&grid, 11, 2),
-            crate::md::render::LINK,
-            "a of alias"
-        );
+        assert_eq!(style_at(&grid, 2, 1), heading, "the heading's T");
+        assert!(style_at(&grid, 0, 2).mods.contains(Mods::BOLD), "b");
+        assert_eq!(style_at(&grid, 9, 2), crate::md::render::LINK, "a of alias");
         // The cursor on the second line: it is drawn as written.
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[2], "2 **bold** and [[Note|alias]]");
-        assert_eq!(rows(&grid)[1], format!("1 {icon}Title"));
+        assert_eq!(rows(&grid)[2], "**bold** and [[Note|alias]]");
+        assert_eq!(rows(&grid)[1], format!("{icon}Title"));
         // A selection from there into the first line: both as written.
         ed.key(Key::ShiftUp, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
         assert_eq!(
             rows(&grid)[1..4],
-            ["1 # Title", "2 **bold** and [[Note|alias]]", "3 last"]
+            ["# Title", "**bold** and [[Note|alias]]", "last"]
         );
         // Not live: everything as written.
         let grid = drawn(&mut ed, &mut View::default(), 40, 5);
@@ -1529,21 +1532,21 @@ mod tests {
         }
         let mut view = View::live();
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "2 bold word");
+        assert_eq!(rows(&grid)[2], "bold word");
         let at = |view: &View, x, y| view.position_at(ed.text(), x, y, false);
-        // `w` of word, after the gutter's `2 ` and `bold `.
-        assert_eq!(at(&view, 7, 2), Some(17));
+        // `w` of word, after `bold ` (no line numbers when live).
+        assert_eq!(at(&view, 5, 2), Some(17));
         // `b` of bold, past the hidden `**`.
-        assert_eq!(at(&view, 2, 2), Some(10));
+        assert_eq!(at(&view, 0, 2), Some(10));
         // Both cells of the icon: the heading's start; then `T`.
-        assert_eq!(at(&view, 2, 1), Some(0));
-        assert_eq!(at(&view, 3, 1), Some(0));
-        assert_eq!(at(&view, 4, 1), Some(2));
+        assert_eq!(at(&view, 0, 1), Some(0));
+        assert_eq!(at(&view, 1, 1), Some(0));
+        assert_eq!(at(&view, 2, 1), Some(2));
         ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
         assert_eq!(ed.cursor(), 17);
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "2 **bold** word");
-        assert_eq!(cursor_cell(&grid), Some((11, 2)));
+        assert_eq!(rows(&grid)[2], "**bold** word");
+        assert_eq!(cursor_cell(&grid), Some((9, 2)));
     }
 
     /// Crystal's clipboard in live mode (step LE5): copying takes the
@@ -1582,7 +1585,7 @@ mod tests {
         let grid = drawn(&mut ed, &mut view, 40, 4);
         let shown = rows(&grid);
         assert!(shown[0].ends_with(" live"));
-        assert_eq!(shown[1], "1 b");
+        assert_eq!(shown[1], "b", "no line numbers when live");
         ed.key(Key::Char('x'), &mut clip);
         let grid = drawn(&mut ed, &mut view, 40, 4);
         let shown = rows(&grid);

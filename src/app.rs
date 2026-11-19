@@ -35,6 +35,10 @@ use crate::ui::screen::{Mouse, Screen};
 use crate::vault::codec::MAX_BODY_BYTES;
 
 const COPIED: &str = "Copied inside Crystal; it never leaves it.";
+/// Ctrl+E in the preview, on a note reached by a link, while the editor
+/// holds unsaved changes.
+const SAVE_FIRST: &str =
+    "Unsaved changes here: Ctrl+S saves them, then Ctrl+E edits the other note.";
 
 /// Auto-lock after this long without a key or paste, fixed (decision 0048).
 pub const AUTO_LOCK: Duration = Duration::from_secs(5 * 60);
@@ -57,6 +61,13 @@ enum Target {
         /// `folder/title`, for the top row.
         name: Zeroizing<String>,
     },
+}
+
+impl Target {
+    /// Whether this is `note`, saved (a new note is no note yet).
+    fn is(&self, note: usize) -> bool {
+        matches!(self, Self::Note(n) if *n == note)
+    }
 }
 
 /// A question the shell asked; the next line answers it.
@@ -427,16 +438,28 @@ fn run_loop(
                                 let action = pager.key(key, session.notes());
                                 match action {
                                     PagerAction::Stay => {}
-                                    // Ctrl+E, q or Esc: back to the editor,
-                                    // whichever note the preview has reached.
+                                    // Ctrl+E on a note a link led to: that
+                                    // note in the editor, live if this one
+                                    // is; with unsaved changes, back here
+                                    // first, so nothing is lost.
+                                    PagerAction::Edit(note) if !e.target.is(note) => {
+                                        if e.editor.is_dirty() {
+                                            e.preview = None;
+                                            e.editor.tell(SAVE_FIRST);
+                                        } else {
+                                            let live = e.view.is_live();
+                                            let target = Target::Note(note);
+                                            mode = edit(session.notes(), target, live, shell);
+                                        }
+                                    }
+                                    // Ctrl+E on the note being edited, q or
+                                    // Esc: back to the editor.
                                     PagerAction::Close | PagerAction::Edit(_) => e.preview = None,
                                     // The text previewed is the editor's,
                                     // unsaved; a note reached by a link is
                                     // its saved one.
                                     PagerAction::Copy(note) | PagerAction::CopyLine(note, _) => {
-                                        let previewed =
-                                            matches!(e.target, Target::Note(n) if n == note);
-                                        let text = if previewed {
+                                        let text = if e.target.is(note) {
                                             e.editor.text()
                                         } else {
                                             session.notes().note(note).body.as_str()

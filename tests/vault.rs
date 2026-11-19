@@ -1374,6 +1374,44 @@ fn live_edit_styles_and_saves_the_markdown() {
     assert!(shown.contains("**qzx** end"), "{shown:?}");
 }
 
+/// In the editor's Ctrl+E preview, Ctrl+E on a note a link led to edits
+/// that note; with unsaved changes it goes back to the first editor and
+/// asks to save first.
+#[test]
+fn preview_edits_the_note_a_link_led_to() {
+    let (home, _) = home_with_vault("editor_preview_link");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit omega\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    steps.push(("Ctrl+S save", b"zz\x13\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+
+    // A fresh shell, so "Create" is alpha's question.
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit alpha\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    steps.push(("Ctrl+S save", b"see [[omega]]\x13".to_vec()));
+    // Saved: preview, follow the link, Ctrl+E edits omega.
+    steps.push(("Saved.", b"\x05".to_vec()));
+    steps.push(("preview", b"n\r".to_vec()));
+    steps.push(("zz", b"\x05".to_vec()));
+    steps.push(("Ctrl+S save", b"!\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    // Unsaved: back in alpha's editor, asked to save first.
+    steps.push((SHELL_READY, b"edit alpha\r".to_vec()));
+    steps.push(("Ctrl+S save", b"x\x05".to_vec()));
+    steps.push(("preview", b"n\r".to_vec()));
+    steps.push(("!zz", b"\x05".to_vec()));
+    steps.push(("Unsaved changes here", b"\x11\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
 /// The mouse in the editor (decision 0073): a click places the cursor, a
 /// drag selects, a double click a word, a triple click a line, and typing
 /// replaces the selection. Reports are turned on

@@ -459,7 +459,7 @@ open, the key line names what it lists and its keys.
 preview (no security benefit; about 400 lines of code, comments
 included, and 400 of tests), draws a Markdown note with its markup
 hidden and its text styled as in the viewer on every line but those
-the cursor and the selection are on. The text, keys, undo and Crystal's
+the cursor and the selection are on, without line numbers. The text, keys, undo and Crystal's
 clipboard are the plain editor's, so copying and saving keep the
 Markdown as written. Every grapheme drawn is the note's own, through
 the same checks as below, or a fixed marker (an icon, `•`, `│`, a
@@ -592,7 +592,7 @@ link from an untrusted note can name another site than its target.
 *2026-11-15.* Only lines with text are numbered, counted from 1, by one
 module (`model::lines`) for the viewer, `y` and the editor, which shows
 them in a gutter (dim numbers, none on blank or wrapped rows, dropped
-below 20 columns); which lines count, and the viewer's gutter, are in
+below 20 columns and in live mode, [0045](#0045)); which lines count, and the viewer's gutter, are in
 [0057](#0057). A table wider
 than the screen stays boxed: columns that fit their share keep their
 width, the wider ones split the rest, each cell wraps inside its column;

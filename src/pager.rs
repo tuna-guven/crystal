@@ -19,7 +19,8 @@
 //! From the editor, Ctrl+E opens a preview: the editor's current text,
 //! unsaved changes included, rendered in place of the saved note and
 //! marked "preview" on the top row. Notes reached by following a link
-//! show their saved text. Links resolve against the saved notes.
+//! show their saved text, and Ctrl+E there edits that note (once the
+//! editor's changes are saved). Links resolve against the saved notes.
 //!
 //! Like the shell, it is terminal-free: keys in, frames out. A page is
 //! rendered for the current width and again after a resize.
