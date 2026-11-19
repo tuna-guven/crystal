@@ -28,7 +28,7 @@ use zeroize::Zeroizing;
 
 use crate::md::render::{Page, Section, kind_of, render, shown};
 use crate::notes::{Fragment, Notes};
-use crate::shell::keys::Key;
+use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::grid::{Color, Grid, Mods, Style};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
@@ -40,6 +40,12 @@ const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
 /// Columns left of the note: a heading's marker and a space.
 const GUTTER: u16 = 2;
+/// A heading's marker in the gutter, a click folds its section: gray
+/// (256-color 245), bold while the mouse is over it (decision 0076).
+const MARKER: Style = Style::PLAIN.fg(Color::Indexed(245));
+const MARKER_HOVER: Style = MARKER.mods(Mods::BOLD);
+/// Rows one step of the mouse wheel scrolls (as in the editor, 0073).
+const WHEEL_ROWS: usize = 3;
 const HINTS: &str = "q shell · j/k scroll · Tab fold · n/N links · Enter follow · \
                      Backspace previous · b backlinks · y/Y copy line/note · Ctrl+E edit";
 
@@ -82,6 +88,12 @@ pub struct Pager {
     folded: Vec<usize>,
     /// Rows the note had when last drawn.
     rows: usize,
+    /// The shown line on each row of the note as last drawn, from
+    /// `top_row` down: what a mouse report's row points at.
+    drawn: Vec<usize>,
+    top_row: u16,
+    /// The screen row whose heading marker the mouse is over.
+    hover: Option<u16>,
     selected: Option<usize>,
     jump: Option<Jump>,
     backlinks: Option<Backlinks>,
@@ -100,6 +112,9 @@ impl Pager {
             scroll: 0,
             folded: Vec::new(),
             rows: 1,
+            drawn: Vec::new(),
+            top_row: 0,
+            hover: None,
             selected: None,
             jump: None,
             backlinks: None,
@@ -189,10 +204,9 @@ impl Pager {
     }
 
     pub fn key(&mut self, key: Key, notes: &Notes) -> PagerAction {
-        // The viewer never turns mouse reports on (decision 0073): a late
-        // one changes nothing, not even the notice.
-        if matches!(key, Key::Mouse { .. }) {
-            return PagerAction::Stay;
+        // Mouse reports (decision 0076).
+        if let Key::Mouse { event, column, row } = key {
+            return self.mouse(event, column, row);
         }
         let key = key.without_shift();
         self.notice = None;
@@ -287,10 +301,15 @@ impl Pager {
                 self.on_screen()
                     .find_map(|line| sections.iter().position(|s| s.line == line))
             });
-        let Some(i) = i else {
-            self.notice = Some("No heading here to fold.");
-            return;
-        };
+        match i {
+            Some(i) => self.toggle(i),
+            None => self.notice = Some("No heading here to fold."),
+        }
+    }
+
+    /// Folds section `i` (an index into the page's sections), or unfolds
+    /// it.
+    fn toggle(&mut self, i: usize) {
         match self.folded.iter().position(|&f| f == i) {
             Some(at) => {
                 self.folded.swap_remove(at);
@@ -386,6 +405,37 @@ impl Pager {
         }
     }
 
+    /// A mouse report (decision 0076), at a cell counted from 0: moving
+    /// over a heading's marker makes it bold, a press on it folds or
+    /// unfolds its section, the wheel scrolls `WHEEL_ROWS`. Anything else
+    /// does nothing. A press, like a key, clears the notice.
+    pub fn mouse(&mut self, event: MouseEvent, column: u16, row: u16) -> PagerAction {
+        // On a heading's marker: its section.
+        let marker = (column < GUTTER)
+            .then(|| row.checked_sub(self.top_row))
+            .flatten()
+            .and_then(|at| self.drawn.get(usize::from(at)))
+            .and_then(|&line| {
+                let page = self.page.as_ref()?;
+                page.sections().iter().position(|s| s.line == line)
+            })
+            .filter(|_| self.backlinks.is_none());
+        match event {
+            MouseEvent::Move => self.hover = marker.map(|_| row),
+            MouseEvent::Press => {
+                self.notice = None;
+                if let Some(i) = marker {
+                    self.toggle(i);
+                }
+            }
+            MouseEvent::WheelUp | MouseEvent::WheelDown if self.backlinks.is_none() => {
+                self.scroll_by(WHEEL_ROWS, event == MouseEvent::WheelDown);
+            }
+            _ => {}
+        }
+        PagerAction::Stay
+    }
+
     /// Shows `notice` on the bottom line until the next key.
     pub fn tell(&mut self, notice: &'static str) {
         self.notice = Some(notice);
@@ -462,12 +512,23 @@ impl Pager {
                 grid.put_str(body.x + 1 + used, row, kind.label(), dim, room - used);
             }
         } else if let Some(page) = &self.page {
-            // The gutter on the left (headings' markers, roadmap step Q3),
-            // the note in the rest.
-            let (_gutter, text_area) = body.split_left(GUTTER);
+            // The gutter on the left, a gray `>` on each heading that opens
+            // a section; the note in the rest.
+            let (gutter, text_area) = body.split_left(GUTTER);
             let mut line = Some(self.scroll).filter(|&l| l < page.line_count());
+            self.drawn.clear();
+            self.top_row = body.y;
             for y in body.y..body.bottom() {
                 let Some(index) = line else { break };
+                self.drawn.push(index);
+                if page.sections().iter().any(|s| s.line == index) {
+                    let style = if self.hover == Some(y) {
+                        MARKER_HOVER
+                    } else {
+                        MARKER
+                    };
+                    grid.put_str(gutter.x, y, ">", style, gutter.width);
+                }
                 let (x, width) = (text_area.x, text_area.width);
                 let used = page.draw_line(grid, (x, y), width, index, self.selected);
                 let folded = self
@@ -596,15 +657,17 @@ mod tests {
         assert_eq!(p.scroll, 0);
     }
 
-    /// No cursor and no `>` (decision 0076): the gutter is blank and the
-    /// note keeps its own colors after it. j scrolls the screen a row.
+    /// No cursor and no orange `>` (decision 0076): the gutter is blank
+    /// but for headings' markers, and the note keeps its own colors after
+    /// it. j scrolls the screen a row.
     #[test]
     fn no_cursor_is_drawn() {
         let n = sample();
         let mut p = Pager::open(1);
         let mut grid = Grid::new(40, 10);
         p.draw(&mut grid, &n, None);
-        assert!((1..9).all(|y| grid.cell(0, y).unwrap().symbol() == " "));
+        assert_eq!(grid.cell(0, 1).unwrap().symbol(), ">", "the heading");
+        assert!((2..9).all(|y| grid.cell(0, y).unwrap().symbol() == " "));
         assert_eq!(grid.cell(1, 1).unwrap().symbol(), " ");
         assert_eq!(grid.cell(2, 1).unwrap().symbol(), "◉");
         assert_eq!(grid.cell(2, 1).unwrap().style().fg, Color::Yellow);
@@ -657,7 +720,7 @@ mod tests {
         // Near the end the page cannot scroll further, so the heading is
         // shown lower down, not on the first row.
         assert!(
-            shown.contains(&"    ○ Second".to_owned()),
+            shown.contains(&">   ○ Second".to_owned()),
             "jumped to the heading: {shown:?}"
         );
         assert_eq!(p.scroll, p.max_scroll());
@@ -709,10 +772,10 @@ mod tests {
         rows(&mut p, &n, 40, 12);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..5], ["  ◉ A …", "  ◉ D", "", "    d1"]);
+        assert_eq!(shown[1..5], ["> ◉ A …", "> ◉ D", "", "    d1"]);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..4], ["  ◉ A", "", "    a1"]);
+        assert_eq!(shown[1..4], ["> ◉ A", "", "    a1"]);
         // b1 at the top (two rows of note): inside B, inside A; B folds,
         // its heading on top.
         let mut p = Pager::open(0);
@@ -724,13 +787,13 @@ mod tests {
         p.key(Key::Tab, &n);
         assert_eq!(p.scroll, 4);
         let shown = rows(&mut p, &n, 40, 4);
-        assert_eq!(shown[1..3], ["    ○ B …", "    ○ C"]);
+        assert_eq!(shown[1..3], [">   ○ B …", ">   ○ C"]);
         // Above every heading: the first on the screen.
         let n = notes(vec![note(1, "", "i", "intro\n\n# H\n\nx")]);
         let mut p = Pager::open(0);
         rows(&mut p, &n, 40, 12);
         p.key(Key::Tab, &n);
-        assert_eq!(rows(&mut p, &n, 40, 12)[3], "  ◉ H …");
+        assert_eq!(rows(&mut p, &n, 40, 12)[3], "> ◉ H …");
         let n = notes(vec![note(1, "", "p", "plain\n\ntext")]);
         let mut p = Pager::open(0);
         rows(&mut p, &n, 40, 12);
@@ -756,8 +819,8 @@ mod tests {
         p.key(Key::Tab, &n);
         p.key(Key::Tab, &n);
         let shown = rows(&mut p, &n, 40, 12);
-        assert_eq!(shown[1..6], ["  ◉ A", "", "    a1", "", "    ○ B …"]);
-        assert_eq!(shown[6], "    ○ C");
+        assert_eq!(shown[1..6], ["> ◉ A", "", "    a1", "", ">   ○ B …"]);
+        assert_eq!(shown[6], ">   ○ C");
         p.key(Key::Tab, &n);
         p.key(Key::Char('n'), &n);
         assert_eq!(p.selected, Some(0));
@@ -773,6 +836,84 @@ mod tests {
         assert!(p.folded.is_empty());
         assert_eq!(p.scroll, p.max_scroll(), "C as high as it goes");
         assert!(p.on_screen().any(|line| line == 8));
+    }
+
+    /// A mouse report at a cell (decision 0076).
+    fn at(event: MouseEvent, column: u16, row: u16) -> Key {
+        Key::Mouse { event, column, row }
+    }
+
+    /// Each heading opening a section has a gray `>` in the gutter, bold
+    /// while the mouse is over it; nothing else in the gutter.
+    #[test]
+    fn headings_have_gray_markers_bold_on_hover() {
+        let n = outline();
+        let mut p = Pager::open(0);
+        let mut grid = Grid::new(40, 12);
+        p.draw(&mut grid, &n, None);
+        // Rows 1 to 10: lines 0 to 9; A 0, B 4, C 8.
+        let marked: Vec<u16> = (1..11)
+            .filter(|&y| grid.cell(0, y).unwrap().symbol() == ">")
+            .collect();
+        assert_eq!(marked, [1, 5, 9]);
+        assert_eq!(grid.cell(0, 1).unwrap().style(), MARKER);
+        assert!(!MARKER.mods.contains(Mods::BOLD));
+        // Over B's marker: bold; over its text or another row: not.
+        p.key(at(MouseEvent::Move, 0, 5), &n);
+        grid.reset();
+        p.draw(&mut grid, &n, None);
+        assert_eq!(grid.cell(0, 5).unwrap().style(), MARKER_HOVER);
+        assert_eq!(grid.cell(0, 1).unwrap().style(), MARKER);
+        for (column, row) in [(4, 5), (0, 3), (0, 11), (0, 0)] {
+            p.key(at(MouseEvent::Move, column, row), &n);
+            assert_eq!(p.hover, None, "{column},{row}");
+        }
+        // The blank column beside it counts as the marker too.
+        p.key(at(MouseEvent::Move, 1, 9), &n);
+        assert_eq!(p.hover, Some(9));
+    }
+
+    /// A press on a heading's marker folds its section, another unfolds
+    /// it; presses anywhere else, drags and releases change nothing. The
+    /// wheel scrolls three rows.
+    #[test]
+    fn a_click_on_a_marker_folds_and_the_wheel_scrolls() {
+        let n = outline();
+        let mut p = Pager::open(0);
+        rows(&mut p, &n, 40, 12);
+        p.key(at(MouseEvent::Press, 0, 5), &n);
+        let shown = rows(&mut p, &n, 40, 12);
+        assert_eq!(shown[5..7], [">   ○ B …", ">   ○ C"]);
+        p.key(at(MouseEvent::Press, 0, 5), &n);
+        assert!(p.folded.is_empty());
+        for event in [MouseEvent::Press, MouseEvent::Drag, MouseEvent::Release] {
+            for (column, row) in [(4, 5), (0, 3), (0, 0), (0, 11), (39, 1)] {
+                p.key(at(event, column, row), &n);
+            }
+        }
+        assert!(p.folded.is_empty());
+        assert_eq!(p.scroll, 0);
+        p.key(at(MouseEvent::WheelDown, 10, 3), &n);
+        assert_eq!(p.scroll, 3);
+        p.key(at(MouseEvent::WheelDown, 10, 3), &n);
+        assert_eq!(p.scroll, p.max_scroll(), "stops at the last screen");
+        p.key(at(MouseEvent::WheelUp, 10, 3), &n);
+        assert_eq!(p.scroll, 2);
+        // Scrolled: the marker on a row is that row's heading's. Row 3 is
+        // line 4, B.
+        rows(&mut p, &n, 40, 12);
+        p.key(at(MouseEvent::Press, 0, 3), &n);
+        assert_eq!(p.folded.len(), 1);
+        assert_eq!(p.page.as_ref().unwrap().sections()[p.folded[0]].line, 4);
+        // With the backlinks list open, the mouse does nothing.
+        let n = sample();
+        let mut p = Pager::open(0);
+        rows(&mut p, &n, 60, 10);
+        p.key(Key::Char('b'), &n);
+        rows(&mut p, &n, 60, 10);
+        p.key(at(MouseEvent::WheelDown, 5, 5), &n);
+        p.key(at(MouseEvent::Press, 0, 1), &n);
+        assert!(p.backlinks.is_some() && p.folded.is_empty());
     }
 
     /// With folds, paging and the ends count shown lines only, and the
@@ -887,13 +1028,15 @@ mod tests {
     }
 
     proptest::proptest! {
-        /// Any keys on any note and screen: the top row is a shown line
-        /// of the page and the last screen full; a link n or N selects is
-        /// on the screen.
+        /// Any keys and mouse events on any note and screen: the top row
+        /// is a shown line of the page and the last screen full; a link n
+        /// or N selects is on the screen; a gutter `>` marks a heading,
+        /// bold only where the mouse is.
         #[test]
         fn any_keys_keep_the_scroll_in_bounds(
             parts in proptest::collection::vec(0usize..8, 0..12),
-            keys in proptest::collection::vec(0usize..13, 0..40),
+            keys in proptest::collection::vec(0usize..19, 0..40),
+            cells in proptest::collection::vec((0u16..4, 0u16..14), 40),
             width in 8u16..40,
             height in 3u16..12,
         ) {
@@ -914,12 +1057,16 @@ mod tests {
             ]);
             let mut p = Pager::open(0);
             rows(&mut p, &n, width, height);
-            for k in keys {
+            for (k, (column, row)) in keys.into_iter().zip(cells) {
+                let mouse = |event| Key::Mouse { event, column, row };
                 let key = [
                     Key::Char('j'), Key::Char('k'), Key::Char(' '), Key::PageUp,
                     Key::PageDown, Key::Char('g'), Key::Char('G'), Key::Tab,
                     Key::Char('n'), Key::Char('N'), Key::Enter, Key::Backspace,
                     Key::Char('y'),
+                    mouse(MouseEvent::Press), mouse(MouseEvent::Move), mouse(MouseEvent::Drag),
+                    mouse(MouseEvent::Release), mouse(MouseEvent::WheelUp),
+                    mouse(MouseEvent::WheelDown),
                 ]
                 .into_iter()
                 .nth(k)
@@ -934,6 +1081,19 @@ mod tests {
                 proptest::prop_assert!(p.scroll <= p.max_scroll());
                 proptest::prop_assert!(p.lines() == 0 || p.scroll < p.lines());
                 proptest::prop_assert_eq!(p.shown_at(p.scroll), p.scroll);
+                // A marker is bold only on the row the mouse is over, and
+                // every marker is on a heading's row.
+                let mut grid = Grid::new(width, height);
+                p.draw(&mut grid, &n, None);
+                for y in 0..height {
+                    let cell = grid.cell(0, y).unwrap();
+                    if cell.symbol() == ">" && p.backlinks.is_none() {
+                        proptest::prop_assert!(cell.style() != MARKER_HOVER || p.hover == Some(y));
+                        let line = y.checked_sub(p.top_row).and_then(|r| p.drawn.get(usize::from(r)));
+                        let page = p.page.as_ref().unwrap();
+                        proptest::prop_assert!(line.is_some_and(|&l| page.sections().iter().any(|s| s.line == l)));
+                    }
+                }
             }
         }
     }
