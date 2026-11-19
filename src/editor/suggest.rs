@@ -773,14 +773,17 @@ pub struct Query {
 }
 
 /// The link the cursor is typing: from just after the last `[[` before
-/// `cursor` on its line (`![[` counts too) up to `cursor`. A name is
+/// `cursor` on its line (ended by `\n` or `\r`) (`![[` counts too) up to `cursor`. A name is
 /// followed by at most one `#`: `name#text` is a heading, `name#^text` a
 /// block, with an empty name for the note being edited. None when the
 /// cursor is not inside such a link, or not on a char boundary: `[`, `]`
 /// or `|` anywhere, a second `#`, or a `^` anywhere else.
 pub fn target(text: &str, cursor: usize) -> Option<Query> {
     let before = text.get(..cursor)?;
-    let line = before.rfind('\n').map_or(0, |at| at + 1);
+    // Lines end where the parser ends them, a lone `\r` too: no link
+    // spans one, and the kept blocks (`load_blocks`) take the link and
+    // the cursor to be on one parser line (found by the long tests).
+    let line = before.rfind(['\n', '\r']).map_or(0, |at| at + 1);
     let start = line + before[line..].rfind("[[")? + 2;
     let typed = &before[start..];
     let Some(hash) = typed.find('#') else {
@@ -904,6 +907,9 @@ mod tests {
         // The `[[` is on an earlier line.
         assert_eq!(q("[[a\nb", 5), None);
         assert_eq!(q("[[a\r\nb", 6), None);
+        // A lone `\r` ends a line too, as the parser reads it.
+        assert_eq!(q("[[a\rb", 5), None);
+        assert_eq!(t("[[#^a\rb"), None);
         // Not a char boundary.
         assert_eq!(q("[[é", 3), None);
         // Past the end.

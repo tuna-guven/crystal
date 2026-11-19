@@ -2,20 +2,21 @@
 # Long property-test runs (docs/development/testing.md, "Property tests"):
 # the same tests `cargo test` runs with proptest's default 256 cases, here
 # with far more, in a release build. Run before a release, and weekly in CI
-# (.github/workflows/long-tests.yml). Takes about 44 minutes on a desktop
-# (age_v1 about 14 of them), about 60 in CI (timeout 90).
+# (.github/workflows/long-tests.yml). Takes about 50 minutes on a desktop
+# (age_v1 about 14 of them), about 70 in CI (timeout 90).
 #
 # Needs RLIMIT_MEMLOCK at Crystal's floor (2 GiB), like `cargo test`. The unit
 # tests live in the library since step S11a, hence --lib (with --bin
 # crystal, which has no tests, a run would pass having run nothing).
 set -eu
 
-# Untrusted text: the renderer, sanitizer, wrapping, names, key decoding,
-# the vault codec, the editor (buffer, keys, the mouse and link suggestions)
-# and the prompts
+# Untrusted text: the renderer, sanitizer, the blocks a link can point
+# into, wrapping, names, key decoding, the vault codec, the editor (buffer,
+# keys, the mouse and link suggestions) and the prompts
 # (escape sequences skipped, decision 0074). About 1 to 2.5 minutes each
-# per million cases (the editor about 21, with link suggestions).
-for module in md::render md::safe ui::wrap model::name vault::codec editor term; do
+# per million cases (md::blocks about 6, the editor about 21, with link
+# suggestions).
+for module in md::render md::safe md::blocks ui::wrap model::name vault::codec editor term; do
     echo "== $module: 1000000 cases"
     PROPTEST_CASES=1000000 cargo test --locked --release --lib "$module"
 done

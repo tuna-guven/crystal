@@ -52,7 +52,8 @@ use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::ui::grid::{
-    Color, Grid, Mods, Style, display_width, grapheme_width, hides_something, is_forbidden,
+    Color, Grid, MAX_CELL_BYTES, Mods, Style, display_width, grapheme_width, hides_something,
+    is_forbidden,
 };
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
@@ -98,8 +99,13 @@ fn shape(grapheme: &str) -> Shape<'_> {
         "\n" | "\r\n" => Shape::Break,
         "\t" => Shape::Tab,
         _ => match usize::from(grapheme_width(grapheme)) {
+            // Longer than a grid cell holds, it would be drawn `?`, one
+            // column, while laid out as `width` (found by the long tests).
             width
-                if width > 0 && !grapheme.contains(is_forbidden) && !hides_something(grapheme) =>
+                if width > 0
+                    && grapheme.len() <= MAX_CELL_BYTES
+                    && !grapheme.contains(is_forbidden)
+                    && !hides_something(grapheme) =>
             {
                 Shape::Text(grapheme, width)
             }

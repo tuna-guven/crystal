@@ -37,6 +37,13 @@ In the editor:
      highlight moves, the text does not scroll. Click a name: it becomes
      [[name]], the cursor after it. Type  [[  again and click on the
      text beside the list: the list closes, the cursor moves.
+ 3b. Headings and blocks (decision 0075): type  [[guide#  : the list
+     shows  # Guide  and  # Keys , the key line starts with  Headings .
+     Click  # Keys : [[guide#Keys]]. Type  [[guide#^ : the list shows
+     Press q. ^keys  (the id dimmed), the key line starts with  Blocks .
+     Turn the wheel over it, then click it: [[guide#^keys]]. Type
+     [[welcome#^ and click a paragraph: a notice says demo notes are
+     never saved, and nothing is written.
   4. Paste a long text (Ctrl+Shift+V, more lines than the window): the
      wheel moves the cursor 3 lines a step, and the text scrolls.
   5. Shift+drag: Ptyxis's own selection (it ignores Crystal's);

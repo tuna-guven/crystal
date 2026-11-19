@@ -451,7 +451,10 @@ title, or its full name when another note has the title, adding `]]`;
 Esc or any other key closes it. The list holds note indexes and draws
 names through the grid, never copying them; it was asked for to match
 Obsidian and brings no security benefit (about 410 lines of code,
-comments included, and 790 of tests).
+comments included, and 790 of tests). After a `#` or `^` in the link
+the list shows that note's headings or blocks instead, and choosing a
+block without an id gives it one ([0075](#0075)); while any list is
+open, the key line names what it lists and its keys.
 A Helix-style modal editor was
 written in part and removed: far more code on hostile text. Ctrl+Z is a
 key, so keyboard suspend is gone (an outside `SIGTSTP` still works,
