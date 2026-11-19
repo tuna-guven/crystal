@@ -89,6 +89,8 @@ pub struct Editor {
     /// The last press on the text: when, where, and its count (1 to 3),
     /// for double and triple clicks. Any key forgets it.
     last_press: Option<(Instant, usize, u8)>,
+    /// The open list of link suggestions (`suggest`), if any.
+    suggestions: Option<suggest::List>,
 }
 
 impl Editor {
@@ -104,6 +106,7 @@ impl Editor {
             page: DEFAULT_PAGE,
             pressed: false,
             last_press: None,
+            suggestions: None,
         })
     }
 
@@ -144,8 +147,9 @@ impl Editor {
     /// word there, a third the whole line with its line break, a fourth
     /// starts over; the wheel moves the cursor `WHEEL_LINES` lines. Like a
     /// key, it ends a run of typing for undo, clears the notice and
-    /// disarms Ctrl+Q.
+    /// disarms Ctrl+Q; it closes the list of link suggestions.
     pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>, now: Instant) {
+        self.suggestions = None;
         self.notice = None;
         self.quit_armed = false;
         self.buffer.commit();
@@ -1032,35 +1036,40 @@ mod tests {
 
     fn any_key() -> impl Strategy<Value = Key> {
         prop_oneof![
-            prop::sample::select(&['a', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']'][..])
+            prop::sample::select(&['a', 'p', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']'][..])
                 .prop_map(Key::Char),
             prop::sample::select(&['a', 'c', 'x', 'v', 'z', 'y', 'q', 's', 'e'][..])
                 .prop_map(Key::Ctrl),
-            prop::sample::select(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15][..])
-                .prop_map(|i| match i {
-                    0 => Key::Left,
-                    1 => Key::Right,
-                    2 => Key::Up,
-                    3 => Key::Down,
-                    4 => Key::Home,
-                    5 => Key::End,
-                    6 => Key::PageUp,
-                    7 => Key::PageDown,
-                    8 => Key::ShiftLeft,
-                    9 => Key::ShiftRight,
-                    10 => Key::ShiftUp,
-                    11 => Key::ShiftDown,
-                    12 => Key::ShiftHome,
-                    13 => Key::Enter,
-                    14 => Key::Backspace,
-                    _ => Key::Delete,
-                }),
+            prop::sample::select(
+                &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17][..]
+            )
+            .prop_map(|i| match i {
+                0 => Key::Left,
+                1 => Key::Right,
+                2 => Key::Up,
+                3 => Key::Down,
+                4 => Key::Home,
+                5 => Key::End,
+                6 => Key::PageUp,
+                7 => Key::PageDown,
+                8 => Key::ShiftLeft,
+                9 => Key::ShiftRight,
+                10 => Key::ShiftUp,
+                11 => Key::ShiftDown,
+                12 => Key::ShiftHome,
+                13 => Key::Enter,
+                14 => Key::Backspace,
+                15 => Key::Tab,
+                16 => Key::Esc,
+                _ => Key::Delete,
+            }),
         ]
     }
 
     proptest! {
-        /// Any keys on any text: no panic, and the cursor and selection
-        /// ends stay inside the text on grapheme boundaries (brackets
+        /// Any keys on any text, through `key_in` with link suggestions:
+        /// no panic, the cursor and selection ends stay inside the text on
+        /// grapheme boundaries, and an open list is valid (brackets
         /// included: they pair, step over, delete in pairs and wrap).
         #[test]
         fn any_keys_keep_cursor_and_selection_valid(
@@ -1068,8 +1077,35 @@ mod tests {
             keys in prop::collection::vec(any_key(), 0..60),
         ) {
             let (mut ed, mut clip) = editor(&text);
+            // More notes than the list shows, some starting with `p`.
+            let names = ["pa", "pb", "a/pc", "b/pa", "pe", "pf", "pg", "ph", "pi", "x"];
+            let notes = crate::notes::tests::notes(
+                names
+                    .iter()
+                    .zip(1u8..)
+                    .map(|(name, id)| {
+                        let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
+                        crate::notes::tests::note(id, folder, title, "")
+                    })
+                    .collect(),
+            );
             for key in keys {
-                ed.key(key, &mut clip);
+                // Up, Down and Esc on an open list never change the text.
+                let moves_list = ed.suggestions().is_some()
+                    && matches!(key, Key::Up | Key::Down | Key::Esc);
+                let before = ed.text().to_owned();
+                ed.key_in(key, &mut clip, &notes);
+                if moves_list {
+                    prop_assert_eq!(ed.text(), before.as_str());
+                }
+                if let Some(list) = ed.suggestions() {
+                    prop_assert!(!list.notes.is_empty());
+                    prop_assert!(list.highlight < list.notes.len());
+                    prop_assert!(list.top <= list.highlight);
+                    prop_assert!(list.highlight < list.top + suggest::ROWS);
+                    prop_assert!(list.notes.iter().all(|&i| i < notes.len()));
+                    prop_assert!(suggest::query(ed.text(), ed.cursor()).is_some());
+                }
                 let len = ed.text().len();
                 prop_assert!(ed.cursor() <= len && ed.text().is_char_boundary(ed.cursor()));
                 let on_grapheme = |at: usize| {

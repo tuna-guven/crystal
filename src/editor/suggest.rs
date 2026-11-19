@@ -1,17 +1,140 @@
 //! Link suggestions in the editor (roadmap W1 to W6): the name typed
 //! after an open `[[`, the notes it matches, and the text that links to
-//! a chosen note. Pure functions over the text and the session's
-//! `Notes`; the editor keeps the list's state. They return ranges and
-//! note indexes, never copies of names.
+//! a chosen note, and the editor's list of them (`List`, `Editor::key_in`).
+//! Everything works on ranges of the text and note indexes, never on
+//! copies of names.
+//!
+//! The list opens after a key that types or deletes (a character,
+//! Backspace, Delete) leaves the cursor in a link's name with notes
+//! matching; it is computed again after each such key. While it is open,
+//! Up and Down move the highlight (wrapping), Enter and Tab link the
+//! highlighted note, Esc closes it; any other key closes it and acts as
+//! always.
 
 #![cfg_attr(
     not(test),
-    expect(dead_code, reason = "used by the editor from roadmap step W2")
+    expect(dead_code, reason = "wired into the session in roadmap step W5")
 )]
 
 use std::ops::Range;
 
+use super::{Editor, EditorAction};
 use crate::notes::{Found, Notes, cmp_ci};
+use crate::shell::keys::Key;
+use crate::ui::clipboard::Clipboard;
+
+/// Rows the list shows at once; the rest scroll.
+pub const ROWS: usize = 8;
+
+/// The open list. No Debug, like the editor that holds it.
+pub struct List {
+    /// The matching notes, as indexes into `Notes`, best first; never
+    /// empty.
+    pub notes: Vec<usize>,
+    /// The highlighted row, an index into `notes`.
+    pub highlight: usize,
+    /// The first row shown; the highlight is always within `ROWS` of it.
+    pub top: usize,
+}
+
+impl List {
+    /// Moves the highlight one row, wrapping at either end, and scrolls
+    /// just enough to keep it shown.
+    fn step(&mut self, down: bool) {
+        let len = self.notes.len();
+        if len == 0 {
+            return;
+        }
+        self.highlight = if down {
+            (self.highlight + 1) % len
+        } else {
+            (self.highlight + len - 1) % len
+        };
+        if self.highlight < self.top {
+            self.top = self.highlight;
+        } else if self.highlight >= self.top + ROWS {
+            self.top = self.highlight + 1 - ROWS;
+        }
+    }
+}
+
+impl Editor {
+    /// `key` with link suggestions over `notes` (see the module comment).
+    /// A key the list takes ends a typing run, clears the notice and
+    /// disarms Ctrl+Q, like any key that is not typing.
+    pub fn key_in(&mut self, key: Key, clipboard: &mut Clipboard, notes: &Notes) -> EditorAction {
+        let list_key = matches!(key, Key::Up | Key::Down | Key::Enter | Key::Tab | Key::Esc);
+        if list_key && let Some(list) = &mut self.suggestions {
+            match key {
+                Key::Up | Key::Down => list.step(key == Key::Down),
+                Key::Enter | Key::Tab => self.accept(notes),
+                _ => self.suggestions = None,
+            }
+            self.notice = None;
+            self.quit_armed = false;
+            self.last_press = None;
+            self.buffer.commit();
+            return EditorAction::Stay;
+        }
+        let typing = matches!(key, Key::Char(_) | Key::Backspace | Key::Delete);
+        let action = self.key(key, clipboard);
+        self.suggestions = None;
+        if typing {
+            self.refresh(notes);
+        }
+        action
+    }
+
+    /// The open list, for the view.
+    pub fn suggestions(&self) -> Option<&List> {
+        self.suggestions.as_ref()
+    }
+
+    /// Opens the list for the cursor's place: only with nothing selected,
+    /// in a link's name, and with at least one note matching.
+    fn refresh(&mut self, notes: &Notes) {
+        if self.selection().is_some() {
+            return;
+        }
+        let Some(range) = query(self.text(), self.cursor) else {
+            return;
+        };
+        let found = matches(&self.text()[range], notes);
+        if !found.is_empty() {
+            self.suggestions = Some(List {
+                notes: found,
+                highlight: 0,
+                top: 0,
+            });
+        }
+    }
+
+    /// Enter or Tab: the query becomes the highlighted note's link text
+    /// and the cursor goes past the `]]` after it, added if missing. One
+    /// undo step (the caller commits before; this commits after).
+    fn accept(&mut self, notes: &Notes) {
+        let list = self.suggestions.take();
+        let (Some(list), Some(range)) = (list, query(self.text(), self.cursor)) else {
+            return;
+        };
+        // The list was made from these notes; the check keeps a stale
+        // index from panicking.
+        let Some(&note) = list.notes.get(list.highlight).filter(|&&i| i < notes.len()) else {
+            return;
+        };
+        self.buffer.commit();
+        self.anchor = Some(range.start);
+        if self.replace_selection(link_text(notes, note)) {
+            if self.text()[self.cursor..].starts_with("]]") {
+                // `collapse` snaps: a `]` can carry an accent.
+                self.collapse(self.cursor + 2);
+            } else {
+                self.replace_selection("]]");
+            }
+        }
+        self.buffer.commit();
+    }
+}
 
 /// Characters that end the name part of a link: `]` closes it, `|`
 /// starts its text, `#` a heading, `^` a block. No name holds any of
@@ -187,6 +310,180 @@ mod tests {
         let n = notes(vec![note(1, "a", "plan", ""), note(2, "b", "plan", "")]);
         assert_eq!(link_text(&n, 0), "a/plan");
         assert_eq!(link_text(&n, 1), "b/plan");
+    }
+
+    /// An editor on `text` with the cursor at its end, and a clipboard.
+    fn at_end(text: &str) -> (Editor, Clipboard) {
+        let mut ed = Editor::new(text).unwrap();
+        ed.key(Key::Ctrl('a'), &mut Clipboard::default());
+        ed.key(Key::Right, &mut Clipboard::default());
+        (ed, Clipboard::default())
+    }
+
+    /// Sends `keys` through `key_in` over `n`.
+    fn send(ed: &mut Editor, clip: &mut Clipboard, n: &Notes, keys: impl IntoIterator<Item = Key>) {
+        for key in keys {
+            ed.key_in(key, clip, n);
+        }
+    }
+
+    /// The names the open list shows, in order; empty when closed.
+    fn listed(ed: &Editor, n: &Notes) -> Vec<String> {
+        ed.suggestions().map_or_else(Vec::new, |list| {
+            list.notes.iter().map(|&i| n.name(i).to_owned()).collect()
+        })
+    }
+
+    fn chars(text: &str) -> Vec<Key> {
+        text.chars().map(Key::Char).collect()
+    }
+
+    #[test]
+    fn typing_brackets_opens_and_letters_filter() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("see ");
+        send(&mut ed, &mut clip, &n, chars("[["));
+        // The brackets closed themselves; the list holds every note.
+        assert_eq!(ed.text(), "see [[]]");
+        assert_eq!(listed(&ed, &n).len(), 6);
+        send(&mut ed, &mut clip, &n, chars("pla"));
+        assert_eq!(listed(&ed, &n), ["plan", "work/plan", "home/Garden plan"]);
+        // Back to `p`, which `Restic Backup` holds too.
+        send(&mut ed, &mut clip, &n, [Key::Backspace, Key::Backspace]);
+        assert_eq!(
+            listed(&ed, &n),
+            ["plan", "work/plan", "home/Garden plan", "Restic Backup"]
+        );
+        // No match closes it; Enter is then a line break.
+        send(&mut ed, &mut clip, &n, chars("zz"));
+        assert!(ed.suggestions().is_none());
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "see [[pzz\n]]");
+    }
+
+    #[test]
+    fn enter_and_tab_link_the_highlighted_note() {
+        let n = sample();
+        for accept in [Key::Enter, Key::Tab] {
+            let (mut ed, mut clip) = at_end("");
+            send(&mut ed, &mut clip, &n, chars("[[pla"));
+            send(&mut ed, &mut clip, &n, [Key::Down, accept]);
+            // `work/plan` needs its folder: `plan` alone is the other note.
+            assert_eq!(ed.text(), "[[work/plan]]");
+            assert_eq!(ed.cursor(), ed.text().len());
+            assert!(ed.suggestions().is_none());
+            assert!(ed.is_dirty());
+        }
+        // An embed, and text after the link.
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("![[gar"));
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        send(&mut ed, &mut clip, &n, chars(" ok"));
+        assert_eq!(ed.text(), "![[Garden plan]] ok");
+    }
+
+    #[test]
+    fn missing_closers_are_added() {
+        let n = sample();
+        // A `[[` typed before a word does not close itself.
+        let (mut ed, mut clip) = at_end("[[re");
+        send(&mut ed, &mut clip, &n, chars("s"));
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "[[Restic Backup]]");
+        assert_eq!(ed.cursor(), ed.text().len());
+        // One `]` there is not a closed link: both are added after the name.
+        let (mut ed, mut clip) = at_end("[[re]");
+        send(&mut ed, &mut clip, &n, [Key::Left]);
+        send(&mut ed, &mut clip, &n, chars("s"));
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "[[Restic Backup]]]");
+    }
+
+    #[test]
+    fn one_undo_takes_the_link_back() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[res"));
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert_eq!(ed.text(), "[[Restic Backup]]");
+        ed.key_in(Key::Ctrl('z'), &mut clip, &n);
+        assert_eq!(ed.text(), "[[res]]");
+        ed.key_in(Key::Ctrl('y'), &mut clip, &n);
+        assert_eq!(ed.text(), "[[Restic Backup]]");
+    }
+
+    #[test]
+    fn up_and_down_wrap_and_scroll() {
+        let list: Vec<_> = (0..12u8)
+            .map(|i| note(i, "", &format!("n{i:02}"), ""))
+            .collect();
+        let n = notes(list);
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[["));
+        let place = |ed: &Editor| {
+            let list = ed.suggestions().unwrap();
+            (list.highlight, list.top)
+        };
+        assert_eq!(place(&ed), (0, 0));
+        send(&mut ed, &mut clip, &n, [Key::Up]);
+        assert_eq!(place(&ed), (11, 4));
+        send(&mut ed, &mut clip, &n, [Key::Down]);
+        assert_eq!(place(&ed), (0, 0));
+        send(&mut ed, &mut clip, &n, (0..8).map(|_| Key::Down));
+        assert_eq!(place(&ed), (8, 1));
+        send(&mut ed, &mut clip, &n, [Key::Up, Key::Up]);
+        assert_eq!(place(&ed), (6, 1));
+        // Moving the highlight never touches the text.
+        assert_eq!(ed.text(), "[[]]");
+    }
+
+    #[test]
+    fn esc_and_other_keys_close_the_list() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[p"));
+        send(&mut ed, &mut clip, &n, [Key::Esc]);
+        assert!(ed.suggestions().is_none());
+        assert_eq!(ed.text(), "[[p]]");
+        // Closed, Down and Tab do what they always do.
+        send(&mut ed, &mut clip, &n, [Key::Tab]);
+        assert_eq!(ed.text(), "[[p\t]]");
+        assert!(ed.suggestions().is_none());
+        // Typing opens it again.
+        send(&mut ed, &mut clip, &n, [Key::Backspace]);
+        assert!(ed.suggestions().is_some());
+        // A key the list does not take closes it and acts as always.
+        send(&mut ed, &mut clip, &n, [Key::Left]);
+        assert!(ed.suggestions().is_none());
+        assert_eq!(ed.cursor(), 2);
+        // So does the mouse.
+        send(&mut ed, &mut clip, &n, [Key::Right, Key::Char('l')]);
+        assert!(ed.suggestions().is_some());
+        ed.mouse(
+            crate::shell::keys::MouseEvent::WheelUp,
+            None,
+            std::time::Instant::now(),
+        );
+        assert!(ed.suggestions().is_none());
+    }
+
+    #[test]
+    fn list_keys_disarm_quit_and_clear_the_notice() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[p"));
+        // Ctrl+Q with unsaved changes arms and closes the list...
+        send(&mut ed, &mut clip, &n, [Key::Ctrl('q')]);
+        assert!(ed.notice().is_some());
+        send(
+            &mut ed,
+            &mut clip,
+            &n,
+            [Key::Backspace, Key::Char('p'), Key::Down],
+        );
+        // ...and a list key disarmed it: Ctrl+Q only warns again.
+        assert!(ed.notice().is_none());
+        assert_eq!(ed.key_in(Key::Ctrl('q'), &mut clip, &n), EditorAction::Stay);
     }
 
     proptest! {

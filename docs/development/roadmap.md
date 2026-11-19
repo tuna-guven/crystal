@@ -42,14 +42,16 @@ Not included: heading (`#`), block (`^`) and alias (`|`) suggestions,
 recently opened notes first (Crystal keeps no such history), creating a
 note from the list, and suggestions in the shell, viewer or prompts.
 
-Behaviour: the list opens when the cursor is after `[[` (or `![[`) on the
+Behaviour: the list opens after a key that types or deletes (a
+character, Backspace, Delete) leaves the cursor after `[[` (or `![[`) on the
 same line, with no `]`, `|`, `#` or `^` between them and the cursor; the
 text between is the query. A note matches when every word of the query
 is in its name, ignoring case; names whose title starts with the query
 come first, then by name (`cmp_ci`). An empty query lists every note.
 At most 8 rows show, scrolled with the highlight. Up and Down move the
-highlight, Enter or Tab insert, Esc closes the list until the cursor
-leaves that link; any other key edits as usual and filters again. No
+highlight (wrapping), Enter or Tab insert, Esc closes the list and typing
+opens it again; a typing key edits as usual and filters again, any other
+key (arrows, Home, Ctrl keys, the mouse) closes it and acts as usual. No
 match closes the list. Inserting replaces the query with the note's
 title when no other note has that title, else its full name (`folder/
 title`), so the link resolves as `Notes::find` does; the cursor ends after
@@ -69,7 +71,7 @@ entry (not security related): 0045 is brought up to date in place in W6.
 | Step | What | Security check before the commit |
 | --- | --- | --- |
 | W1 (done) | `editor::suggest`, pure functions, not wired in: `query(text, cursor)` finds the open `[[` and the query (or none); `matches(query, names)` filters and orders note indexes; `link_text(notes, index)` gives the title or the full name. About 80 lines | Unit tests (`![[`, a `]`, `|`, `#` or `^` in between, a line break in between, the cursor before `[[`, accents and case); a property test: random text and cursor never panic and the query is always a char-boundary slice inside the text; `link_text` always resolves back to its note through `Notes::find` |
-| W2 | `Editor` keeps the list state (open, highlight, scroll, closed-by-Esc position) and takes the names as indexes it is given; while open, Up, Down, Enter, Tab and Esc act on the list, every other key goes to the text and the list is computed again. Insertion as above, one undo step. The bracket auto-close (B1 to B6) keeps working: `[[` still gives `[[]]`. About 100 lines | Unit tests for each key while open and closed; the editor's property test gains the list keys: cursor and selection stay on grapheme boundaries, the text only changes by typed keys or an insertion of a name; Esc then typing does not reopen until the cursor leaves the link |
+| W2 (done) | `Editor` keeps the list state (`suggest::List`: matching note indexes, highlight, scroll) and `Editor::key_in(key, clipboard, notes)` wraps `key`; while open, Up, Down, Enter, Tab and Esc act on the list, a typing key goes to the text and the list is computed again, any other key closes it. The mouse closes it too (W4 adds clicking rows). Insertion as above, one undo step. The bracket auto-close (B1 to B6) keeps working: `[[` still gives `[[]]`. About 100 lines | Unit tests for each key while open and closed; the editor's property test gains the list keys: cursor and selection stay on grapheme boundaries, the text only changes by typed keys or an insertion of a name; Esc closes, typing reopens; a key the list takes still disarms Ctrl+Q |
 | W3 | `View::draw` draws the list: a box under the cursor's row, above it when there is no room, at most 8 rows, as wide as the longest shown name up to half the screen, longer names cut with `…`, the folder dimmed, the highlight reversed. Nothing drawn when the area is too small. About 80 lines | Tests on the drawn grid: placement at every screen edge, cutting wide and combining characters, a 1-column and a 1-row screen; a name with every character the name rules allow draws without escape bytes |
 | W4 | Mouse (decision 0073's reports, no new parser): a click on a row inserts that name, the wheel over the list moves its highlight, a click elsewhere closes it and acts as before. About 40 lines | Unit tests with clicks on, beside and past the list; the X3 property test (every cell maps inside the text) still holds with the list shown |
 | W5 | Wired in: `app.rs` hands the editor the session's `Notes` for each key and draw (borrowed, no copy); after a save the list sees the new names; lock and Ctrl+Q drop the list state. About 30 lines | Through the binary: `[[` and a few letters, Enter, Ctrl+S, and the saved note links to the chosen note (`links`); the canary scan after lock still finds no note text; review the W1 to W5 diff (`/security-review`) |
