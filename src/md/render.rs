@@ -218,7 +218,9 @@ impl Page {
     }
 
     /// The note line (from 1) that starts on line `index`, if one does:
-    /// `None` for a wrapped line, a blank and a table border.
+    /// `None` for a wrapped line, a blank and a table border. The tests'
+    /// view of the numbering; the pager copies by `note_line`.
+    #[cfg(test)]
     pub fn number(&self, index: usize) -> Option<u32> {
         self.numbers
             .get(index)
