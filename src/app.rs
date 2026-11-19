@@ -271,7 +271,8 @@ fn run_loop(
         // viewer, the preview too (decision 0076), shows; never in the
         // shell.
         let mouse = match &mode {
-            Mode::Edit(e) if e.preview.is_none() => Mouse::Buttons,
+            // Live mode shows heading markers under the mouse (step LF2).
+            Mode::Edit(e) if e.preview.is_none() && !e.view.is_live() => Mouse::Buttons,
             Mode::Edit(_) | Mode::View(_) => Mouse::Motion,
             Mode::Shell => Mouse::Off,
         };
@@ -480,7 +481,12 @@ fn run_loop(
                             // stops at its edge (decision 0073). The list
                             // of link suggestions, drawn over the text,
                             // comes first.
-                            let action = if let Key::Mouse { event, column, row } = key {
+                            let action = if let Key::Mouse { event, column, row } = key
+                                && e.view.mouse(event, column, row)
+                            {
+                                // A heading's marker (live mode).
+                                EditorAction::Stay
+                            } else if let Key::Mouse { event, column, row } = key {
                                 let clamp = event != MouseEvent::Press;
                                 let at = e.view.position_at(e.editor.text(), column, row, clamp);
                                 let entry = e.view.suggestion_at(column, row);

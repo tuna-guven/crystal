@@ -1011,7 +1011,9 @@ at once, a change to the save path).
 
 *2026-11-19.* While the viewer or the editor's Ctrl+E preview shows,
 Crystal asks the terminal for mouse reports with every movement (mode
-1003, with 1006, SGR coordinates; the editor keeps 1002, [0073](#0073)).
+1003, with 1006, SGR coordinates; the editor keeps 1002, [0073](#0073),
+except in live mode, `edit --live`, which takes 1003 too for the same
+heading markers, [0045](#0045)).
 A left click on an internal link follows it, to its note, heading or
 `^block`, as n/N and Enter do, and Backspace goes back; a broken link
 says why. A click on a web link only says to Ctrl+click it: opening one
@@ -1020,7 +1022,9 @@ mean starting a process; Ctrl+click opens them in Ptyxis as before (checked by h
 section, a bold orange marker shows in the gutter beside it, `v` for an
 open section and `>` for a folded one (plain ASCII, one column in every
 terminal); a click on the row folds or unfolds the section, except on a
-link in the heading, which it follows ([0052](#0052)).
+link in the heading, which it follows ([0052](#0052)). In live mode only
+a click on the marker's gutter cell folds: a click on the heading's
+text places the cursor, and a fold opens when the cursor enters it.
 Markers always shown, and gray, were tried and dropped: too much on the
 screen, and too faint to find. The keyboard cursor and its
 orange `>` are gone: j/k and the arrows scroll a row, the wheel three,

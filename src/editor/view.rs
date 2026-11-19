@@ -63,7 +63,8 @@ use super::live::{self, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
-use crate::pager::GUTTER;
+use crate::pager::{GUTTER, MARKER};
+use crate::shell::keys::MouseEvent;
 use crate::ui::grid::{
     Color, Grid, MAX_CELL_BYTES, Mods, Style, display_width, grapheme_width, hides_something,
     is_forbidden,
@@ -522,6 +523,11 @@ pub struct View {
     look: Live,
     /// Folded headings, by their line's start (step LF1).
     folds: Vec<usize>,
+    /// The heading the mouse is over, by its line's start (step LF2).
+    hover: Option<usize>,
+    /// The section headings the last frame drew: their row and line
+    /// start, for the mouse.
+    heading_rows: Vec<(u16, usize)>,
 }
 
 impl View {
@@ -533,12 +539,42 @@ impl View {
         }
     }
 
+    /// The mouse in live mode (step LF2), before the editor sees it: a
+    /// motion report over a section heading's row shows its marker; a
+    /// press in the gutter of that row folds or unfolds it. Returns
+    /// whether it took the event; others go to the editor.
+    pub fn mouse(&mut self, event: MouseEvent, column: u16, row: u16) -> bool {
+        if !self.live {
+            return false;
+        }
+        let heading = self
+            .heading_rows
+            .iter()
+            .find(|&&(y, _)| y == row)
+            .map(|&(_, start)| start);
+        match event {
+            MouseEvent::Move => {
+                self.hover = heading;
+                true
+            }
+            MouseEvent::Press => {
+                let in_gutter = self.area.is_some_and(|area| column < area.x);
+                match heading {
+                    Some(start) if in_gutter => {
+                        self.toggle_fold(start);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Folds the section of the heading whose line starts at `heading`,
     /// or unfolds it (step LF1). Takes effect on the next frame, which
     /// drops it if no heading with lines to hide is there, or opens it if
     /// the cursor is inside.
-    // Clicked from step LF2 on; until then only tests fold.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn toggle_fold(&mut self, heading: usize) {
         match self.folds.iter().position(|&fold| fold == heading) {
             Some(i) => {
@@ -624,9 +660,26 @@ impl View {
         // The numbers given before the first row shown.
         let mut number = lines::count(&text[..line_start(text, self.top)]);
         let mut start = Some(self.top);
+        self.heading_rows.clear();
         for y in area.y..area.bottom() {
             let Some(row_start) = start else { break };
             let row = row_at(text, row_start, width, &self.look);
+            // A section heading's first row: its marker, while hovered.
+            let headings = &self.look.layout.headings;
+            if headings
+                .binary_search_by_key(&row_start, |&(line, _)| line)
+                .is_ok()
+            {
+                self.heading_rows.push((y, row_start));
+                if gutter > 0 && self.hover == Some(row_start) {
+                    let mark = if self.folds.contains(&row_start) {
+                        ">"
+                    } else {
+                        "v"
+                    };
+                    grid.put_str(body.x, y, mark, MARKER, 1);
+                }
+            }
             let starts_line = row_start == 0 || text.as_bytes()[row_start - 1] == b'\n';
             let line = text[row_start..].split_inclusive('\n').next().unwrap_or("");
             if starts_line && !lines::is_blank(line) {
@@ -2159,5 +2212,49 @@ mod tests {
             },
         );
         assert_eq!(folds, [11, 23]);
+    }
+
+    /// Heading markers (step LF2): over a section heading's row the
+    /// viewer's marker shows in the gutter, `v` open and `>` folded; a
+    /// press on the gutter folds or unfolds; a press on the text is the
+    /// editor's; the plain editor takes no mouse here.
+    #[test]
+    fn live_heading_markers_fold_by_click() {
+        let mut clip = Clipboard::default();
+        let (h1, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        let mut ed = Editor::new("# A\nx\n# B\ny").unwrap();
+        for key in [Key::Right, Key::Right] {
+            ed.key(key, &mut clip);
+        }
+        let mut view = View::live();
+        drawn(&mut ed, &mut view, 30, 6);
+        assert!(view.mouse(MouseEvent::Move, 9, 1));
+        let grid = drawn(&mut ed, &mut view, 30, 6);
+        assert_eq!(rows(&grid)[1], format!("v {h1}A"));
+        assert_eq!(style_at(&grid, 0, 1), crate::pager::MARKER);
+        // Off the heading: no marker.
+        assert!(view.mouse(MouseEvent::Move, 9, 2));
+        assert_eq!(
+            rows(&drawn(&mut ed, &mut view, 30, 6))[1],
+            format!("  {h1}A")
+        );
+        // A press on the gutter of `# B`'s row folds it.
+        assert!(view.mouse(MouseEvent::Move, 0, 3));
+        assert!(view.mouse(MouseEvent::Press, 0, 3));
+        let grid = drawn(&mut ed, &mut view, 30, 6);
+        assert_eq!(rows(&grid)[3..5], [format!("> {h1}B …"), String::new()]);
+        // Again: unfolded.
+        assert!(view.mouse(MouseEvent::Press, 1, 3));
+        let grid = drawn(&mut ed, &mut view, 30, 6);
+        assert_eq!(rows(&grid)[3..5], [format!("v {h1}B"), "    y".into()]);
+        // A press on the heading's text, or on a row without a heading:
+        // the editor's.
+        assert!(!view.mouse(MouseEvent::Press, 5, 3));
+        assert!(!view.mouse(MouseEvent::Press, 0, 2));
+        // Not live: nothing here.
+        let mut plain = View::default();
+        drawn(&mut ed, &mut plain, 30, 6);
+        assert!(!plain.mouse(MouseEvent::Move, 0, 1));
+        assert!(!plain.mouse(MouseEvent::Press, 0, 1));
     }
 }

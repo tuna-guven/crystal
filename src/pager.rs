@@ -46,8 +46,8 @@ pub const GUTTER: u16 = 2;
 /// A heading's marker in the gutter, shown only while the mouse is over
 /// it: `v` for an open section, `>` for a folded one; a click folds or
 /// unfolds it. Bold orange (256-color 208), to find at a glance
-/// (decision 0076).
-const MARKER: Style = Style::PLAIN.fg(Color::Indexed(208)).mods(Mods::BOLD);
+/// (decision 0076). The editor's live mode draws the same.
+pub const MARKER: Style = Style::PLAIN.fg(Color::Indexed(208)).mods(Mods::BOLD);
 /// Shown on a click on a web link: the terminal opens it, never Crystal
 /// (decision 0076).
 const WEB_LINK: &str = "Web links open with Ctrl+click: the terminal opens them, not Crystal.";
