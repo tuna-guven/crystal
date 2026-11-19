@@ -21,14 +21,26 @@ use std::mem;
 
 use super::frame::{FrameWriter, draw};
 use super::grid::Grid;
-use crate::term::{MOUSE_OFF, MOUSE_ON};
+use crate::term::{MOTION_ON, MOUSE_OFF, MOUSE_ON};
 
 /// Close any link a broken-off frame left open (`ui::frame`), mouse
-/// reports off (`term::MOUSE_OFF`; only the editor's frames turn them on,
-/// decision 0073), hide the cursor, turn on bracketed paste (pasted text arrives marked, never as
+/// reports off (`term::MOUSE_OFF`; only the editor's and the viewer's
+/// frames turn them on, decisions 0073 and 0076), hide the cursor, turn on bracketed paste (pasted text arrives marked, never as
 /// keys: `shell::keys`), clear the screen, cursor to top left. Again after
 /// every resume, since leaving the screen turns paste off.
-const FULL_REDRAW: &[u8] = b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H";
+const FULL_REDRAW: &[u8] =
+    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H";
+
+/// Which mouse reports a frame asks the terminal for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mouse {
+    Off,
+    /// Presses, releases, drags and the wheel: the editor (decision 0073).
+    Buttons,
+    /// Those and every motion, no button held too: the viewer (decision
+    /// 0076).
+    Motion,
+}
 
 pub struct Screen {
     /// What the terminal shows.
@@ -37,8 +49,8 @@ pub struct Screen {
     next: Grid,
     /// Clear and draw everything on the next frame.
     full: bool,
-    /// Whether the terminal sends mouse reports, as last written.
-    mouse: bool,
+    /// Which mouse reports the terminal sends, as last written.
+    mouse: Mouse,
 }
 
 impl Screen {
@@ -48,7 +60,7 @@ impl Screen {
             shown: Grid::new(columns, rows),
             next: Grid::new(columns, rows),
             full: true,
-            mouse: false,
+            mouse: Mouse::Off,
         }
     }
 
@@ -64,12 +76,12 @@ impl Screen {
     }
 
     /// Lets `render` fill a blank grid, then writes the difference to
-    /// `out` and flushes it. Mouse reports are turned on when `mouse` and
-    /// off otherwise, written only when that changes.
+    /// `out` and flushes it. Mouse reports are set to `mouse`, written only
+    /// when that changes: off first, then the new kind on.
     pub fn frame<W: Write>(
         &mut self,
         out: W,
-        mouse: bool,
+        mouse: Mouse,
         render: impl FnOnce(&mut Grid),
     ) -> io::Result<()> {
         self.next.reset();
@@ -80,12 +92,19 @@ impl Screen {
         if mem::replace(&mut self.full, true) {
             out.write_all(FULL_REDRAW)?;
             self.shown.reset();
-            self.mouse = false;
+            self.mouse = Mouse::Off;
         }
         // Recorded only once written; a failed write leaves `full` set,
         // and the next frame's `FULL_REDRAW` turns reports off first.
         if mouse != self.mouse {
-            out.write_all(if mouse { MOUSE_ON } else { MOUSE_OFF })?;
+            if self.mouse != Mouse::Off {
+                out.write_all(MOUSE_OFF)?;
+            }
+            match mouse {
+                Mouse::Off => {}
+                Mouse::Buttons => out.write_all(MOUSE_ON)?,
+                Mouse::Motion => out.write_all(MOTION_ON)?,
+            }
             self.mouse = mouse;
         }
         draw(&self.shown, &self.next, &mut out)?;
@@ -101,10 +120,10 @@ mod tests {
     use crate::ui::grid::Style;
 
     fn frame(screen: &mut Screen, lines: &[&str]) -> String {
-        frame_with(screen, lines, false)
+        frame_with(screen, lines, Mouse::Off)
     }
 
-    fn frame_with(screen: &mut Screen, lines: &[&str], mouse: bool) -> String {
+    fn frame_with(screen: &mut Screen, lines: &[&str], mouse: Mouse) -> String {
         let mut bytes = Vec::new();
         screen
             .frame(&mut bytes, mouse, |grid| {
@@ -121,7 +140,7 @@ mod tests {
         let mut screen = Screen::new((3, 2));
         assert_eq!(
             frame(&mut screen, &["ab", "c"]),
-            "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[2;1Hc\x1b[0m"
+            "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[2;1Hc\x1b[0m"
         );
     }
 
@@ -134,31 +153,47 @@ mod tests {
         let on = std::str::from_utf8(MOUSE_ON).unwrap();
         let off = std::str::from_utf8(MOUSE_OFF).unwrap();
         let mut screen = Screen::new((3, 1));
-        let first = frame_with(&mut screen, &["ab"], true);
+        let motion = std::str::from_utf8(MOTION_ON).unwrap();
+        let first = frame_with(&mut screen, &["ab"], Mouse::Buttons);
         assert!(
             first.find(off).unwrap() < first.find(on).unwrap(),
             "{first:?}"
         );
-        assert_eq!(frame_with(&mut screen, &["ab"], true), "\x1b[0m\x1b[0m");
         assert_eq!(
-            frame_with(&mut screen, &["ab"], false),
+            frame_with(&mut screen, &["ab"], Mouse::Buttons),
+            "\x1b[0m\x1b[0m"
+        );
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], Mouse::Off),
             format!("{off}\x1b[0m\x1b[0m")
         );
-        assert_eq!(frame_with(&mut screen, &["ab"], false), "\x1b[0m\x1b[0m");
         assert_eq!(
-            frame_with(&mut screen, &["ab"], true),
+            frame_with(&mut screen, &["ab"], Mouse::Off),
+            "\x1b[0m\x1b[0m"
+        );
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], Mouse::Buttons),
             format!("{on}\x1b[0m\x1b[0m")
         );
+        // From one kind to the other: off first, then the other on.
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], Mouse::Motion),
+            format!("{off}{motion}\x1b[0m\x1b[0m")
+        );
+        assert_eq!(
+            frame_with(&mut screen, &["ab"], Mouse::Off),
+            format!("{off}\x1b[0m\x1b[0m")
+        );
         screen.redraw_all((3, 1));
-        let redrawn = frame_with(&mut screen, &["ab"], false);
+        let redrawn = frame_with(&mut screen, &["ab"], Mouse::Off);
         assert!(
-            redrawn.contains(off) && !redrawn.contains(on),
+            redrawn.contains(off) && !redrawn.contains(on) && !redrawn.contains(motion),
             "{redrawn:?}"
         );
         // A failed frame: the next one starts over with reports off.
-        assert!(screen.frame(Broken, true, |_| {}).is_err());
-        let after = frame_with(&mut screen, &["ab"], false);
-        assert!(after.contains(off) && !after.contains(on), "{after:?}");
+        assert!(screen.frame(Broken, Mouse::Motion, |_| {}).is_err());
+        let after = frame_with(&mut screen, &["ab"], Mouse::Off);
+        assert!(after.contains(off) && !after.contains(motion), "{after:?}");
     }
 
     #[test]
@@ -185,7 +220,7 @@ mod tests {
         assert_eq!(screen.size(), (2, 1));
         assert_eq!(
             frame(&mut screen, &["ab"]),
-            "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[0m"
+            "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J\x1b[H\x1b[0m\x1b[1;1Hab\x1b[0m"
         );
     }
 
@@ -205,11 +240,10 @@ mod tests {
     fn failed_frame_is_followed_by_a_full_redraw() {
         let mut screen = Screen::new((3, 1));
         frame(&mut screen, &["ab"]);
-        assert!(screen.frame(Broken, true, |_| {}).is_err());
+        assert!(screen.frame(Broken, Mouse::Buttons, |_| {}).is_err());
         assert!(screen.full);
-        assert!(
-            frame(&mut screen, &["ab"])
-                .starts_with("\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J")
-        );
+        assert!(frame(&mut screen, &["ab"]).starts_with(
+            "\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?25l\x1b[?2004h\x1b[2J"
+        ));
     }
 }

@@ -22,14 +22,19 @@ use crate::crypto::{MIN_NEW_PASSPHRASE_CHARS, Passphrase};
 
 /// Enter the alternate screen, clear it, cursor to top left.
 const ENTER_SCREEN: &[u8] = b"\x1b[?1049h\x1b[2J\x1b[H";
-/// Turns mouse reports off (SGR, then button and drag events): only the
-/// editor turns them on (decision 0073), and every way out of the screen
-/// and every prompt ends them, so a click never reaches a passphrase or
-/// the shell the terminal returns to.
-pub const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l";
+/// Turns mouse reports off (SGR, every motion, then button and drag
+/// events): only the editor and the viewer turn them on (decisions 0073,
+/// 0076), and every way out of the screen and every prompt ends them, so
+/// a click never reaches a passphrase or the shell the terminal returns
+/// to.
+pub const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1003l\x1b[?1002l";
 /// Turns mouse reports on: button and drag events, as SGR reports. Only
 /// the editor's frames write it (`ui::screen`, decision 0073).
 pub const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+/// Turns mouse reports on with every motion, a button held or not, as SGR
+/// reports. Only the viewer's frames write it (`ui::screen`, decision
+/// 0076).
+pub const MOTION_ON: &[u8] = b"\x1b[?1003h\x1b[?1006h";
 
 /// Close any link a broken-off frame left open (`ui::frame`), mouse
 /// reports off (`MOUSE_OFF`), turn bracketed paste off and show the
@@ -37,7 +42,7 @@ pub const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
 /// alternate screen while still on it, then leave it, so none of its
 /// content survives in terminals that keep it around.
 const LEAVE_SCREEN: &[u8] =
-    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
+    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[?1049l";
 
 /// The controlling terminal, opened directly. Redirected stdin or stdout can
 /// then neither feed input (a passphrase) nor capture output (the UI).
@@ -484,7 +489,7 @@ pub const MAX_PASSPHRASE: usize = 1024;
 /// a paste would arrive wrapped in `ESC [ 200 ~`, and ESC cancels
 /// (decision 0048). The shell's next full redraw turns both back.
 const CLEAR_SCREEN: &[u8] =
-    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
+    b"\x1b]8;;\x1b\\\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?2004l\x1b[?25h\x1b[2J\x1b[H";
 
 const CTRL_C: u8 = 0x03;
 const BACKSPACE: u8 = 0x08;
@@ -946,6 +951,11 @@ mod tests {
     fn leaving_and_prompts_turn_mouse_reports_off() {
         for bytes in [LEAVE_SCREEN, CLEAR_SCREEN] {
             assert!(bytes.windows(MOUSE_OFF.len()).any(|w| w == MOUSE_OFF));
+        }
+        // Every kind Crystal turns on: buttons (0073), every motion (0076)
+        // and SGR.
+        for mode in [&b"\x1b[?1002l"[..], b"\x1b[?1003l", b"\x1b[?1006l"] {
+            assert!(MOUSE_OFF.windows(mode.len()).any(|w| w == mode));
         }
     }
 

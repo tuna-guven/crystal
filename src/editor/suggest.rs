@@ -230,6 +230,10 @@ impl Editor {
         now: Instant,
         notes: &Notes,
     ) -> EditorAction {
+        // Only the viewer's mode reports it (decision 0076).
+        if event == MouseEvent::Move {
+            return EditorAction::Stay;
+        }
         self.block_request = None;
         let on_list = entry
             .zip(self.suggestions.as_mut())
@@ -249,7 +253,7 @@ impl Editor {
                 list.step(event == MouseEvent::WheelDown)
             }
             // No drag starts on the list: nothing to do.
-            MouseEvent::Drag | MouseEvent::Release => {}
+            MouseEvent::Drag | MouseEvent::Release | MouseEvent::Move => {}
         }
         self.quit_armed = false;
         self.last_press = None;

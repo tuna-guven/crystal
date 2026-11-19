@@ -65,8 +65,9 @@ pub enum Key {
         cut: bool,
         cleaned: bool,
     },
-    /// A mouse report (decision 0073): what happened, at which cell,
-    /// counted from 0. Only the editor turns reports on and acts on them.
+    /// A mouse report (decisions 0073, 0076): what happened, at which
+    /// cell, counted from 0. Only the editor and the viewer turn reports
+    /// on and act on them.
     Mouse {
         event: MouseEvent,
         column: u16,
@@ -84,6 +85,9 @@ pub enum MouseEvent {
     Release,
     WheelUp,
     WheelDown,
+    /// Moved with no button held: reported only in the viewer's mode
+    /// (decision 0076), and never activity for auto-lock.
+    Move,
 }
 
 /// Typed text: shown only as a kind, never its content.
@@ -408,7 +412,8 @@ fn csi(rest: &[u8]) -> Decoded {
 
 /// After `ESC [ <`: an SGR mouse report, `button ; column ; row` then
 /// `M` (pressed or moved) or `m` (released) (decision 0073). Button 0 is
-/// the left one, +32 when moved, 64 and 65 the wheel; any other button,
+/// the left one, +32 when moved (35: moved with none held), 64 and 65
+/// the wheel; any other button,
 /// or a modifier (+4, +8, +16), drops the report. Columns and rows count
 /// from 1 and have at most 5 digits; anything else drops it.
 fn mouse(params: &[u8], last: u8) -> Decoded {
@@ -422,6 +427,7 @@ fn mouse(params: &[u8], last: u8) -> Decoded {
         (0, b'M') => MouseEvent::Press,
         (32, b'M') => MouseEvent::Drag,
         (0, b'm') => MouseEvent::Release,
+        (35, b'M') => MouseEvent::Move,
         (64, b'M') => MouseEvent::WheelUp,
         (65, b'M') => MouseEvent::WheelDown,
         _ => return Decoded::Drop,
@@ -635,12 +641,13 @@ mod tests {
     #[test]
     fn mouse_reports() {
         use MouseEvent::*;
-        let cases: [(&[u8], MouseEvent, u16, u16); 6] = [
+        let cases: [(&[u8], MouseEvent, u16, u16); 7] = [
             (b"\x1b[<0;1;1M", Press, 0, 0),
             (b"\x1b[<32;10;3M", Drag, 9, 2),
             (b"\x1b[<0;10;3m", Release, 9, 2),
             (b"\x1b[<64;5;7M", WheelUp, 4, 6),
             (b"\x1b[<65;5;7M", WheelDown, 4, 6),
+            (b"\x1b[<35;8;2M", Move, 7, 1),
             (b"\x1b[<0;65535;65535M", Press, 65534, 65534),
         ];
         for (bytes, event, column, row) in cases {
@@ -657,14 +664,16 @@ mod tests {
     /// after it is the only key.
     #[test]
     fn refused_mouse_reports_leave_nothing() {
-        let refused: [&[u8]; 17] = [
+        let refused: [&[u8]; 19] = [
             b"\x1b[<1;1;1M",      // middle button
             b"\x1b[<2;1;1M",      // right button
             b"\x1b[<3;1;1M",      // no button
             b"\x1b[<4;1;1M",      // Shift
             b"\x1b[<8;1;1M",      // Alt
             b"\x1b[<16;1;1M",     // Ctrl
-            b"\x1b[<35;1;1M",     // moved, no button held
+            b"\x1b[<35;1;1m",     // a release while moving, no button
+            b"\x1b[<39;1;1M",     // moved with Shift, no button
+            b"\x1b[<51;1;1M",     // moved with Ctrl, no button
             b"\x1b[<32;1;1m",     // a release that moved
             b"\x1b[<0;0;1M",      // column 0
             b"\x1b[<0;1;0M",      // row 0

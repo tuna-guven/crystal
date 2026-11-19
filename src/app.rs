@@ -31,7 +31,7 @@ use crate::shell::{self, ERROR_STYLE, Shell};
 use crate::term::{Event, Idle, Signals, TerminalGuard, WAKE_CHECK};
 use crate::ui::clipboard::Clipboard;
 use crate::ui::grid::Style;
-use crate::ui::screen::Screen;
+use crate::ui::screen::{Mouse, Screen};
 use crate::vault::codec::MAX_BODY_BYTES;
 
 const COPIED: &str = "Copied inside Crystal; it never leaves it.";
@@ -257,7 +257,11 @@ fn run_loop(
     signals.forget_suspend();
     loop {
         // Mouse reports only while the editor itself shows (decision 0073).
-        let mouse = matches!(&mode, Mode::Edit(e) if e.preview.is_none());
+        let mouse = if matches!(&mode, Mode::Edit(e) if e.preview.is_none()) {
+            Mouse::Buttons
+        } else {
+            Mouse::Off
+        };
         screen.frame(terminal.output(), mouse, |grid| {
             let notes = session.notes();
             match &mut mode {
@@ -294,9 +298,11 @@ fn run_loop(
             }
             Event::Timeout => {}
             Event::Keys(n) => {
-                last_input = Idle::start();
                 // A read that filled `input` has more bytes waiting.
                 decoder.feed(&input[..n], n < input.len(), &mut keys);
+                if is_activity(&keys) {
+                    last_input = Idle::start();
+                }
                 for key in keys.drain(..) {
                     match &mut mode {
                         Mode::Shell => {
@@ -468,6 +474,23 @@ fn run_loop(
             }
         }
     }
+}
+
+/// Whether `keys` hold off auto-lock: any key, paste, click or wheel, but
+/// not the mouse moving with no button held, or a mouse left over the
+/// window would keep the vault unlocked (decision 0076). Bytes that
+/// decode to nothing (a dropped report, the start of a sequence) do not
+/// count either.
+fn is_activity(keys: &[Key]) -> bool {
+    keys.iter().any(|key| {
+        !matches!(
+            key,
+            Key::Mouse {
+                event: MouseEvent::Move,
+                ..
+            }
+        )
+    })
 }
 
 /// Auto-lock and suspend: an editor with unsaved changes (its preview too) is saved
@@ -685,6 +708,30 @@ pub fn names(notes: &Notes) -> Vec<Zeroizing<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the mouse moving with no button held, or nothing decoded, is
+    /// not activity (decision 0076).
+    #[test]
+    fn moving_the_mouse_is_not_activity() {
+        let at = |event| Key::Mouse {
+            event,
+            column: 3,
+            row: 4,
+        };
+        assert!(!is_activity(&[]));
+        assert!(!is_activity(&[at(MouseEvent::Move), at(MouseEvent::Move)]));
+        assert!(is_activity(&[Key::Char('a')]));
+        assert!(is_activity(&[at(MouseEvent::Move), Key::Down]));
+        for event in [
+            MouseEvent::Press,
+            MouseEvent::Drag,
+            MouseEvent::Release,
+            MouseEvent::WheelUp,
+            MouseEvent::WheelDown,
+        ] {
+            assert!(is_activity(&[at(MouseEvent::Move), at(event)]), "{event:?}");
+        }
+    }
 
     /// Completion offers the shown names (decision 0038).
     #[test]

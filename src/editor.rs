@@ -182,6 +182,10 @@ impl Editor {
     /// key, it ends a run of typing for undo, clears the notice and
     /// disarms Ctrl+Q; it closes the list of link suggestions.
     pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>, now: Instant) {
+        // Only the viewer's mode reports it (decision 0076).
+        if event == MouseEvent::Move {
+            return;
+        }
         self.close_list();
         self.notice = None;
         self.quit_armed = false;
@@ -217,7 +221,7 @@ impl Editor {
             (MouseEvent::WheelUp, _) => self.vertical(false, WHEEL_LINES, false),
             (MouseEvent::WheelDown, _) => self.vertical(true, WHEEL_LINES, false),
             (MouseEvent::Press | MouseEvent::Release, _) => self.pressed = false,
-            (MouseEvent::Drag, _) => {}
+            (MouseEvent::Drag | MouseEvent::Move, _) => {}
         }
     }
 
@@ -1119,6 +1123,7 @@ mod tests {
                 MouseEvent::Release,
                 MouseEvent::WheelUp,
                 MouseEvent::WheelDown,
+                MouseEvent::Move,
             ][..],
         );
         prop_oneof![
