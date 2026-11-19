@@ -294,7 +294,7 @@ fn run_loop(
                 let edits = save_before_lock(&mut mode, session, shell, demo);
                 return Ok(Outcome::Lock(LockReason::Suspended(edits)));
             }
-            Event::Timeout if last_input.elapsed() >= idle => {
+            Event::Timeout if idle_passed(last_input.elapsed(), idle) => {
                 let edits = save_before_lock(&mut mode, session, shell, demo);
                 return Ok(Outcome::Lock(LockReason::Idle(edits)));
             }
@@ -304,6 +304,13 @@ fn run_loop(
                 decoder.feed(&input[..n], n < input.len(), &mut keys);
                 if is_activity(&keys) {
                     last_input = Idle::start();
+                } else if idle_passed(last_input.elapsed(), idle) {
+                    // Only motion (or nothing) past the limit: lock now,
+                    // so a stream of it cannot hold the lock off by never
+                    // letting a wait end empty (decision 0076).
+                    keys.clear();
+                    let edits = save_before_lock(&mut mode, session, shell, demo);
+                    return Ok(Outcome::Lock(LockReason::Idle(edits)));
                 }
                 for key in keys.drain(..) {
                     match &mut mode {
@@ -493,6 +500,11 @@ fn is_activity(keys: &[Key]) -> bool {
             }
         )
     })
+}
+
+/// Whether `idle_for` without activity reaches the auto-lock limit.
+fn idle_passed(idle_for: Duration, idle: Duration) -> bool {
+    idle_for >= idle
 }
 
 /// Auto-lock and suspend: an editor with unsaved changes (its preview too) is saved
@@ -724,6 +736,10 @@ mod tests {
         assert!(!is_activity(&[at(MouseEvent::Move), at(MouseEvent::Move)]));
         assert!(is_activity(&[Key::Char('a')]));
         assert!(is_activity(&[at(MouseEvent::Move), Key::Down]));
+        // Past the limit, input without activity locks at once.
+        let limit = Duration::from_secs(3);
+        assert!(idle_passed(limit, limit));
+        assert!(!idle_passed(limit - Duration::from_millis(1), limit));
         for event in [
             MouseEvent::Press,
             MouseEvent::Drag,

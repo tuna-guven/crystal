@@ -1006,7 +1006,8 @@ screen, and on exit, panic and fatal signal, as in [0073](#0073), every
 off sequence also ending mode 1003. The mouse moving with no button held
 is not activity: only keys, pastes, clicks and the wheel hold off
 auto-lock ([0048](#0048)), or a mouse moved over the window would keep
-the vault unlocked. Plain drag-selection no longer reaches the terminal
+the vault unlocked; input without activity that arrives past the limit
+locks at once, so a stream of motion cannot hold the lock off. Plain drag-selection no longer reaches the terminal
 in the viewer; Shift+drag selects, as in the editor ([0041](#0041)).
 Accepted at the user's request, for no security benefit: about 250 lines
 of code and 350 of tests. Rejected: Crystal opening web links; a double
