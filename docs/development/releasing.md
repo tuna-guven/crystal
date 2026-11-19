@@ -96,7 +96,7 @@ git switch main && git pull --ff-only && git status   # must be clean
    mdbook build
    ```
 
-2. The long property tests (about 32 minutes, release build, a million
+2. The long property tests (about 44 minutes, release build, a million
    cases per module):
 
    ```sh
@@ -250,7 +250,7 @@ Release vX.Y.Z
 [ ] cargo deny check
 [ ] cargo audit
 [ ] mdbook build
-[ ] scripts/long-tests.sh            (about 32 minutes)
+[ ] scripts/long-tests.sh            (about 44 minutes)
 [ ] packaging/check-reproducible.sh  -> "reproducible"
 [ ] Manual check of the release binary, and a vault from the previous release opens
 [ ] The book matches the release

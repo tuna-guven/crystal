@@ -1,5 +1,5 @@
 #!/bin/sh
-# Manual check of the mouse in the editor (decision 0073,
+# Manual check of the mouse in the editor (decisions 0073 and 0045,
 # docs/development/testing.md): what CI cannot do is click in Ptyxis.
 # CI already checks, through the binary, that clicks, drags, double and
 # triple clicks edit the right text and that reports are on only while
@@ -31,6 +31,12 @@ In the editor:
      Ctrl+Z undoes it.
   3. Double-click a word: it is selected. Triple-click: the whole line.
      Click once more: only the cursor again.
+ 3a. Link suggestions (decision 0045): at a line's end type  [[ : a gray
+     list of the demo notes opens under the cursor, the first one
+     reversed. Type a letter: it narrows. Turn the wheel over it: the
+     highlight moves, the text does not scroll. Click a name: it becomes
+     [[name]], the cursor after it. Type  [[  again and click on the
+     text beside the list: the list closes, the cursor moves.
   4. Paste a long text (Ctrl+Shift+V, more lines than the window): the
      wheel moves the cursor 3 lines a step, and the text scrolls.
   5. Shift+drag: Ptyxis's own selection (it ignores Crystal's);

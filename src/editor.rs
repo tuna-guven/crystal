@@ -12,6 +12,10 @@
 //! brings its closer, a typed closer steps over the same one, and
 //! Backspace in an empty pair deletes both.
 //!
+//! Inside `[[` it suggests notes to link (`suggest`): the session's keys
+//! and mouse go through `key_in` and `mouse_in`, which wrap `key` and
+//! `mouse`.
+//!
 //! A run of typing (text, Enter, Tab, Backspace, Delete) is one undo step;
 //! any other key ends it. A paste is a step of its own.
 //!

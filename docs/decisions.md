@@ -441,6 +441,17 @@ close as you type: an opening one brings its closer when whitespace, a
 closing bracket or the end follows (so `[[` gives `[[]]`) and wraps a
 selection, a typed closer steps over the same one, and Backspace in an
 empty pair deletes both; quotes are not paired, and pastes never are.
+Typing or deleting inside a link's name (after `[[` or `![[` on the
+same line, before any `]`, `|`, `#` or `^`) shows the notes whose name
+holds every typed word, ignoring case, in a gray list under the cursor:
+titles starting with the text first, then by name, the best 100 at most
+(so a key costs at most about 45 ms in a vault of 100 000 notes). Up and
+Down move its highlight, Enter or Tab (or a click) links that note by its
+title, or its full name when another note has the title, adding `]]`;
+Esc or any other key closes it. The list holds note indexes and draws
+names through the grid, never copying them; it was asked for to match
+Obsidian and brings no security benefit (about 410 lines of code,
+comments included, and 790 of tests).
 A Helix-style modal editor was
 written in part and removed: far more code on hostile text. Ctrl+Z is a
 key, so keyboard suspend is gone (an outside `SIGTSTP` still works,
