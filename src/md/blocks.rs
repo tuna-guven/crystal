@@ -52,7 +52,8 @@ impl Block {
 }
 
 /// `body` with ` ^id` at the end of `block`, one of `blocks(body)`; None
-/// when the block takes no id (`Block::end`), `id` is not a valid one, or
+/// when the block is not one of them, takes no id (`Block::end`), `id` is
+/// not a valid one, or
 /// the new text would parse otherwise: other blocks, other starts, or the
 /// id not the block's. The text is built in zeroizing memory at its full
 /// size, so it never reallocates.
@@ -68,6 +69,14 @@ pub fn add_id(body: &str, block: &Block, id: &str) -> Option<Zeroizing<String>> 
     }
     let shift = id.len() + 2;
     let before = blocks(body);
+    // `block` must be one of them exactly: a range kept from an older
+    // parse could end inside a paragraph, where the id is not its.
+    if !before
+        .iter()
+        .any(|b| b.text == block.text && b.end() == Some(end))
+    {
+        return None;
+    }
     let after = blocks(&text);
     let same = before.len() == after.len()
         && before.iter().zip(&after).all(|(old, new)| {
@@ -277,6 +286,15 @@ mod tests {
         // `1.` would start a list once it holds text.
         let body = "a\n1.";
         assert!(add_id(body, &blocks(body)[0], "x").is_none());
+        // Not one of the note's blocks: a stale range ending at an inner
+        // line of a paragraph, where ` ^x` would not be its id.
+        let body = "First\nlines\n";
+        let stale = Block {
+            text: 0..5,
+            id: None,
+            ends_line: true,
+        };
+        assert!(add_id(body, &stale, "x").is_none());
     }
 
     /// Markdown-ish notes: lines of a few block prefixes and inline text.
