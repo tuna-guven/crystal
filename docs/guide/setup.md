@@ -218,11 +218,11 @@ the terminal's scrollback. The shell knows:
 | `find TEXT` | Names holding TEXT's letters in order, best match first |
 | `search TEXT` | Notes whose name or text holds TEXT, ignoring case, with the matching lines (at most 100) |
 | `view NAME` | The note, full screen, headings marked `◉ ○ ● ✿ ◆ ◇` by level with their sections indented under them. A line break in the note stays one. Tables are boxed; in a narrow window their cells wrap inside the box. Code stands out on a gray background: inline code where it is, a code block as a gray block as wide as its widest line, a longer line wrapping inside it. A bold orange `>` on the left marks the cursor's line; the viewer shows no line numbers, but j/k, the arrows and the mouse wheel move the cursor from one line of the note to the next as the editor numbers them (lines with text only: not blank lines, code fences or a table's `|---|` line), stopping at the last one, Space and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its section (` …`) or unfolds it; folds are not saved. Web and mail links (`[text](https://…)`, `<https://…>`, `mailto:`) are clickable: Ctrl+click in Ptyxis opens them, and their address is not shown; other links show their address and are not clickable. A link's text can name another site than the one it opens: in a note you did not write, read the target in the editor before clicking ([decision 0054](../decisions.md#0054)). n and N select the next and previous `[[link]]`, Enter follows it (to a note, `#Heading` or `#^block`), Backspace goes back; b lists the notes linking here; y copies the cursor's line and Y the whole note into Crystal's clipboard; q returns to the shell. A bare title works when only one note has it ([decision 0052](../decisions.md#0052), [decision 0053](../decisions.md#0053), [decision 0055](../decisions.md#0055), [decision 0057](../decisions.md#0057)) |
-| `edit NAME` | The note in the editor: Ctrl+S saves, Ctrl+E shows it rendered, Ctrl+Q closes. Brackets close as you type: `(`, `[` and `{` bring their closer before a space, a closing bracket or the line's end (`[[` gives `[[]]`), and wrap selected text (select `Note`, type `[[`: `[[Note]]`); typing the closer steps over it, and Backspace in an empty pair deletes both. When no note has that name (`FOLDER/NAME` for one in a folder), Crystal asks "Create it?" (type y), then its type: m or Enter for Markdown, t for plain text. The type cannot change later, and a name is typed without `.txt`. The note exists once Ctrl+S saves it |
+| `edit NAME` | The note in the editor: Ctrl+S saves, Ctrl+E shows it rendered, Ctrl+Q closes. Brackets close as you type: `(`, `[` and `{` bring their closer before a space, a closing bracket or the line's end (`[[` gives `[[]]`), and wrap selected text (select `Note`, type `[[`: `[[Note]]`); typing the closer steps over it, and Backspace in an empty pair deletes both. When no note has that name (`FOLDER/NAME` for one in a folder), Crystal asks "Create it?" (type y), then its type: m or Enter for Markdown, t for plain text. The type cannot change later, and a name is typed without `.txt`. The note exists once Ctrl+S saves it. The mouse works in the editor: a click puts the cursor there, a drag selects, a double click selects a word and a triple click the line, the wheel moves the cursor 3 lines; typing replaces what is selected, and Ctrl+C copies it ([decision 0073](../decisions.md#0073)). In the editor the terminal's own selection takes Shift (see Copying) |
 | `mv OLD NEW` | Renames or moves a note, keeping its type; `[[links]]` to it follow |
 | `rm NAME` | Deletes a note for good, after you type y |
 | `links` | Every `[[link]]` that leads nowhere, and why |
-| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt, at the top left). A wrong passphrase there asks again; Esc or Ctrl+C quits. Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
+| `lock` | Wipes the notes, the shell's output and history and Crystal's clipboard from memory, and shows the lock screen (a cow and the passphrase prompt, at the top left). A wrong passphrase there asks again; Esc or Ctrl+C quits, while arrow keys and the mouse wheel are ignored ([decision 0074](../decisions.md#0074)). Crystal also locks by itself after 5 minutes without a key, in the shell, the viewer and the editor; unsaved edits are saved first ([decision 0048](../decisions.md#0048)) |
 | `help`, `clear`, `quit` | `quit` also as `exit`, or Ctrl+D on an empty line |
 
 Put a name with spaces in quotes: `view "meeting notes"`. Tab completes commands, note names and folders (a second Tab lists the
@@ -275,11 +275,14 @@ kept; convert it to Markdown before copying if you need it
 ([decision 0047](../decisions.md#0047)).
 
 To copy into another program, select the text with the mouse and use the
-terminal's copy key (Ctrl+Shift+C in Ptyxis). That copies what is shown,
+terminal's copy key (Ctrl+Shift+C in Ptyxis). In the editor, which takes
+plain clicks and drags itself, hold Shift while selecting, and Shift+click
+to clear that selection again ([decision 0073](../decisions.md#0073)).
+That copies what is shown,
 with hidden characters spelled out as `<U+XXXX>`, and the editor's line
 numbers (or the pager's `>`) in front of each row too; hold Ctrl while
-dragging for a block selection that leaves them out, where the terminal
-has one. Unfold a section before selecting it: a fold's hidden lines are
+dragging (in the editor Ctrl and Shift) for a block selection that leaves
+them out, where the terminal has one. Unfold a section before selecting it: a fold's hidden lines are
 not on screen, so they are not copied. What you copy this way
 is on the system clipboard, where every program you run can read it and a
 clipboard manager may keep it; Crystal cannot clear it.

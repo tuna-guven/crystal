@@ -11,9 +11,10 @@
 set -eu
 
 # Untrusted text: the renderer, sanitizer, wrapping, names, key decoding,
-# the vault codec and the editor (buffer and keys). About 1 to 2.5 minutes
-# each per million cases (the editor about 9).
-for module in md::render md::safe ui::wrap model::name vault::codec editor; do
+# the vault codec, the editor (buffer, keys and the mouse) and the prompts
+# (escape sequences skipped, decision 0074). About 1 to 2.5 minutes each
+# per million cases (the editor about 9).
+for module in md::render md::safe ui::wrap model::name vault::codec editor term; do
     echo "== $module: 1000000 cases"
     PROPTEST_CASES=1000000 cargo test --locked --release --lib "$module"
 done

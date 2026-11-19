@@ -912,8 +912,9 @@ paste does. Copying out stays the terminal's own selection
 ([0041](#0041)), with Shift held while dragging in the editor; a plain
 click no longer reaches the terminal, so its selection is cleared with a
 Shift+click. Accepted
-at the user's request: about 300 lines with tests and one more input
-parser, fuzzed, for no security benefit. Rejected: scrolling while
+at the user's request: about 340 lines of code, comments included, and
+600 of tests, with one more input parser, fuzzed, for no security
+benefit. Rejected: scrolling while
 dragging past the screen's edge (Shift+arrows extend the selection),
 dragging word by word after a double click, Shift+click (VTE keeps it),
 and the mouse outside the editor.

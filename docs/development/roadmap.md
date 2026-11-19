@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status (2026-11-16)
+## Status (2026-11-19)
 
 | Phase | State |
 | --- | --- |
@@ -9,7 +9,7 @@
 | 2 Crypto and vault format | Done (#3 to #15); redesigned in step L1 (decision 0032): fixed vault location, no config file, `rm`, `check-code`, pins |
 | 3 Shell and viewer | Done: the Crystal shell with `ls`, `tags`, `find`, `search`, `view`, `links`, `copy` and completion; renderer, sanitizer, pager, Crystal's own clipboard (decisions 0031 to 0041); code on a gray background since steps G1 to G5 |
 | C Own age code | Done: Crystal encrypts and decrypts with `src/age_v1/`, its own implementation of the age v1 format (decision 0042); the `age` crate is removed, and files it wrote check the code instead (decision 0043) |
-| 4 Editor | Done (E0 to E7): the editor (decision 0045; brackets close as you type since steps B1 to B6), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving. Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
+| 4 Editor | Done (E0 to E7): the editor (decision 0045; brackets close as you type since steps B1 to B6), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving; the mouse since steps X0 to X6 (decisions 0073, 0074). Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
 | 6 Sandbox | Done (S1 to S12; decisions 0059 to 0063): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests, run locally; the SELinux domain `crystal_t`; four fuzz targets, an hour clean; the optional bubblewrap launcher. Skipped by the user: CI (S0) and the `crystal_t` check through the launcher |
@@ -26,7 +26,9 @@ into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
 suspended.
 `edit` opens the editor (Ctrl+S saves, Ctrl+E shows the note
 rendered, Ctrl+Q closes), creating a missing note after asking for its
-type (Markdown or text), shown dimmed after every name.
+type (Markdown or text), shown dimmed after every name. In the editor the
+mouse places the cursor, selects (drag, double and triple click) and
+scrolls.
 
 ## Steps X0 to X6 (the mouse in the editor)
 
@@ -58,7 +60,7 @@ plan until it is fixed.
 | X4b (done) | Double click selects the word (Unicode word boundaries in its line; a run of spaces or a punctuation mark counts as one), triple click the line with its break, a fourth click starts over: presses at the same place under 400 ms apart, timed in `Editor::mouse` from a time `app.rs` passes in (the monotonic clock, already allowed), so tests set it. A key in between, a later or another place starts over; no drag after a double click. Decision 0073 corrected in place. About 50 lines | Unit test with set times (words, spaces, punctuation, line ends, `\r\n`, accents, a mid-character offset ignored); the property test with random gaps of 0 to 600 ms keeps cursor and selection on grapheme boundaries; the binary test replaces a word and a line |
 | X5 (done) | `scripts/check-mouse.sh VAULT`, for what CI cannot click in Ptyxis: click, drag, wheel; Shift+drag copies out what is shown; the wheel still scrolls in the Ctrl+E preview; a click at the lock screen after auto-lock does nothing; Shift+click clears Ptyxis's own selection; after `kill -9`, record what the shell shows and that `reset` clears it. Testing chapter row | The user runs it and reports; any surprise goes back to the step it belongs to |
 | X5b (done) | From the user's run of X5: the wheel on the lock screen quit Crystal (VTE sends it as arrow keys there, and any ESC cancelled the prompt): prompts now skip whole escape sequences, only Esc alone cancels (decision 0074, cuts 0016). A selected word seemed to take the space after it: the cursor beside a selection was drawn reversed like the selection; now it is only underlined. About 70 lines | Unit tests and a property test that only typed characters reach a passphrase, split into reads anywhere; Esc, Alt+key and broken sequences cancel; through the binary, arrows at the lock screen and then the passphrase unlock |
-| X6 | Acceptance: the setup guide's editor keys, the editor chapter as built, the status line and SUMMARY; all checks with `mdbook build`; the long property tests (`scripts/long-tests.sh`) and the `keys` fuzz target for an hour | A final review of the whole X0 to X6 diff for note text in escape sequences, for modes left on, and for `unsafe`, syscalls or dependencies (expected: none) |
+| X6 (done) | Acceptance: the setup guide's editor keys, the editor chapter as built, the status line and SUMMARY; all checks with `mdbook build`; the long property tests (`scripts/long-tests.sh`) and the `keys` fuzz target for an hour. In the decoder, an ESC that breaks off a sequence (`ESC [ 1 ESC [ A`) now starts the next one instead of leaving its tail as typed text (reported in the review, fixed at the user's request) | A final review of the whole X0 to X6 diff for note text in escape sequences, for modes left on, and for `unsafe`, syscalls or dependencies (expected: none) |
 
 ## Steps K0 to H4 (Phase 8, keys and release)
 

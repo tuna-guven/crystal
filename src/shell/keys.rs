@@ -233,7 +233,19 @@ impl Decoder {
                     self.paste = Some(Zeroizing::new(Vec::with_capacity(PASTE_BUFFER)));
                     self.clear_pending();
                 }
-                Decoded::Drop => self.clear_pending(),
+                Decoded::Drop => {
+                    // An ESC that broke off a sequence or a character
+                    // starts the next sequence, so its tail is not typed
+                    // (`ESC [ 1 ESC [ A` is Up). ESC ESC, Alt and Esc,
+                    // stays dropped as before.
+                    let restart = byte == 0x1b
+                        && self.pending.len() > 1
+                        && self.pending.as_slice() != b"\x1b\x1b";
+                    self.clear_pending();
+                    if restart {
+                        self.pending.push(byte);
+                    }
+                }
             }
         }
         // A lone ESC at the end of a whole read is the Esc key: terminals
@@ -689,6 +701,30 @@ mod tests {
                 assert_eq!(got, [Key::Char('a')], "{bytes:?} at {at}");
             }
         }
+    }
+
+    /// A sequence, or a character, broken off by the ESC of the next
+    /// sequence: the next one is still read and nothing is typed. ESC ESC
+    /// (Alt and Esc) is still dropped.
+    #[test]
+    fn a_broken_sequence_ends_at_the_next_escape() {
+        let cases: [(&[u8], Key); 4] = [
+            (b"\x1b[1\x1b[A", Key::Up),
+            (b"\x1bO\x1b[B", Key::Down),
+            (b"\xe2\x1b[C", Key::Right),
+            (b"\x1b[<0;1\x1b[D", Key::Left),
+        ];
+        for (bytes, key) in cases {
+            assert_eq!(keys(&[bytes, b"a"]), [key, Key::Char('a')], "{bytes:?}");
+            // Split anywhere by a full read: the same.
+            for at in 1..bytes.len() {
+                let got = keys_in_full_reads(&[&bytes[..at], &bytes[at..], b"a"]);
+                assert_eq!(got.len(), 2, "{bytes:?} at {at}");
+            }
+        }
+        assert_eq!(keys(&[b"\x1b\x1ba"]), [Key::Char('a')]);
+        // Broken off by a lone ESC at the end of a whole read: Esc.
+        assert_eq!(keys(&[b"\x1b[1\x1b"]), [Key::Esc]);
     }
 
     /// A sequence too long to keep, cut short by the next one: the next
