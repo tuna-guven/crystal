@@ -1103,15 +1103,41 @@ mod tests {
         ]
     }
 
+    /// A key, or a mouse event on a text position (picked among the
+    /// text's graphemes) and maybe on a row of the list.
+    #[derive(Debug)]
+    enum Input {
+        Key(Key),
+        Mouse(MouseEvent, usize, Option<usize>),
+    }
+
+    fn any_input() -> impl Strategy<Value = Input> {
+        let event = prop::sample::select(
+            &[
+                MouseEvent::Press,
+                MouseEvent::Drag,
+                MouseEvent::Release,
+                MouseEvent::WheelUp,
+                MouseEvent::WheelDown,
+            ][..],
+        );
+        prop_oneof![
+            4 => any_key().prop_map(Input::Key),
+            1 => (event, any::<usize>(), prop::option::of(0..10usize))
+                .prop_map(|(event, at, row)| Input::Mouse(event, at, row)),
+        ]
+    }
+
     proptest! {
-        /// Any keys on any text, through `key_in` with link suggestions:
+        /// Any keys and mouse events on any text, through `key_in` and
+        /// `mouse_in` with link suggestions (on every kind of list):
         /// no panic, the cursor and selection ends stay inside the text on
         /// grapheme boundaries, and an open list is valid (brackets
         /// included: they pair, step over, delete in pairs and wrap).
         #[test]
         fn any_keys_keep_cursor_and_selection_valid(
             text in "[ab \r\n.é😀\u{301}()\\[\\]]{0,30}",
-            keys in prop::collection::vec(any_key(), 0..60),
+            inputs in prop::collection::vec(any_input(), 0..60),
             prefix in prop::sample::select(vec!["", "[[", "[[#", "[[#^", "[[pa#", "[[pa#^"]),
         ) {
             // A heading and blocks of its own, for `[[#` and `[[#^`.
@@ -1138,13 +1164,35 @@ mod tests {
             );
             // Often into a heading or block list first: random keys alone
             // seldom type `[[#^`.
-            let keys = prefix.chars().map(Key::Char).chain(keys);
-            for key in keys {
-                // Up, Down and Esc on an open list never change the text.
-                let moves_list = ed.suggestions().is_some()
-                    && matches!(key, Key::Up | Key::Down | Key::Esc);
+            let inputs = prefix.chars().map(|c| Input::Key(Key::Char(c))).chain(inputs);
+            for input in inputs {
+                // Up, Down and Esc, and the wheel over an open list,
+                // never change the text.
+                let open = ed.suggestions().map_or(0, |list| list.entries.len());
+                let moves_list = open > 0
+                    && match &input {
+                        Input::Key(key) => matches!(key, Key::Up | Key::Down | Key::Esc),
+                        Input::Mouse(event, _, row) => {
+                            row.is_some_and(|row| row < open)
+                                && matches!(event, MouseEvent::WheelUp | MouseEvent::WheelDown)
+                        }
+                    };
                 let before = ed.text().to_owned();
-                ed.key_in(key, &mut clip, &notes);
+                match input {
+                    Input::Key(key) => {
+                        ed.key_in(key, &mut clip, &notes);
+                    }
+                    Input::Mouse(event, at, row) => {
+                        let starts: Vec<usize> = ed
+                            .text()
+                            .grapheme_indices(true)
+                            .map(|(i, _)| i)
+                            .chain([ed.text().len()])
+                            .collect();
+                        let at = starts[at % starts.len()];
+                        ed.mouse_in(event, Some(at), row, Instant::now(), &notes);
+                    }
+                }
                 if moves_list {
                     prop_assert_eq!(ed.text(), before.as_str());
                 }

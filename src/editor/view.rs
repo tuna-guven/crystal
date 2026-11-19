@@ -48,7 +48,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
-use super::suggest::ROWS;
+use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::ui::grid::{
@@ -69,6 +69,13 @@ const CURSOR: Style = Style::PLAIN.mods(Mods::REVERSED.union(Mods::UNDERLINED));
 const CURSOR_BESIDE: Style = Style::PLAIN.mods(Mods::UNDERLINED);
 const HINTS: &str = "Ctrl+S save · Ctrl+Q close · Ctrl+E view · Ctrl+C/X/V copy, cut, \
                      paste · Ctrl+Z/Y undo, redo";
+/// The key line while a list of link suggestions is open: what it lists
+/// and its keys (decisions 0045, 0075).
+const NOTE_HINTS: &str = "Notes · Up/Down, wheel: choose · Enter, Tab, click: link · Esc close";
+const HEADING_HINTS: &str =
+    "Headings · Up/Down, wheel: choose · Enter, Tab, click: link · Esc close";
+const BLOCK_HINTS: &str = "Blocks · Up/Down, wheel: choose · Enter, Tab, click: link (an ^id \
+                           is added if missing) · Esc close";
 const TAB_STOP: usize = 4;
 /// Line numbers are shown only if this many columns stay for the text, as
 /// in the viewer.
@@ -234,9 +241,15 @@ impl View {
         // `[+]` stays visible however long the name.
         let unsaved = if editor.is_dirty() { "[+]" } else { "" };
         status_line(grid, title, name, unsaved, TITLE);
+        let hints = match editor.suggestions().map(|list| list.source) {
+            None => HINTS,
+            Some(Source::Notes) => NOTE_HINTS,
+            Some(Source::Headings(_)) => HEADING_HINTS,
+            Some(Source::Blocks(_)) => BLOCK_HINTS,
+        };
         match editor.notice() {
             Some(notice) => grid.put_str(bottom.x, bottom.y, notice, NOTICE, bottom.width),
-            None => grid.put_str(bottom.x, bottom.y, HINTS, HINT, bottom.width),
+            None => grid.put_str(bottom.x, bottom.y, hints, HINT, bottom.width),
         };
         if rows == 0 || body.width < 2 {
             self.area = None;
@@ -932,8 +945,25 @@ mod tests {
         assert!(!style(5, 3).contains(Mods::REVERSED));
         assert!(style(5, 4).contains(Mods::DIM));
         assert!(!style(10, 4).contains(Mods::DIM));
-        // The text and the key line are untouched.
-        assert!(rows(&grid)[9].starts_with("Ctrl+S save"));
+        // The text is untouched; the key line names the list.
+        assert!(rows(&grid)[9].starts_with("Notes · Up/Down"));
+    }
+
+    /// The key line names the open list's kind, and is the usual one
+    /// again once it closes.
+    #[test]
+    fn key_line_names_the_list() {
+        let body = "# Plan\n\nA paragraph\n";
+        let line = |typed: &str| {
+            let (mut ed, n) = listing_with(&["plan"], body, "", typed);
+            let grid = with_list(&mut ed, &n, 100, 12);
+            rows(&grid)[11].clone()
+        };
+        assert!(line("[[pl").starts_with("Notes · "));
+        assert!(line("[[plan#").starts_with("Headings · "));
+        assert!(line("[[plan#^").starts_with("Blocks · "));
+        assert!(line("[[plan#^").contains("an ^id is added if missing"));
+        assert!(line("[[zz").starts_with("Ctrl+S save"), "no list");
     }
 
     #[test]

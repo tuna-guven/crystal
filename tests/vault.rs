@@ -1448,6 +1448,36 @@ fn create_note(home: &Path, name: &str, body: &str) {
     assert!(ok, "{output}");
 }
 
+/// A heading chosen by a click (roadmap J7): `[[plan#` lists `plan`'s
+/// headings, the key line names the list, a click on the second row
+/// links `[[plan#Checks]]`; unlocked again, `links` finds it.
+#[test]
+fn a_click_links_a_heading() {
+    let (home, _) = home_with_vault("editor_heading_click");
+    create_note(&home, "plan", "# Plan\r\r## Checks");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit today\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    // `1 see [[plan#]]`, the cursor after `#` at column 14 (1-based) on
+    // row 2; the list below it, `# Plan` on row 3, `# Checks` on row 4.
+    steps.push(("Ctrl+S save", b"see [[plan#".to_vec()));
+    // `Heading`: the frame skips the `s` the key line had there.
+    steps.push(("Heading", b"\x1b[<0;15;4M\x1b[<0;15;4m\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    // The second row, not the first: `Checks` written before `]]`.
+    let after = visible(&output[output.find("Heading").unwrap()..]);
+    assert!(after.contains("Checks]]"), "{after:?}");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"links\r".to_vec()));
+    steps.push(("No broken links.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
 /// A block without an id in another note (roadmap J6, decision 0075):
 /// choosing it saves a new `^id` into that note first, then writes the
 /// link. With vault.age replaced on disk before the choice, that save is

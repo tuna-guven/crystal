@@ -1734,6 +1734,46 @@ mod tests {
         assert!(ed.suggestions().is_none());
     }
 
+    /// Headings and blocks take the same keys and mouse as notes: the
+    /// wheel and Up/Down move the highlight, Tab and a click link the
+    /// highlighted or clicked entry, Esc closes without a change.
+    #[test]
+    fn mouse_and_keys_act_alike_on_every_list() {
+        let highlight = |ed: &Editor| ed.suggestions().map(|l| l.highlight);
+        for (n, typed, second) in [
+            (with_headings(), "[[plan#", "[[plan#Release checks]]"),
+            (with_blocks(), "[[plan#^", "[[plan#^p2]]"),
+        ] {
+            // The wheel and the arrows, then Tab.
+            let (mut ed, mut clip) = at_end("");
+            send(&mut ed, &mut clip, &n, chars(typed));
+            click(&mut ed, &n, MouseEvent::WheelDown, None, Some(0));
+            assert_eq!(highlight(&ed), Some(1), "{typed}");
+            send(&mut ed, &mut clip, &n, [Key::Down, Key::Up]);
+            assert_eq!(highlight(&ed), Some(1), "{typed}");
+            send(&mut ed, &mut clip, &n, [Key::Tab]);
+            assert_eq!(ed.text(), second);
+            // A click on the second row.
+            let (mut ed, mut clip) = at_end("");
+            send(&mut ed, &mut clip, &n, chars(typed));
+            click(&mut ed, &n, MouseEvent::Press, None, Some(1));
+            assert_eq!(ed.text(), second);
+            assert!(ed.suggestions().is_none());
+            // Esc, and a click off the list, close it unchanged.
+            for close in [Some(Key::Esc), None] {
+                let (mut ed, mut clip) = at_end("");
+                send(&mut ed, &mut clip, &n, chars(typed));
+                let before = ed.text().to_owned();
+                match close {
+                    Some(key) => send(&mut ed, &mut clip, &n, [key]),
+                    None => click(&mut ed, &n, MouseEvent::Press, Some(0), None),
+                }
+                assert!(ed.suggestions().is_none(), "{typed}");
+                assert_eq!(ed.text(), before);
+            }
+        }
+    }
+
     #[test]
     fn list_keys_disarm_quit_and_clear_the_notice() {
         let n = sample();
