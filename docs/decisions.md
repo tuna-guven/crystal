@@ -992,9 +992,12 @@ A left click on an internal link follows it, to its note, heading or
 `^block`, as n/N and Enter do, and Backspace goes back; a broken link
 says why. A click on a web link only says to Ctrl+click it: opening one
 stays the terminal's ([0054](#0054)), since Crystal opening it would
-mean starting a process. Each heading that opens a section has a gray
-`>` in the gutter, bold while the mouse is over it; a click on it folds
-or unfolds the section ([0052](#0052)). The keyboard cursor and its
+mean starting a process; Ctrl+click opens them in Ptyxis as before (checked by hand). While the mouse is over the gutter beside a heading that
+opens a section, a bold orange marker shows there, `v` for an open
+section and `>` for a folded one (plain ASCII, one column in every
+terminal); a click there folds or unfolds the section ([0052](#0052)).
+Markers always shown, and gray, were tried and dropped: too much on the
+screen, and too faint to find. The keyboard cursor and its
 orange `>` are gone: j/k and the arrows scroll a row, the wheel three,
 Space and PgDn/PgUp a screen, g/G to the ends; `y` copies the first
 note line shown, Tab folds or unfolds the first heading shown (at or

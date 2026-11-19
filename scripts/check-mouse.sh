@@ -51,14 +51,15 @@ In the editor:
   5. Shift+drag: Ptyxis's own selection (it ignores Crystal's);
      Ctrl+Shift+C copies it, line numbers included. A plain click does
      not clear it; Shift+click does.
-  6. Ctrl+E: the preview (decision 0076). Move the mouse over the
-     gray > before  Welcome : it turns bold; away: gray again. Click it:
-     the section folds ( … ); again: it unfolds. The wheel scrolls.
+  6. Ctrl+E: the preview (decision 0076). No marker left of the
+     headings. Move the mouse left of  Welcome : a bold orange  v  shows
+     there; away: it goes. Click it: the section folds ( … ) and the
+     marker becomes  > ; again: it unfolds,  v . The wheel scrolls.
      Click  guide#Keys : the guide opens at  Keys ; Backspace: back.
      Ctrl+E again: back in the editor, clicks work again.
  6a. Ctrl+Q twice, then  view links : click  good : a notice says to
-     Ctrl+click it, nothing opens. Ctrl+click it: note whether Ptyxis
-     opens it, or only Shift+Ctrl+click does (decision 0054). Shift+drag
+     Ctrl+click it, nothing opens. Ctrl+click it: Ptyxis opens it
+     (decision 0054; checked 2026-11-19). Shift+drag
      over a line: Ptyxis selects it. q: the shell.
   7. In the shell, where 6a ended. A click and a drag type
      nothing at the prompt; the wheel steps through the command history
