@@ -30,6 +30,51 @@ type (Markdown or text), shown dimmed after every name. In the editor the
 mouse places the cursor, selects (drag, double and triple click) and
 scrolls; after `[[` it suggests notes to link, filtered as you type.
 
+## Steps LE1 to LE7 (live editing, experimental)
+
+Asked for by the user (2026-11-19) after a complexity warning, as an
+experiment: `edit --live NAME` opens a Markdown note in the editor with
+its Markdown shown as in Obsidian's live preview. Every line the cursor
+or the selection is on is drawn as written, exactly as today; every
+other line has its markup hidden and is styled as in the viewer (`# `
+gone and the heading colored, `**`, `*`, `~~` and backticks gone, a
+`[[link|alias]]` or `[text](url)` shown as its words, list markers as
+`•`, task boxes, quote bars, code blocks gray with their fences
+hidden). Tables stay as written. `edit NAME` is unchanged; a text note
+opens as usual. No security benefit; about 600 lines of code and 400 of
+tests.
+
+How: the buffer, the keys and the undo log stay as they are, so
+Crystal's clipboard (Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A) copies and pastes
+the Markdown as written, in both modes. Only drawing changes: a new
+module `editor/live.rs` parses the editor's text with pulldown-cmark
+(already a dependency) and its source offsets into runs of the text's
+own bytes, each shown, hidden or replaced by a fixed string (`•`, `☐`,
+`│`), with a style. The view's row walk takes those runs: a hidden byte
+is zero columns wide. Every grapheme drawn is still a grapheme of the
+note passed through the editor's own check (`shape`, decision 0037),
+or a fixed string; nothing the parser decodes (entities, escapes) is
+drawn. Up and Down stay by note line, as now; the mouse finds a
+grapheme by the same row walk, so a click on a styled line lands on
+the character under it. Shift+drag in the terminal copies what is
+shown, as in the viewer.
+
+Rules for every step: no new dependency, no new syscall, no change to
+Landlock, seccomp or hardening; no note text in an error, a log, a
+panic or a format string. Not security related, so no new decision:
+decision 0045 is updated in place in LE7. Every step ends with fmt,
+clippy, tests, deny and audit green.
+
+| Step | What | Check |
+| --- | --- | --- |
+| LE1 | `edit --live NAME`: `Open::Edit` carries `live`; the editor's `View` keeps it (`View::live`); a missing note is not created with `--live` (says to create it with `edit NAME` first); a text note opens as usual; the title shows `live` after the name (`live [+]` when changed). Nothing else is drawn differently yet. About 40 lines | Unit tests: `edit --live roadmap` opens note 0 live, `edit roadmap` not live, `edit --live` alone asks which note, `edit --live missing` refused |
+| LE2 | `editor/live.rs`: inline markup. `runs(text) -> Vec<Run>` from pulldown-cmark's offset iterator: emphasis, strong, strikethrough and inline code markers hidden, their text styled; links and `[[links]]` shown as their words; headings' `#` hidden, the line colored per level as in the viewer. Not used by the view yet. About 150 lines | Unit tests per element; a property test: runs cover the text in order without overlap, every range on char boundaries |
+| LE3 | The view draws live: row walk and drawing take the runs, a hidden byte is zero wide; lines touched by the cursor or the selection are drawn as written. About 120 lines | Unit tests on the drawn grid: a styled line, the cursor's line raw, wrapping by shown width; a property test: any text, any cursor, any width: no panic, the cursor drawn |
+| LE4 | Blocks: list markers as `•`, task boxes `☐`/`☑`, quote bars `│`, code blocks gray with fences hidden, rules `─`. About 100 lines | Unit tests per block |
+| LE5 | Mouse and lists: clicks and drags on styled lines land on the grapheme under them; the `[[` list opens under the cursor as before; the parse is redone only when the text changed (measured first, kept only if a frame of a large note is slow). About 60 lines | Unit tests: a click on a styled word puts the cursor in it; Ctrl+C in live mode copies the Markdown as written; Ctrl+V pastes it unchanged |
+| LE6 | Through the binary: `edit --live` shows a styled note, Ctrl+S saves the text unchanged byte for byte | A binary test |
+| LE7 | Acceptance: decision 0045 updated in place, setup guide (`edit --live`), help text, status line; fmt, clippy, test, deny, audit, mdbook | Review of the LE1 to LE6 diff for note text in format strings, unchecked graphemes drawn, `unsafe`, syscalls or dependencies (expected: none) |
+
 ## Steps Q0 to Q5 (the mouse in the viewer; done)
 
 Asked for by the user (2026-11-19) after a complexity warning: in the

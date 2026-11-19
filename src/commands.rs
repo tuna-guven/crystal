@@ -30,7 +30,11 @@ const SNIPPET: usize = 100;
 /// What a command hands over to, leaving the shell.
 pub enum Open {
     View(usize),
-    Edit(usize),
+    /// `edit NAME`, or `edit --live NAME` with `live` (steps LE1 to LE7).
+    Edit {
+        note: usize,
+        live: bool,
+    },
     /// `edit` of a note that does not exist yet: its name passed the
     /// vault's rules. The caller asks "Create it?" and the type.
     Create {
@@ -59,7 +63,7 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
         Some("search") => search(notes, &rest, shell),
         Some("links") => links(notes, shell),
         Some("view") => return view(notes, &rest, shell).map(Open::View),
-        Some("edit") => return edit(notes, &rest, shell),
+        Some("edit") => return edit(notes, &args, shell),
         Some("mv") => return mv(notes, &args, shell),
         Some("rm") => return view(notes, &rest, shell).map(Open::Remove),
         Some(other) => say(
@@ -78,7 +82,14 @@ pub fn run(notes: &Notes, words: &[Zeroizing<String>], shell: &mut Shell) -> Opt
 /// `.txt`: the type is asked, not typed. A bare title that one note has
 /// opens that note, so a new top-level note cannot take a title that a
 /// note in a folder has alone (create it under another name, then `mv`).
-fn edit(notes: &Notes, name: &str, shell: &mut Shell) -> Option<Open> {
+/// A first word `--live` opens the note in live mode; it never creates one.
+fn edit(notes: &Notes, args: &[&str], shell: &mut Shell) -> Option<Open> {
+    let (live, args) = match args {
+        ["--live", rest @ ..] => (true, rest),
+        _ => (false, args),
+    };
+    let name = joined(args);
+    let name = name.as_str();
     if name.is_empty() {
         shell.print(
             "Which note? (edit NAME; a missing one is created)",
@@ -87,9 +98,16 @@ fn edit(notes: &Notes, name: &str, shell: &mut Shell) -> Option<Open> {
         return None;
     }
     match find_shown(notes, name) {
-        Found::One(index) => Some(Open::Edit(index)),
+        Found::One(note) => Some(Open::Edit { note, live }),
         Found::Ambiguous(list) => {
             ambiguous(notes, list, shell);
+            None
+        }
+        Found::None if live => {
+            shell.print(
+                "No note with that name. Create it with edit NAME first.",
+                ERROR_STYLE,
+            );
             None
         }
         Found::None if shown(name).1 == Kind::Plain => {
@@ -755,7 +773,13 @@ mod tests {
         let n = sample();
         let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
         let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
-        assert!(matches!(open("edit roadmap"), Some(Open::Edit(0))));
+        assert!(matches!(
+            open("edit roadmap"),
+            Some(Open::Edit {
+                note: 0,
+                live: false
+            })
+        ));
         match open("edit work/fresh idea") {
             Some(Open::Create { folder, title }) => {
                 assert_eq!((folder.as_str(), title.as_str()), ("work", "fresh idea"));
@@ -781,6 +805,24 @@ mod tests {
         }
         assert_eq!(
             output(&sample(), "edit"),
+            ["Which note? (edit NAME; a missing one is created)"]
+        );
+        // `--live` opens a note live and never creates one (step LE1).
+        let mut shell = Shell::new(&VaultName::new("diary".into()).unwrap());
+        let mut open = |line: &str| run(&n, &crate::shell::parse::words(line).unwrap(), &mut shell);
+        assert!(matches!(
+            open("edit --live roadmap"),
+            Some(Open::Edit {
+                note: 0,
+                live: true
+            })
+        ));
+        assert_eq!(
+            output(&sample(), "edit --live work/fresh idea"),
+            ["No note with that name. Create it with edit NAME first."]
+        );
+        assert_eq!(
+            output(&sample(), "edit --live"),
             ["Which note? (edit NAME; a missing one is created)"]
         );
         assert_eq!(

@@ -230,9 +230,20 @@ pub struct View {
     /// Where the last frame drew the suggestion list, and the list entry
     /// on its first row, for the mouse; `None` when it was not drawn.
     list: Option<(Rect, usize)>,
+    /// `edit --live`: markup styled on lines away from the cursor (steps
+    /// LE1 to LE7). Only the title shows it yet.
+    live: bool,
 }
 
 impl View {
+    /// A view in live mode (`edit --live`).
+    pub fn live() -> Self {
+        Self {
+            live: true,
+            ..Self::default()
+        }
+    }
+
     /// Draws `editor` on `grid`, with `name` on the top row, and tells the
     /// editor how many rows a page is.
     pub fn draw(&mut self, grid: &mut Grid, editor: &mut Editor, name: &str) {
@@ -244,8 +255,13 @@ impl View {
         self.cursor = None;
         self.list = None;
 
-        // `[+]` stays visible however long the name.
-        let unsaved = if editor.is_dirty() { "[+]" } else { "" };
+        // `[+]` and `live` stay visible however long the name.
+        let unsaved = match (self.live, editor.is_dirty()) {
+            (true, true) => "live [+]",
+            (true, false) => "live",
+            (false, true) => "[+]",
+            (false, false) => "",
+        };
         status_line(grid, title, name, unsaved, TITLE);
         let hints = match editor.suggestions().map(|list| list.source) {
             None => HINTS,
@@ -807,6 +823,9 @@ mod tests {
         let grid = drawn(&mut ed, &mut View::default(), 10, 4);
         assert_eq!(rows(&grid)[0], "work/p [+]", "[+] kept, the name cut");
         assert_eq!(cursor_cell(&grid), Some((3, 2)), "after the last character");
+        // Live mode says so in the title (step LE1).
+        let grid = drawn(&mut ed, &mut View::live(), 20, 4);
+        assert_eq!(rows(&grid)[0], "work/plan   live [+]");
     }
 
     #[test]

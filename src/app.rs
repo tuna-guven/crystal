@@ -159,7 +159,7 @@ fn act(
                     title,
                     name,
                 };
-                *mode = edit(session.notes(), target, shell);
+                *mode = edit(session.notes(), target, false, shell);
             }
         }
         Reply::Declined(said) => shell.print(said, Style::PLAIN),
@@ -360,8 +360,9 @@ fn run_loop(
                                         Some(Open::View(note)) => {
                                             mode = Mode::View(Box::new(Pager::open(note)));
                                         }
-                                        Some(Open::Edit(note)) => {
-                                            mode = edit(session.notes(), Target::Note(note), shell);
+                                        Some(Open::Edit { note, live }) => {
+                                            let target = Target::Note(note);
+                                            mode = edit(session.notes(), target, live, shell);
                                         }
                                         Some(Open::Create { folder, title }) => {
                                             let name = full_name(&folder, &title);
@@ -409,7 +410,7 @@ fn run_loop(
                             PagerAction::Stay => {}
                             PagerAction::Close => mode = Mode::Shell,
                             PagerAction::Edit(note) => {
-                                mode = edit(session.notes(), Target::Note(note), shell);
+                                mode = edit(session.notes(), Target::Note(note), false, shell);
                             }
                             PagerAction::Copy(note) => {
                                 clipboard.set(session.notes().note(note).body.as_str());
@@ -530,8 +531,10 @@ fn save_before_lock(
     }
 }
 
-/// Opens the editor on `target`: a saved note's text, or an empty one.
-fn edit(notes: &Notes, target: Target, shell: &mut Shell) -> Mode {
+/// Opens the editor on `target`: a saved note's text, or an empty one;
+/// `live` shows a Markdown note's markup styled (steps LE1 to LE7), a text
+/// note opens as usual.
+fn edit(notes: &Notes, target: Target, live: bool, shell: &mut Shell) -> Mode {
     let (body, own, title) = match &target {
         Target::Note(note) => {
             let note_ref = notes.note(*note);
@@ -539,14 +542,19 @@ fn edit(notes: &Notes, target: Target, shell: &mut Shell) -> Mode {
         }
         Target::New { title, .. } => ("", None, title.as_str()),
     };
+    let markdown = kind_of(title) == Kind::Markdown;
     match Editor::new(body) {
         Ok(mut editor) => Mode::Edit(Box::new(Editing {
             // For link suggestions into its own headings (decision 0075).
             editor: {
-                editor.set_note(own, kind_of(title) == Kind::Markdown);
+                editor.set_note(own, markdown);
                 editor
             },
-            view: View::default(),
+            view: if live && markdown {
+                View::live()
+            } else {
+                View::default()
+            },
             target,
             preview: None,
         })),
