@@ -947,3 +947,38 @@ in; a property test checks that only the typed characters reach the
 line, however the input is split into reads. Rejected: turning off the
 terminal's wheel-to-arrows mode at prompts (`ESC [ ? 1007 l`), which not
 every terminal knows and which would leave arrow keys quitting.
+
+## 0075 Link suggestions list headings and blocks; a chosen block gets an id {#0075}
+
+*2026-11-19.* Inside a link the editor's suggestions ([0045](#0045))
+also list what a link can point into, as Obsidian does: after
+`[[name#` the headings of the note `name` finds (`Notes::find`; none
+when no note or several do), after `[[name#^` its paragraphs and list
+items, each shown by its first line; `[[#` and `[[#^` list those of the
+note being edited, from the editor's text. Headings holding `[`, `]`,
+`|`, `#` or `^` are left out, since they cannot be linked as written;
+blocks in code, tables or HTML, and plain-text notes, have none.
+Choosing a heading writes `[[name#Heading]]`, a block with an id
+`[[name#^id]]`. A block without one gets a new id first: ` ^` and 6
+characters from `a-z0-9`, drawn from `crypto::fill_random` (`getrandom`,
+already allowed) by rejection sampling, unique in that note (at most 8
+tries, else nothing changes), at the end of the block's last line, where
+the note index reads ids. In the note being edited the id goes into the
+editor's text, in the same undo step as the link, and is saved with it
+by Ctrl+S. In another note it is saved at once: Crystal checks that the
+block is still there without an id in that note's saved text, puts the
+id into a copy of it and saves it through `Session::save` with
+`Change::Body`, exactly as Ctrl+S saves a note (the whole vault through
+the atomic writer, refused when `vault.age` changed on disk since
+unlock); only when that save succeeded does the editor write the link.
+A refused or failed save writes no link and reports like a failed
+Ctrl+S; the demo notes are never saved, so no link is written there.
+`Session::save`, the codec and the atomic writer are unchanged: this
+is the only place where Crystal changes a note the user did not open,
+and only by adding an id the user chose. The list holds note indexes and
+byte ranges, never copies of their text, and draws headings and
+paragraphs of other notes through the grid, as `view` would show them.
+Accepted at the user's request, for no security benefit. Rejected:
+vault-wide `[[##` and `[[^^`; rewriting headings with link characters;
+keeping the new id unsaved until Ctrl+S (it needs a save of two notes
+at once, a change to the save path).
