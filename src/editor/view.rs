@@ -214,6 +214,9 @@ pub struct View {
     /// The cell the last frame drew the cursor in, for the suggestion
     /// list; `None` when it was not drawn.
     cursor: Option<(u16, u16)>,
+    /// Where the last frame drew the suggestion list, and the list entry
+    /// on its first row, for the mouse; `None` when it was not drawn.
+    list: Option<(Rect, usize)>,
 }
 
 impl View {
@@ -226,6 +229,7 @@ impl View {
         let rows = usize::from(body.height);
         editor.set_page(rows);
         self.cursor = None;
+        self.list = None;
 
         // `[+]` stays visible however long the name.
         let unsaved = if editor.is_dirty() { "[+]" } else { "" };
@@ -281,7 +285,7 @@ impl View {
         not(test),
         expect(dead_code, reason = "wired into the session in roadmap step W5")
     )]
-    pub fn draw_suggestions(&self, grid: &mut Grid, editor: &Editor, notes: &Notes) {
+    pub fn draw_suggestions(&mut self, grid: &mut Grid, editor: &Editor, notes: &Notes) {
         /// The suggestion list's rows: the gray of code blocks in the viewer.
         const LIST: Style = Style::PLAIN.bg(Color::Indexed(236));
         const LIST_FOLDER: Style = LIST.mods(Mods::DIM);
@@ -334,7 +338,9 @@ impl View {
             return;
         }
         let x = cursor_x.min(screen.right() - width);
+        let mut drawn = 0;
         for (row, (index, &note)) in (y..).zip(shown) {
+            drawn += 1;
             let (plain, folder_style) = if index == list.highlight {
                 (LIST_HIGHLIGHT, LIST_HIGHLIGHT_FOLDER)
             } else {
@@ -360,6 +366,23 @@ impl View {
                 grid.put_str(x + width - 2, row, "…", plain, 1);
             }
         }
+        if drawn > 0 {
+            self.list = Some((Rect::new(x, y, width, drawn), first));
+        }
+    }
+
+    /// The suggestion list's entry (an index into `List::notes`) drawn at
+    /// the cell (`column`, `row`) in the last frame, if the list was drawn
+    /// there (decision 0073's mouse).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into the session in roadmap step W5")
+    )]
+    pub fn suggestion_at(&self, column: u16, row: u16) -> Option<usize> {
+        let (area, first) = self.list?;
+        let inside =
+            (area.x..area.right()).contains(&column) && (area.y..area.bottom()).contains(&row);
+        inside.then(|| first + usize::from(row - area.y))
     }
 
     /// Where the grapheme drawn at the cell (`column`, `row`) in the last
@@ -973,6 +996,37 @@ mod tests {
     }
 
     #[test]
+    fn suggestion_at_maps_cells_to_entries() {
+        let names: Vec<String> = (0..12).map(|i| format!("n{i:02}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let (mut ed, n) = listing(&names, "", "[[");
+        let mut view = View::default();
+        let mut grid = drawn(&mut ed, &mut view, 40, 12);
+        // Before the list is drawn, and with it drawn: rows 2 to 9 from
+        // column 4, 5 columns wide.
+        assert_eq!(view.suggestion_at(4, 2), None);
+        view.draw_suggestions(&mut grid, &ed, &n);
+        assert_eq!(view.suggestion_at(4, 2), Some(0));
+        assert_eq!(view.suggestion_at(8, 9), Some(7));
+        for (x, y) in [(3, 2), (9, 2), (4, 1), (4, 10)] {
+            assert_eq!(view.suggestion_at(x, y), None, "({x}, {y})");
+        }
+        // Scrolled: the first row shows entry 4.
+        let mut clip = Clipboard::default();
+        for _ in 0..11 {
+            ed.key_in(Key::Down, &mut clip, &n);
+        }
+        let mut grid = drawn(&mut ed, &mut view, 40, 12);
+        view.draw_suggestions(&mut grid, &ed, &n);
+        assert_eq!(view.suggestion_at(4, 2), Some(4));
+        assert_eq!(view.suggestion_at(4, 9), Some(11));
+        // A frame without the list forgets it.
+        ed.key_in(Key::Esc, &mut clip, &n);
+        drawn(&mut ed, &mut view, 40, 12);
+        assert_eq!(view.suggestion_at(4, 2), None);
+    }
+
+    #[test]
     fn no_list_without_room() {
         let (mut ed, n) = listing(&["plan"], "", "[[");
         for (width, height) in [(1, 1), (1, 5), (7, 5), (40, 2), (40, 3)] {
@@ -1014,14 +1068,23 @@ mod tests {
             prop_assert_eq!(cursor_cell(&grid), cursor);
             let mut highlighted = false;
             let mut drawn_any = false;
+            let list = ed.suggestions().unwrap();
             for y in 0..height {
                 for x in 0..width {
                     let cell = grid.cell(x, y).unwrap();
                     prop_assert!(!cell.symbol().chars().any(char::is_control));
-                    if cell.style().bg == Color::Indexed(236) {
+                    let gray = cell.style().bg == Color::Indexed(236);
+                    // The mouse finds an entry exactly where one is drawn,
+                    // and the highlighted entry is the reversed row.
+                    let entry = view.suggestion_at(x, y);
+                    prop_assert_eq!(gray, entry.is_some());
+                    if let Some(entry) = entry {
                         drawn_any = true;
+                        prop_assert!(entry < list.notes.len());
                         prop_assert!(y > 0 && y + 1 < height, "list on row {y}");
-                        highlighted |= cell.style().mods.contains(Mods::REVERSED);
+                        let reversed = cell.style().mods.contains(Mods::REVERSED);
+                        prop_assert_eq!(reversed, entry == list.highlight);
+                        highlighted |= reversed;
                     }
                 }
             }

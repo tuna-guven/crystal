@@ -9,7 +9,9 @@
 //! matching; it is computed again after each such key. While it is open,
 //! Up and Down move the highlight (wrapping), Enter and Tab link the
 //! highlighted note, Esc closes it; any other key closes it and acts as
-//! always.
+//! always. With the mouse (decision 0073, `Editor::mouse_in`), a click on
+//! an entry links that note and the wheel over the list moves the
+//! highlight; anything else closes it and acts as always.
 
 #![cfg_attr(
     not(test),
@@ -17,10 +19,11 @@
 )]
 
 use std::ops::Range;
+use std::time::Instant;
 
 use super::{Editor, EditorAction};
 use crate::notes::{Found, Notes, cmp_ci};
-use crate::shell::keys::Key;
+use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::clipboard::Clipboard;
 
 /// Rows the list shows at once; the rest scroll.
@@ -83,6 +86,44 @@ impl Editor {
             self.refresh(notes);
         }
         action
+    }
+
+    /// `mouse` with link suggestions: `entry` is the list entry under the
+    /// pointer (`View::suggestion_at`), if any. A press on an entry links
+    /// that note, the wheel there moves the highlight; like a key, they
+    /// end a typing run, clear the notice and disarm Ctrl+Q. Any other
+    /// event goes to `mouse`, which closes the list.
+    pub fn mouse_in(
+        &mut self,
+        event: MouseEvent,
+        at: Option<usize>,
+        entry: Option<usize>,
+        now: Instant,
+        notes: &Notes,
+    ) {
+        let on_list = entry
+            .zip(self.suggestions.as_mut())
+            .filter(|(i, list)| *i < list.notes.len());
+        let Some((entry, list)) = on_list else {
+            self.mouse(event, at, now);
+            return;
+        };
+        match event {
+            MouseEvent::Press => {
+                list.highlight = entry;
+                self.accept(notes);
+            }
+            MouseEvent::WheelUp | MouseEvent::WheelDown => {
+                list.step(event == MouseEvent::WheelDown)
+            }
+            // No drag starts on the list: nothing to do.
+            MouseEvent::Drag | MouseEvent::Release => {}
+        }
+        self.notice = None;
+        self.quit_armed = false;
+        self.last_press = None;
+        self.pressed = false;
+        self.buffer.commit();
     }
 
     /// The open list, for the view.
@@ -465,6 +506,82 @@ mod tests {
             std::time::Instant::now(),
         );
         assert!(ed.suggestions().is_none());
+    }
+
+    /// Sends a mouse `event` through `mouse_in`.
+    fn click(
+        ed: &mut Editor,
+        n: &Notes,
+        event: MouseEvent,
+        at: Option<usize>,
+        entry: Option<usize>,
+    ) {
+        ed.mouse_in(event, at, entry, Instant::now(), n);
+    }
+
+    #[test]
+    fn a_click_on_an_entry_links_it() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[pla"));
+        // `plan`, `work/plan`, `home/Garden plan`: the third, by a press
+        // and its release.
+        click(&mut ed, &n, MouseEvent::Press, Some(0), Some(2));
+        click(&mut ed, &n, MouseEvent::Release, Some(0), Some(2));
+        assert_eq!(ed.text(), "[[Garden plan]]");
+        assert_eq!(ed.cursor(), ed.text().len());
+        assert!(ed.suggestions().is_none());
+        ed.key_in(Key::Ctrl('z'), &mut clip, &n);
+        assert_eq!(ed.text(), "[[pla]]");
+    }
+
+    #[test]
+    fn the_wheel_over_the_list_moves_the_highlight() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[pla"));
+        let highlight = |ed: &Editor| ed.suggestions().map(|l| l.highlight);
+        click(&mut ed, &n, MouseEvent::WheelDown, None, Some(0));
+        assert_eq!(highlight(&ed), Some(1));
+        click(&mut ed, &n, MouseEvent::WheelUp, None, Some(0));
+        click(&mut ed, &n, MouseEvent::WheelUp, None, Some(0));
+        assert_eq!(highlight(&ed), Some(2));
+        // A drag or a release over it changes nothing.
+        click(&mut ed, &n, MouseEvent::Drag, Some(0), Some(1));
+        click(&mut ed, &n, MouseEvent::Release, Some(0), Some(1));
+        assert_eq!(highlight(&ed), Some(2));
+        assert_eq!(ed.text(), "[[pla]]");
+    }
+
+    #[test]
+    fn the_mouse_elsewhere_closes_the_list() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("");
+        // A press on the text: the list closes, the cursor moves.
+        send(&mut ed, &mut clip, &n, chars("[[pla"));
+        click(&mut ed, &n, MouseEvent::Press, Some(0), None);
+        assert!(ed.suggestions().is_none());
+        assert_eq!(ed.cursor(), 0);
+        // The wheel off the list: closes it, moves as always.
+        send(
+            &mut ed,
+            &mut clip,
+            &n,
+            [Key::End, Key::Left, Key::Left, Key::Backspace],
+        );
+        assert!(ed.suggestions().is_some());
+        click(&mut ed, &n, MouseEvent::WheelUp, None, None);
+        assert!(ed.suggestions().is_none());
+        // An entry past the list's end counts as off it.
+        send(&mut ed, &mut clip, &n, chars("a"));
+        click(&mut ed, &n, MouseEvent::Press, Some(1), Some(3));
+        assert!(ed.suggestions().is_none());
+        assert_eq!(ed.text(), "[[pla]]");
+        assert_eq!(ed.cursor(), 1);
+        // With the list closed, an entry is ignored: a plain click.
+        click(&mut ed, &n, MouseEvent::Press, Some(2), Some(0));
+        assert_eq!(ed.cursor(), 2);
+        assert_eq!(ed.text(), "[[pla]]");
     }
 
     #[test]
