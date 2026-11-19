@@ -51,6 +51,9 @@ pub struct Line {
     /// A fence or a Setext heading's underline: the viewer gives it no
     /// row, so live mode draws none while it is not edited (step LV1).
     pub skip: bool,
+    /// The viewer draws a blank row before it that the note does not
+    /// have: the first line of a block right after another (step LV2).
+    pub gap: bool,
     /// In a code block: its widest line, in columns, for the gray box.
     pub code: Option<u16>,
 }
@@ -108,6 +111,14 @@ pub struct Builder<'a> {
     /// Inside a heading: whether its text's line is laid out (a bare line
     /// after it is a Setext underline).
     heading: Option<bool>,
+    /// A block ended: the viewer puts a blank row before the next one
+    /// (its `blank`), unless the note has a blank line there.
+    ended: bool,
+    /// The last line laid out (fences and underlines aside) is blank: the
+    /// note's own separator.
+    blank_since: bool,
+    /// The next line laid out gets `Line::gap`.
+    gap_next: bool,
     /// The last prefix interned, to share it with the next line.
     last: Range<u32>,
     /// A prefix being built, kept to spare an allocation per line.
@@ -128,6 +139,9 @@ impl<'a> Builder<'a> {
             heading: None,
             last: 0..0,
             scratch: Vec::new(),
+            ended: false,
+            blank_since: false,
+            gap_next: false,
         }
     }
 
@@ -137,16 +151,26 @@ impl<'a> Builder<'a> {
             Event::Start(tag) => match tag {
                 Tag::BlockQuote(_) | Tag::List(_) | Tag::Item | Tag::Heading { .. } => {
                     self.before(range.start);
+                    if !matches!(tag, Tag::Item) {
+                        self.block();
+                    }
                     self.open(tag, range.start);
                 }
                 Tag::CodeBlock(kind) => {
                     self.before(range.start);
+                    self.block();
                     self.code = Some(usize::MAX);
                     self.hide_bare = matches!(kind, pulldown_cmark::CodeBlockKind::Fenced(_));
                 }
+                Tag::Paragraph | Tag::Table(_) | Tag::HtmlBlock => {
+                    self.before(range.start);
+                    self.block();
+                    if matches!(tag, Tag::Paragraph) {
+                        self.content(range);
+                    }
+                }
                 // These start at their line's content.
-                Tag::Paragraph
-                | Tag::TableHead
+                Tag::TableHead
                 | Tag::TableRow
                 | Tag::Emphasis
                 | Tag::Strong
@@ -156,11 +180,40 @@ impl<'a> Builder<'a> {
                 _ => {}
             },
             Event::End(tag) => {
+                // As the viewer: after these, a blank row before the next
+                // block.
+                if matches!(
+                    tag,
+                    TagEnd::Paragraph
+                        | TagEnd::HtmlBlock
+                        | TagEnd::Table
+                        | TagEnd::Heading(_)
+                        | TagEnd::CodeBlock
+                        | TagEnd::BlockQuote(_)
+                        | TagEnd::List(_)
+                ) {
+                    self.ended = true;
+                }
                 // Lines left before the end belong to the tag.
                 self.upto(range.end);
                 self.close(*tag);
             }
+            Event::Rule => {
+                self.before(range.start);
+                self.block();
+                self.content(range);
+                self.ended = true;
+            }
             _ => self.content(range),
+        }
+    }
+
+    /// A block starts (the viewer's `start_block`): after another, with no
+    /// blank line between them in the note, its first line gets a gap.
+    fn block(&mut self) {
+        if self.ended {
+            self.gap_next = !self.blank_since && !self.layout.lines.is_empty();
+            self.ended = false;
         }
     }
 
@@ -289,6 +342,9 @@ impl<'a> Builder<'a> {
                     .len()
         };
         let skip = self.hide_bare && (self.code.is_some() || self.heading == Some(true));
+        if !skip {
+            self.blank_since = line[markup..].trim().is_empty();
+        }
         self.push(start, start + markup, false, skip);
     }
 
@@ -311,6 +367,7 @@ impl<'a> Builder<'a> {
                     u16::try_from(display_width(&self.text[*number..content])).unwrap_or(u16::MAX);
             }
         }
+        self.blank_since = false;
         self.push(start, markup_end, true, false);
     }
 
@@ -333,6 +390,7 @@ impl<'a> Builder<'a> {
             rest,
             section: self.section,
             skip,
+            gap: std::mem::take(&mut self.gap_next),
             code: None,
         });
         self.next = self.next_end + 1;
@@ -540,6 +598,22 @@ mod tests {
         let text = "# H\n- a\n> b\n```\nc\n```\n\n    d\n";
         let layout = layout(text);
         assert_eq!(layout.lines.len(), text.split('\n').count());
+    }
+
+    /// Where the viewer adds a blank row the note does not have (step
+    /// LV2): the first line of a block right after another; none where a
+    /// blank line is, between items of a list, or before the first block.
+    #[test]
+    fn gaps_where_the_viewer_adds_a_blank_row() {
+        let text = "## H\ntext:\n- a\n- b\n\npara\n```\nc\n```\nend";
+        let gaps: Vec<bool> = layout(text).lines.iter().map(|l| l.gap).collect();
+        // ## H, text:, - a, - b, blank, para, fence, c, fence, end.
+        assert_eq!(
+            gaps,
+            [
+                false, true, true, false, false, false, true, false, false, true
+            ]
+        );
     }
 
     proptest::proptest! {

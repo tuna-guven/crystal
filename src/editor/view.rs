@@ -183,6 +183,9 @@ struct Live {
     skips: Vec<Range<usize>>,
     /// The empty line after a final line break is not drawn either.
     skip_end: bool,
+    /// The lines the viewer's added blank row goes before (step LV2),
+    /// sorted: each a line drawn, past any skipped ones.
+    gaps: Vec<usize>,
 }
 
 /// What a mouse event in live mode was for (steps LF2, LF3).
@@ -221,6 +224,11 @@ fn shift(folds: &mut Vec<usize>, change: Change) {
         }
     });
 }
+
+/// A row start with this bit is the blank row the viewer draws before
+/// the line starting at the rest (step LV2): a row with no text. Notes
+/// are far smaller than this bit, so no offset has it.
+const GAP: usize = 1 << (usize::BITS - 1);
 
 /// Indents are slices of this.
 const SPACES: &str = "                                                                ";
@@ -408,6 +416,23 @@ impl Live {
         });
         let raw = merged(raw);
         let (skips, skip_end) = skipped(&parsed.layout, text, cursor, selection, &raw);
+        // A gap before a skipped line (a fence) goes before the next line
+        // drawn; none inside a folded section or past the text.
+        let mut gaps: Vec<usize> = Vec::new();
+        for line in parsed.layout.lines.iter().filter(|line| line.gap) {
+            let mut at = line.markup.start;
+            while let Some(skip) = skips.iter().find(|r| r.start == at) {
+                at = skip.end;
+            }
+            // In a fold, or right after one: the viewer's fold hides the
+            // blank row before the next heading too.
+            let folded = folds
+                .iter()
+                .any(|f| f.hidden.contains(&at) || f.hidden.end == at);
+            if at < text.len() && !folded && gaps.last() != Some(&at) {
+                gaps.push(at);
+            }
+        }
         // A link drawn as written is being edited: a click there places
         // the cursor.
         let links = parsed
@@ -424,24 +449,36 @@ impl Live {
             links,
             skips,
             skip_end,
+            gaps,
         }
+    }
+
+    /// Whether the viewer's added blank row goes before the line at `at`.
+    fn gap_before(&self, at: usize) -> bool {
+        self.gaps.binary_search(&at).is_ok()
     }
 
     /// Where the next row starts after a line break that ends at `at`:
     /// past any folded section and skipped lines; `None` past the text.
-    fn next_row(&self, mut at: usize, len: usize) -> Option<usize> {
-        let mut skipped = false;
+    /// The text's end after a line break is the empty last line, drawn
+    /// unless skipped; after a fold reaching it, it is the fold's.
+    fn next_row(&self, mut at: usize, text: &str) -> Option<usize> {
+        let len = text.len();
+        let mut folded = false;
         loop {
             if let Some(end) = self.skip(at) {
                 at = end;
+                folded = true;
             } else if let Some(range) = self.skips.iter().find(|r| r.start == at) {
                 at = range.end;
+                folded = false;
             } else {
                 break;
             }
-            skipped = true;
         }
-        let gone = at >= len && (skipped || self.skip_end);
+        let gone = at >= len && (folded || self.skip_end || !text.ends_with('\n'));
+        // The viewer's blank row first, if it has one there.
+        let at = if self.gap_before(at) { at | GAP } else { at };
         (!gone).then_some(at)
     }
 
@@ -549,14 +586,18 @@ struct Row {
     /// Columns left of its text for live mode's prefix (0 when the prefix
     /// would leave no room).
     indent: usize,
+    /// The viewer's added blank row (step LV2): no text; it holds no
+    /// position, a click there goes to the line below.
+    gap: bool,
 }
 
 impl Row {
     /// Whether the cursor at `at` is drawn on this row. At a wrap the
     /// position belongs to the next row; at a line break, to this one.
     fn contains(&self, at: usize) -> bool {
+        // The next row's start, without the gap mark (step LV2).
         let end = if self.ends_line {
-            self.next.unwrap_or(usize::MAX)
+            self.next.map_or(usize::MAX, |next| next & !GAP)
         } else {
             self.range.end
         };
@@ -567,6 +608,16 @@ impl Row {
 /// The row starting at `start` (a row start), `width` columns wide. A
 /// grapheme wider than a whole row gets a row of its own.
 fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
+    if start & GAP != 0 {
+        let line = (start & !GAP).min(text.len());
+        return Row {
+            range: line..line,
+            next: Some(line),
+            ends_line: false,
+            indent: 0,
+            gap: true,
+        };
+    }
     // Live mode's prefix takes its columns first, if text still fits.
     let indent = live.prefix(start).width();
     let indent = if indent < width { indent } else { 0 };
@@ -577,12 +628,13 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
         let at = start + i;
         if matches!(shape(grapheme), Shape::Break) {
             // A folded heading's row is followed by its section's end.
-            let next = live.next_row(at + grapheme.len(), text.len());
+            let next = live.next_row(at + grapheme.len(), text);
             return Row {
                 range: start..at,
                 next,
                 ends_line: true,
                 indent,
+                gap: false,
             };
         }
         let w = live.width(at, grapheme, column);
@@ -592,6 +644,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 next: Some(at),
                 ends_line: false,
                 indent,
+                gap: false,
             };
         }
         column += w;
@@ -601,6 +654,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
         next: None,
         ends_line: true,
         indent,
+        gap: false,
     }
 }
 
@@ -612,10 +666,18 @@ fn line_start(text: &str, at: usize) -> usize {
 
 /// The start of the row the cursor at `at` is drawn on.
 fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
+    // A gap row (a kept scroll position): itself while its gap is there.
+    if at & GAP != 0 {
+        let line = at & !GAP;
+        if live.gap_before(line) && text.is_char_boundary(line) {
+            return at;
+        }
+        return row_start(text, line.min(text.len()), width, live);
+    }
     // Inside a folded section: its heading's row.
     // In skipped lines: the next row drawn (no row holds `at` itself).
     if let Some(skip) = live.skipped_at(at) {
-        return live.next_row(skip.start, text.len()).unwrap_or(skip.start);
+        return live.next_row(skip.start, text).unwrap_or(skip.start);
     }
     let mut start = live
         .folded_heading(at)
@@ -809,12 +871,18 @@ impl View {
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
-        let mut number = lines::count(&text[..line_start(text, self.top)]);
+        let mut number = lines::count(&text[..line_start(text, self.top & !GAP)]);
         let mut start = Some(self.top);
         self.heading_rows.clear();
         for y in area.y..area.bottom() {
-            let Some(row_start) = start else { break };
-            let row = row_at(text, row_start, width, &self.look);
+            let Some(next) = start else { break };
+            let row = row_at(text, next, width, &self.look);
+            start = row.next;
+            // The viewer's added blank row: nothing to draw.
+            if row.gap {
+                continue;
+            }
+            let row_start = row.range.start;
             // A section heading's first row: its marker, while hovered.
             let headings = &self.look.layout.headings;
             if headings
@@ -844,7 +912,6 @@ impl View {
             if let Some(x) = draw_row(grid, row_area, editor, &row, &self.look) {
                 self.cursor = Some((x, y));
             }
-            start = row.next;
         }
     }
 
@@ -967,7 +1034,7 @@ impl View {
         }
         let y = row.clamp(area.y, area.bottom() - 1);
         let width = usize::from(area.width - 1);
-        let top = if text.is_char_boundary(self.top) {
+        let top = if text.is_char_boundary(self.top & !GAP) {
             row_start(text, self.top, width, &self.look)
         } else {
             0
@@ -1002,13 +1069,13 @@ impl View {
 
     /// Moves `top` so the cursor's row is on screen.
     fn scroll(&mut self, text: &str, cursor: usize, width: usize, rows: usize) {
-        if !text.is_char_boundary(self.top) {
+        if !text.is_char_boundary(self.top & !GAP) {
             self.top = 0;
         }
         // An edit or a new width may have moved the row starts.
         let live = &self.look;
         self.top = row_start(text, self.top, width, live);
-        if cursor < self.top {
+        if cursor < self.top & !GAP {
             self.top = row_start(text, cursor, width, live);
             return;
         }
@@ -1043,7 +1110,12 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
     let mut until = Some(cursor);
     loop {
         let mut last = VecDeque::with_capacity(need);
-        let mut start = line;
+        // A line's rows start with the viewer's blank row, if it has one.
+        let mut start = if live.gap_before(line) {
+            line | GAP
+        } else {
+            line
+        };
         loop {
             if last.len() == need {
                 last.pop_front();
@@ -1956,37 +2028,40 @@ mod tests {
         for key in [Key::Down, Key::Down, Key::End] {
             ed.key(key, &mut clip);
         }
-        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
+        let grid = drawn(&mut ed, &mut View::live(), 40, 6);
         let (icon, heading) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        // The viewer's blank row after the heading (step LV2).
         assert_eq!(
-            rows(&grid)[1..4],
+            rows(&grid)[1..5],
             [
                 format!("  {icon}Title"),
+                String::new(),
                 "    bold and alias".into(),
                 "    last".into()
             ]
         );
         assert_eq!(style_at(&grid, 4, 1), heading, "the heading's T");
-        assert!(style_at(&grid, 4, 2).mods.contains(Mods::BOLD), "b");
+        assert!(style_at(&grid, 4, 3).mods.contains(Mods::BOLD), "b");
         assert_eq!(
-            style_at(&grid, 13, 2),
+            style_at(&grid, 13, 3),
             crate::md::render::LINK,
             "a of alias"
         );
         // The cursor on the second line: it is drawn as written.
         ed.key(Key::Up, &mut clip);
-        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[2], "    **bold** and alias");
+        let grid = drawn(&mut ed, &mut View::live(), 40, 6);
+        assert_eq!(rows(&grid)[3], "    **bold** and alias");
         assert_eq!(rows(&grid)[1], format!("  {icon}Title"));
         // A selection from there into the heading's text: the bold text
         // as written; the heading stays styled (its `# ` is not selected),
         // the link the selection does not reach too.
         ed.key(Key::ShiftUp, &mut clip);
-        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
+        let grid = drawn(&mut ed, &mut View::live(), 40, 6);
         assert_eq!(
-            rows(&grid)[1..4],
+            rows(&grid)[1..5],
             [
                 format!("  {icon}Title"),
+                String::new(),
                 "    **bold** and alias".into(),
                 "    last".into()
             ]
@@ -2075,12 +2150,15 @@ mod tests {
         }
         let mut view = View::live();
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "    bold word");
+        // Row 2 is the viewer's blank row after the heading (step LV2).
+        assert_eq!(rows(&grid)[2..4], ["", "    bold word"]);
         let at = |view: &View, x, y| view.position_at(ed.text(), x, y, false);
         // `w` of word, after the gutter, the section's indent and `bold `.
-        assert_eq!(at(&view, 9, 2), Some(17));
+        assert_eq!(at(&view, 9, 3), Some(17));
         // `b` of bold, past the hidden `**`.
-        assert_eq!(at(&view, 4, 2), Some(10));
+        assert_eq!(at(&view, 4, 3), Some(10));
+        // The blank row: the start of the line below.
+        assert_eq!(at(&view, 6, 2), Some(8));
         // The gutter and both cells of the icon: its first letter, past
         // the hidden `# `.
         assert_eq!(at(&view, 0, 1), Some(2));
@@ -2090,12 +2168,12 @@ mod tests {
         ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
         assert_eq!(ed.cursor(), 17);
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "    bold word");
-        assert_eq!(cursor_cell(&grid), Some((9, 2)));
+        assert_eq!(rows(&grid)[3], "    bold word");
+        assert_eq!(cursor_cell(&grid), Some((9, 3)));
         // On `bold`: that element is drawn as written.
         ed.mouse(MouseEvent::Press, Some(10), std::time::Instant::now());
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "    **bold** word");
+        assert_eq!(rows(&grid)[3], "    **bold** word");
     }
 
     /// Reveal by word (step LR1): the cursor just after `**b**` shows it as
@@ -2120,34 +2198,38 @@ mod tests {
             ed.key(key, &mut clip);
         }
         let (icon, green) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H2);
-        let grid = drawn(&mut ed, &mut view, 30, 4);
+        let grid = drawn(&mut ed, &mut view, 30, 5);
         // As in the viewer: the gutter, the heading 2 columns in, its
-        // section 4.
+        // section 4, a blank row between them (step LV2).
         assert_eq!(
-            rows(&grid)[1..3],
-            [format!("    {icon}Head"), "      • item".into()]
+            rows(&grid)[1..4],
+            [
+                format!("    {icon}Head"),
+                String::new(),
+                "      • item".into()
+            ]
         );
         // In the heading's text: still styled.
         ed.key(Key::Up, &mut clip);
-        let grid = drawn(&mut ed, &mut view, 30, 4);
+        let grid = drawn(&mut ed, &mut view, 30, 5);
         assert_eq!(rows(&grid)[1], format!("    {icon}Head"));
         assert_eq!(style_at(&grid, 6, 1), green, "H");
         // In its `## `: shown as written, the text still green.
         ed.key(Key::Home, &mut clip);
-        let grid = drawn(&mut ed, &mut view, 30, 4);
+        let grid = drawn(&mut ed, &mut view, 30, 5);
         assert_eq!(rows(&grid)[1], "    ## Head");
         assert_eq!(style_at(&grid, 7, 1), green, "H");
         // The cursor at the marker: `-` shows.
         for key in [Key::Down, Key::Home] {
             ed.key(key, &mut clip);
         }
-        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "      - item");
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 5))[3], "      - item");
         // Typing a heading: green as it is typed, its `## ` hidden.
         let mut ed = Editor::new("").unwrap();
         for c in "## Sub".chars() {
             ed.key(Key::Char(c), &mut clip);
         }
-        let grid = drawn(&mut ed, &mut view, 30, 4);
+        let grid = drawn(&mut ed, &mut view, 30, 5);
         assert_eq!(rows(&grid)[1], format!("    {icon}Sub"));
         assert_eq!(style_at(&grid, 6, 1), green, "S");
     }
@@ -2212,23 +2294,26 @@ mod tests {
         // 15 columns of text and the cursor's.
         let grid = drawn(&mut ed, &mut view, 16, 12);
         assert_eq!(
-            rows(&grid)[1..9],
+            rows(&grid)[1..11],
             [
                 "│ quote that wr",
                 "│ aps here",
+                // The viewer's blank rows between blocks (step LV2).
+                "",
                 "• item",
                 "",
                 " code",
                 " longer",
+                "",
                 "end",
                 ""
             ]
         );
         assert_eq!(style_at(&grid, 0, 2), crate::md::render::QUOTE_BAR);
-        assert!(style_at(&grid, 0, 3).mods.contains(Mods::DIM), "• dimmed");
+        assert!(style_at(&grid, 0, 4).mods.contains(Mods::DIM), "• dimmed");
         // The box: columns 0 to 7 of the code's rows; its fences have no
         // row while the cursor is not in the block (step LV1).
-        for y in 5..=6 {
+        for y in 6..=7 {
             for x in 0..8 {
                 let bg = style_at(&grid, x, y).bg;
                 assert_eq!(bg, crate::md::render::CODE.bg, "({x}, {y})");
@@ -2240,7 +2325,7 @@ mod tests {
         // The cursor in a line's markup shows it as written.
         ed.mouse(MouseEvent::Press, Some(24), std::time::Instant::now());
         let grid = drawn(&mut ed, &mut view, 16, 12);
-        assert_eq!(rows(&grid)[3], "- item");
+        assert_eq!(rows(&grid)[4], "- item");
     }
 
     /// Where `word` starts on `grid`: its first cell, if drawn.
@@ -2307,12 +2392,15 @@ mod tests {
         }
         let mut view = View::live();
         view.toggle_fold(0);
-        let grid = drawn(&mut ed, &mut view, 30, 7);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
+        // As in the viewer: no blank row between a folded heading and the
+        // next; one after `B` before its text (step LV2).
         assert_eq!(
-            rows(&grid)[1..5],
+            rows(&grid)[1..6],
             [
                 format!("  {h1}A …"),
                 format!("  {h1}B"),
+                String::new(),
                 "    after".into(),
                 String::new()
             ]
@@ -2327,14 +2415,22 @@ mod tests {
         ] {
             ed.key(key, &mut clip);
         }
-        let grid = drawn(&mut ed, &mut view, 30, 7);
-        assert_eq!(rows(&grid)[1..3], ["  z".to_owned(), format!("  {h1}A …")]);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
+        assert_eq!(
+            rows(&grid)[1..4],
+            ["  z".to_owned(), String::new(), format!("  {h1}A …")]
+        );
         // Down into the section: it opens.
         ed.key(Key::Down, &mut clip);
-        let grid = drawn(&mut ed, &mut view, 30, 7);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(
-            rows(&grid)[2..5],
-            [format!("  {h1}A"), "    body1".into(), "    body2".into()]
+            rows(&grid)[3..7],
+            [
+                format!("  {h1}A"),
+                String::new(),
+                "    body1".into(),
+                "    body2".into()
+            ]
         );
         // The last section, reaching the text's end.
         let mut ed = Editor::new("# A\nx\n# B\ny\nz").unwrap();
@@ -2343,12 +2439,14 @@ mod tests {
         }
         let mut view = View::live();
         view.toggle_fold(6);
-        let grid = drawn(&mut ed, &mut view, 30, 7);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(
-            rows(&grid)[1..5],
+            rows(&grid)[1..7],
             [
                 format!("  {h1}A"),
+                String::new(),
                 "    x".into(),
+                String::new(),
                 format!("  {h1}B …"),
                 String::new()
             ]
@@ -2394,30 +2492,34 @@ mod tests {
             ed.key(key, &mut clip);
         }
         let mut view = View::live();
-        drawn(&mut ed, &mut view, 30, 6);
+        drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 9, 1), Click::Taken);
-        let grid = drawn(&mut ed, &mut view, 30, 6);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(rows(&grid)[1], format!("v {h1}A"));
         assert_eq!(style_at(&grid, 0, 1), crate::pager::MARKER);
         // Off the heading: no marker.
         assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 9, 2), Click::Taken);
         assert_eq!(
-            rows(&drawn(&mut ed, &mut view, 30, 6))[1],
+            rows(&drawn(&mut ed, &mut view, 30, 9))[1],
             format!("  {h1}A")
         );
-        // A press on the gutter of `# B`'s row folds it.
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 0, 3), Click::Taken);
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 0, 3), Click::Taken);
-        let grid = drawn(&mut ed, &mut view, 30, 6);
-        assert_eq!(rows(&grid)[3..5], [format!("> {h1}B …"), String::new()]);
+        // A press on the gutter of `# B`'s row (row 5: blank rows as in
+        // the viewer, step LV2) folds it.
+        assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 0, 5), Click::Taken);
+        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 0, 5), Click::Taken);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
+        assert_eq!(rows(&grid)[5..7], [format!("> {h1}B …"), String::new()]);
         // Again: unfolded.
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 1, 3), Click::Taken);
-        let grid = drawn(&mut ed, &mut view, 30, 6);
-        assert_eq!(rows(&grid)[3..5], [format!("v {h1}B"), "    y".into()]);
+        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 1, 5), Click::Taken);
+        let grid = drawn(&mut ed, &mut view, 30, 9);
+        assert_eq!(
+            rows(&grid)[5..8],
+            [format!("v {h1}B"), String::new(), "    y".into()]
+        );
         // A press on the heading's text, or on a row without a heading:
         // the editor's.
         assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Press, 5, 3),
+            view.mouse(ed.text(), MouseEvent::Press, 5, 5),
             Click::Editor
         );
         assert_eq!(
@@ -2508,8 +2610,9 @@ mod tests {
                 format!("  {h1}Title"),
                 String::new(),
                 "     code".into(),
-                "    end".into(),
-                String::new()
+                // The viewer's blank row after a code block (step LV2).
+                String::new(),
+                "    end".into()
             ]
         );
         // Up into the code block: its fences show.
@@ -2521,5 +2624,50 @@ mod tests {
         ed.jump_to(text.find("A").unwrap() + 3);
         let grid = drawn(&mut ed, &mut view, 30, 12);
         assert_eq!(rows(&grid)[1..5], ["  A", "", "", "  B"]);
+    }
+
+    /// The viewer's blank rows while scrolling (step LV2): scrolled to the
+    /// bottom, then up line by line, the rows shown are the viewer's, and
+    /// the cursor is drawn on its line, never on a blank row.
+    #[test]
+    fn live_gap_rows_scroll_like_rows() {
+        let mut clip = Clipboard::default();
+        let (h1, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        let mut ed = Editor::new("a\n# H\nb\nc\nd").unwrap();
+        for _ in 0..4 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let mut view = View::live();
+        // Three rows of text.
+        let shown = |ed: &mut Editor, view: &mut View| {
+            let grid = drawn(ed, view, 30, 5);
+            (
+                rows(&grid)[1..4].to_vec(),
+                cursor_cell(&grid).map(|(_, y)| y),
+            )
+        };
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (
+                vec!["    b".into(), "    c".into(), "    d".into()],
+                Some(3)
+            )
+        );
+        for _ in 0..3 {
+            ed.key(Key::Up, &mut clip);
+        }
+        // Column 1 of `# H` is in its `# `: drawn as written.
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (vec!["  # H".into(), String::new(), "    b".into()], Some(1))
+        );
+        ed.key(Key::Up, &mut clip);
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (
+                vec!["  a".into(), String::new(), format!("  {h1}H")],
+                Some(1)
+            )
+        );
     }
 }

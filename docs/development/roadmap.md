@@ -45,7 +45,7 @@ of code and 150 of tests.
 | Step | What | Check |
 | --- | --- | --- |
 | LV1 (done) | Lines without a row: the layout marks fences and Setext underlines; the view skips them and extra blank lines like folded ones, unless the cursor or the selection is on them or a revealed element covers them (the cursor in a code block shows its fences). About 60 lines | Unit tests: each kind skipped, shown again under the cursor; the cursor property test with fences, blank runs and underlines |
-| LV2 | The viewer's added blank row: a row with no text before a block the note does not separate from the one above (a heading, a paragraph after a list, a list after a paragraph), counted by the row walk, scrolling and the mouse (a click there goes to the line below). About 150 lines | Unit tests on rows, scrolling and clicks; the property test |
+| LV2 (done) | The viewer's added blank row: a row with no text before a block the note does not separate from the one above (a heading, a paragraph after a list, a list after a paragraph), counted by the row walk, scrolling and the mouse (a click there goes to the line below). About 150 lines | Unit tests on rows, scrolling and clicks; the property test |
 | LV3 | The comparison test checks rows as well as columns; decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook | Review of the diff |
 
 ## Steps LF1 to LF4 (live editing: folding and links as in the viewer; done)

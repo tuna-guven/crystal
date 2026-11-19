@@ -466,8 +466,11 @@ the line's own leading markup, after the viewer's blank 2-column
 gutter, its markers dimmed; a test compares the columns with the
 viewer's. A code block's fences, a Setext underline and blank lines
 the viewer drops (a second one in a row, any before the first block or
-after the last) get no row while the cursor is not on them; tables stay
-as written, and rows wrap by character. Drawn as written are only the elements the
+after the last) get no row while the cursor is not on them, and the
+viewer's blank row between two blocks the note does not separate is
+drawn as a row with no text (a click there goes to the line below), so
+rows are the viewer's; tables stay as written, and rows wrap by
+character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a fenced code
 block, a rule, a heading's closing `#`s), a line's leading markup while
 the cursor is in it, and whatever the selection touches; a heading
