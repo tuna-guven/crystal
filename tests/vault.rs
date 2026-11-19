@@ -1333,6 +1333,47 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
     assert!(!visible(&output).contains("draft-line!"), "{output:?}");
 }
 
+/// `edit --live` (step LE6): the title says `live`, a line away from the
+/// cursor shows its text without its markup, and Ctrl+S saves the
+/// Markdown as written: the plain editor shows it again, markup and all.
+#[test]
+fn live_edit_styles_and_saves_the_markdown() {
+    let (home, _) = home_with_vault("editor_live");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    steps.push(("Ctrl+S save", b"# Plan\r**qzx** end\x13\x11".to_vec()));
+    steps.push((SHELL_READY, b"edit --live missing\r".to_vec()));
+    steps.push(("Create it with edit NAME first.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+
+    // Live: the cursor stays on the first line, so the second is styled
+    // and never drawn as written. A typed `x` and a save.
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit --live plan\r".to_vec()));
+    steps.push(("live", b"x\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let shown = visible(&output);
+    assert!(shown.contains("qzx end"), "{shown:?}");
+    assert!(!shown.contains("**qzx**"), "{shown:?}");
+
+    // As written in the plain editor: the markup kept, the `x` saved.
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit plan\r".to_vec()));
+    steps.push(("Ctrl+S save", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    let shown = visible(&output);
+    assert!(shown.contains("x# Plan"), "{shown:?}");
+    assert!(shown.contains("**qzx** end"), "{shown:?}");
+}
+
 /// The mouse in the editor (decision 0073): a click places the cursor, a
 /// drag selects, a double click a word, a triple click a line, and typing
 /// replaces the selection. Reports are turned on
