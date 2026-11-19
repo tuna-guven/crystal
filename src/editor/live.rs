@@ -11,15 +11,19 @@
 //! inside emphasis, strong, strikethrough, a link, an image or a heading
 //! it is hidden (`**`, `[`, `](url)`, `## `), anywhere else it is shown
 //! as written. A heading's leading `#`s are replaced by the viewer's
-//! icon. A line break is never hidden, so lines stay lines. A table is
-//! shown as written. Block markup (lists, quotes, code fences) is
-//! shown as written until step LE4.
+//! icon. A line break is never hidden, so lines stay lines.
+//!
+//! Blocks look as in the viewer: a `-`, `*` or `+` list marker becomes
+//! `•` (numbers stay), a task box `[ ]` or `[x]` is dimmed, a quote's
+//! `>` becomes a gray `│`, a rule becomes a gray line, a fenced code
+//! block is gray with its fences hidden (their rows stay, empty), an
+//! indented one is gray as written. A table is shown as written.
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
 
-use crate::md::render::{CODE, LINK, OPTIONS, heading_mark};
+use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, heading_mark};
 use crate::ui::grid::{Mods, Style};
 
 /// How a run's bytes are drawn.
@@ -49,7 +53,12 @@ struct Frame {
     hide: bool,
     /// Everything here is shown as written, unstyled (a table).
     raw: bool,
+    /// Inside a block quote: a `>` in shown markup becomes `│`.
+    quote: bool,
 }
+
+/// A task box, dimmed as in the viewer.
+const TASK: Style = Style::PLAIN.mods(Mods::DIM);
 
 /// The runs of `text`: in order, without gaps or overlaps, from 0 to
 /// `text.len()`, each non-empty and on char boundaries.
@@ -63,6 +72,7 @@ pub fn runs(text: &str) -> Vec<Run> {
         style: Style::PLAIN,
         hide: false,
         raw: false,
+        quote: false,
     };
     let mut stack = vec![top];
     // The icon a heading's leading markup becomes.
@@ -85,11 +95,17 @@ pub fn runs(text: &str) -> Vec<Run> {
                         inner.style = style;
                         icon = Some(mark);
                     }
+                    Tag::CodeBlock(_) => inner.style = CODE,
+                    Tag::BlockQuote(_) => inner.quote = true,
+                    Tag::Item if text[range.start..].starts_with(['-', '*', '+']) => {
+                        out.push(range.start..range.start + 1, Show::Fixed("•"), Style::PLAIN);
+                    }
                     Tag::Table(_) => {
                         inner = Frame {
                             style: Style::PLAIN,
                             hide: false,
                             raw: true,
+                            quote: false,
                         };
                     }
                     _ => {}
@@ -103,6 +119,7 @@ pub fn runs(text: &str) -> Vec<Run> {
                             | Tag::Link { .. }
                             | Tag::Image { .. }
                             | Tag::Heading { .. }
+                            | Tag::CodeBlock(CodeBlockKind::Fenced(_))
                     );
                 stack.push(inner);
                 if let Some(mark) = icon.take() {
@@ -136,6 +153,16 @@ pub fn runs(text: &str) -> Vec<Run> {
                     out.push(start..end, Show::Text, code(frame.style));
                 }
                 out.hide(end..range.end);
+            }
+            Event::Rule if !frame.raw => {
+                out.gap(range.start, frame);
+                // The line break after it stays shown.
+                let end = range.start + text[range].trim_end_matches(['\n', '\r']).len();
+                out.push(out.pos..end, Show::Fixed(DASHES), QUOTE_BAR);
+            }
+            Event::TaskListMarker(_) if !frame.raw => {
+                out.gap(range.start, frame);
+                out.push(range, Show::Text, TASK);
             }
             _ => {
                 out.gap(range.start, frame);
@@ -210,10 +237,17 @@ impl Runs<'_> {
     }
 
     /// The markup from `pos` to `end`: hidden inside `frame` if it hides
-    /// markup, else shown as written.
+    /// markup, else shown as written, a quote's `>` as `│`.
     fn gap(&mut self, end: usize, frame: Frame) {
         if frame.hide {
             self.hide(self.pos..end);
+        } else if frame.quote {
+            let start = self.pos;
+            for (i, _) in self.text[start..end.max(start)].match_indices('>') {
+                self.push(self.pos..start + i, Show::Text, Style::PLAIN);
+                self.push(start + i..start + i + 1, Show::Fixed("│"), QUOTE_BAR);
+            }
+            self.push(self.pos..end, Show::Text, Style::PLAIN);
         } else {
             self.push(self.pos..end, Show::Text, Style::PLAIN);
         }
@@ -299,16 +333,45 @@ mod tests {
         // A strong span over two lines keeps its line break.
         assert_eq!(shown("**a\nb**"), "a\nb");
         assert_eq!(shown("**a\r\nb**"), "a\r\nb");
-        // Lists, quotes, fences and tables are shown as written (LE4).
+        // Tables, numbers and blank lines are shown as written.
         for text in [
-            "- item\n- [ ] task",
-            "> quote",
-            "```\ncode\n```",
             "| a | **b** |\n|---|---|\n| 1 | 2 |",
+            "1. one\n2. two",
             "plain\n\n\nblank lines",
         ] {
             assert_eq!(shown(text), text);
         }
+    }
+
+    /// Blocks look as in the viewer (step LE4).
+    #[test]
+    fn blocks_look_as_in_the_viewer() {
+        // Bullets, nested too; a task box dimmed.
+        let text = "- item\n  * nested\n+ [ ] task\n- [x] done";
+        assert_eq!(shown(text), "• item\n  • nested\n• [ ] task\n• [x] done");
+        assert_eq!(style_of(text, "[ ]"), TASK);
+        assert_eq!(style_of(text, "item"), Style::PLAIN);
+        // Quotes: every `>` a gray bar, nested and over lines; a `>` in
+        // the text stays.
+        let text = "> a > b\n> c\n>> d";
+        assert_eq!(shown(text), "│ a > b\n│ c\n││ d");
+        let bar = runs(text)
+            .into_iter()
+            .find(|run| run.show == Show::Fixed("│"))
+            .unwrap();
+        assert_eq!(bar.style, QUOTE_BAR);
+        // A fenced code block: fences hidden, rows kept, text gray.
+        let text = "```rust\nlet x;\n```\nafter";
+        assert_eq!(shown(text), "\nlet x;\n\nafter");
+        assert_eq!(style_of(text, "let x;"), CODE);
+        assert_eq!(style_of(text, "after"), Style::PLAIN);
+        // An indented one stays, gray.
+        let text = "    code\n";
+        assert_eq!(shown(text), text);
+        assert_eq!(style_of(text, "code"), CODE);
+        // Rules, after a blank line (else `---` makes a heading).
+        assert_eq!(shown("a\n\n---\nb"), format!("a\n\n{DASHES}\nb"));
+        assert_eq!(shown("***"), DASHES);
     }
 
     proptest! {

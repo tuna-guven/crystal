@@ -39,7 +39,7 @@ or the selection is on is drawn as written, exactly as today; every
 other line has its markup hidden and is styled as in the viewer (`# `
 gone and the heading colored, `**`, `*`, `~~` and backticks gone, a
 `[[link|alias]]` or `[text](url)` shown as its words, list markers as
-`•`, task boxes, quote bars, code blocks gray with their fences
+`•`, dimmed task boxes, quote bars, code blocks gray with their fences
 hidden). Tables stay as written. `edit NAME` is unchanged; a text note
 opens as usual. No security benefit; about 600 lines of code and 400 of
 tests.
@@ -70,7 +70,7 @@ clippy, tests, deny and audit green.
 | LE1 (done) | `edit --live NAME`: `Open::Edit` carries `live`; the editor's `View` keeps it (`View::live`); a missing note is not created with `--live` (says to create it with `edit NAME` first); a text note opens as usual; the title shows `live` after the name (`live [+]` when changed). Nothing else is drawn differently yet. About 40 lines | Unit tests: `edit --live roadmap` opens note 0 live, `edit roadmap` not live, `edit --live` alone asks which note, `edit --live missing` refused |
 | LE2 (done) | `editor/live.rs`: inline markup. `runs(text) -> Vec<Run>` from pulldown-cmark's offset iterator: emphasis, strong, strikethrough and inline code markers hidden, their text styled; links and `[[links]]` shown as their words; headings' `#` hidden, the line colored per level as in the viewer. Not used by the view yet. About 150 lines | Unit tests per element; a property test: runs cover the text in order without overlap, every range on char boundaries |
 | LE3 (done) | The view draws live: row walk and drawing take the runs, a hidden byte is zero wide; lines touched by the cursor or the selection are drawn as written. About 120 lines | Unit tests on the drawn grid: a styled line, the cursor's line raw, wrapping by shown width; a property test: any text, any cursor, any width: no panic, the cursor drawn |
-| LE4 | Blocks: list markers as `•`, task boxes `☐`/`☑`, quote bars `│`, code blocks gray with fences hidden, rules `─`. About 100 lines | Unit tests per block |
+| LE4 (done) | Blocks: list markers as `•`, task boxes dimmed `[ ]`/`[x]` as in the viewer, quote bars `│`, code blocks gray with fences hidden, rules `─`. About 100 lines | Unit tests per block |
 | LE5 | Mouse and lists: clicks and drags on styled lines land on the grapheme under them; the `[[` list opens under the cursor as before; the parse is redone only when the text changed (measured first, kept only if a frame of a large note is slow). About 60 lines | Unit tests: a click on a styled word puts the cursor in it; Ctrl+C in live mode copies the Markdown as written; Ctrl+V pastes it unchanged |
 | LE6 | Through the binary: `edit --live` shows a styled note, Ctrl+S saves the text unchanged byte for byte | A binary test |
 | LE7 | Acceptance: decision 0045 updated in place, setup guide (`edit --live`), help text, status line; fmt, clippy, test, deny, audit, mdbook | Review of the LE1 to LE6 diff for note text in format strings, unchecked graphemes drawn, `unsafe`, syscalls or dependencies (expected: none) |

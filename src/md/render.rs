@@ -98,7 +98,7 @@ const DIM: Style = Style::PLAIN.mods(Mods::DIM);
 const CODE_BG: Color = Color::Indexed(236);
 /// Inline code and the inside of a code block's box.
 pub const CODE: Style = Style::PLAIN.fg(Color::Yellow).bg(CODE_BG);
-const QUOTE_BAR: Style = Style::PLAIN.fg(Color::DarkGray);
+pub const QUOTE_BAR: Style = Style::PLAIN.fg(Color::DarkGray);
 pub const LINK: Style = Style::PLAIN.fg(Color::Cyan).mods(Mods::UNDERLINED);
 
 /// A heading's icon and style, per level (decision 0052); the editor's
@@ -497,7 +497,7 @@ struct Table {
 }
 
 /// A table's borders are slices of this (3 bytes a character).
-const DASHES: &str = "────────────────";
+pub const DASHES: &str = "────────────────";
 
 /// The fewest columns a narrowed table column keeps for its text; with
 /// less, the table is drawn unboxed.
