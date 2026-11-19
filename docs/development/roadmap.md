@@ -32,7 +32,7 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
-## Steps LV1 to LV3 (live editing: the viewer's rows)
+## Steps LV1 to LV3 (live editing: the viewer's rows; done)
 
 Asked for by the user (2026-11-20) after comparing screenshots, with a
 complexity warning: live mode's rows match the viewer's while not
@@ -46,7 +46,7 @@ of code and 150 of tests.
 | --- | --- | --- |
 | LV1 (done) | Lines without a row: the layout marks fences and Setext underlines; the view skips them and extra blank lines like folded ones, unless the cursor or the selection is on them or a revealed element covers them (the cursor in a code block shows its fences). About 60 lines | Unit tests: each kind skipped, shown again under the cursor; the cursor property test with fences, blank runs and underlines |
 | LV2 (done) | The viewer's added blank row: a row with no text before a block the note does not separate from the one above (a heading, a paragraph after a list, a list after a paragraph), counted by the row walk, scrolling and the mouse (a click there goes to the line below). About 150 lines | Unit tests on rows, scrolling and clicks; the property test |
-| LV3 | The comparison test checks rows as well as columns; decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook | Review of the diff |
+| LV3 (done) | The comparison test checks rows as well as columns (`live_rows_are_the_viewers`, a note shaped like a real one; checked once that it fails without LV1 or LV2); decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook | Review of the diff: every reader of a row start strips or checks the gap mark; no note text in strings, no `unsafe`, syscalls or dependencies |
 
 ## Steps LF1 to LF4 (live editing: folding and links as in the viewer; done)
 

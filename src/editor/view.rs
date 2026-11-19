@@ -2670,4 +2670,48 @@ mod tests {
             )
         );
     }
+
+    /// Same rows as the viewer (step LV3): a note shaped like a real one
+    /// (a heading, a list, a paragraph, a fenced code block, inline code,
+    /// subheadings, a link, a paragraph right before a list): every word
+    /// is drawn in the viewer's row and column, the cursor away from them.
+    #[test]
+    fn live_rows_are_the_viewers() {
+        let text = "# Heading\n\n- Item one\n- Item two\n\nThis is a **normal** paragraph \
+                    with *italic* alpha:\n\n```rust\npub enum bravo {\n    charlie,\n}\n```\n\n\
+                    Look delta `another` echo.\n\n## Subheading\n\n### Subsub\n\nThis is \
+                    foxtrot [Monero](https://getmonero.org)\nI am golf testing:\n- \
+                    [[hotel#^3y5wrv]]\n\nmike end";
+        let words = [
+            "Heading",
+            "one",
+            "two",
+            "normal",
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "another",
+            "Subheading",
+            "Subsub",
+            "foxtrot",
+            "Monero",
+            "golf",
+            "hotel",
+            "mike",
+        ];
+        let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 70);
+        let mut viewer = Grid::new(70, 40);
+        page.draw(&mut viewer, Rect::new(0, 0, 70, 40), 0);
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.len());
+        let live = drawn(&mut ed, &mut View::live(), 73, 42);
+        for word in words {
+            // The page alone: the pager puts its gutter left of it and
+            // its title above.
+            let seen = find(&viewer, word).map(|(x, y)| (x + GUTTER, y + 1));
+            assert!(seen.is_some(), "{word} not in the viewer");
+            assert_eq!(find(&live, word), seen, "{word}");
+        }
+    }
 }
