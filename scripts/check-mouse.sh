@@ -1,11 +1,13 @@
 #!/bin/sh
-# Manual check of the mouse in the editor (decisions 0073 and 0045,
-# docs/development/testing.md): what CI cannot do is click in Ptyxis.
-# CI already checks, through the binary, that clicks, drags, double and
-# triple clicks edit the right text and that reports are on only while
-# the editor shows (tests/vault.rs,
-# mouse_clicks_and_drags_in_the_editor_only); this checks by hand what
-# the terminal itself does.
+# Manual check of the mouse in the editor and the viewer (decisions
+# 0073, 0045 and 0076, docs/development/testing.md): what CI cannot do is
+# click in Ptyxis. CI already checks, through the binary, that clicks,
+# drags, double and triple clicks edit the right text, that a click in the
+# viewer follows a link or folds a heading, and that reports are off in
+# the shell and at prompts (tests/vault.rs,
+# mouse_clicks_and_drags_in_the_editor_only,
+# viewer_clicks_follow_links_and_fold); this checks by hand what the
+# terminal itself does.
 #
 # Usage: scripts/check-mouse.sh VAULT
 # Runs the debug build with its in-memory demo notes (never saved) on an
@@ -49,9 +51,16 @@ In the editor:
   5. Shift+drag: Ptyxis's own selection (it ignores Crystal's);
      Ctrl+Shift+C copies it, line numbers included. A plain click does
      not clear it; Shift+click does.
-  6. Ctrl+E: the preview. The wheel moves the > marker; a click changes
-     nothing. Ctrl+E again: back in the editor, clicks work again.
-  7. Ctrl+Q twice (discarding): the shell. A click and a drag type
+  6. Ctrl+E: the preview (decision 0076). Move the mouse over the
+     gray > before  Welcome : it turns bold; away: gray again. Click it:
+     the section folds ( … ); again: it unfolds. The wheel scrolls.
+     Click  guide#Keys : the guide opens at  Keys ; Backspace: back.
+     Ctrl+E again: back in the editor, clicks work again.
+ 6a. Ctrl+Q twice, then  view links : click  good : a notice says to
+     Ctrl+click it, nothing opens. Ctrl+click it: note whether Ptyxis
+     opens it, or only Shift+Ctrl+click does (decision 0054). Shift+drag
+     over a line: Ptyxis selects it. q: the shell.
+  7. In the shell, where 6a ended. A click and a drag type
      nothing at the prompt; the wheel steps through the command history
      (Ptyxis sends it as Up and Down, as before the mouse work).
 
