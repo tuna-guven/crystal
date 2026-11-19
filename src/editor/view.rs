@@ -1,7 +1,12 @@
 //! The editor's screen (decision 0045): the note's
 //! name on the top row, the text below, a key line at the bottom.
 //!
-//! The text is drawn as written, never rendered. It wraps by grapheme: a
+//! The text is drawn as written, never rendered, except in live mode
+//! (`edit --live`, steps LE1 to LE7): there every line but those the
+//! cursor and the selection are on is drawn as `live::runs` says, its
+//! markup hidden (zero columns) or replaced by a fixed string, its text
+//! styled; every grapheme shown still goes through the checks below. The
+//! runs are made again on every frame. It wraps by grapheme: a
 //! row ends where the next grapheme would not fit, or at a line break.
 //! One column on the right stays free for the cursor at a row's end. A tab
 //! advances to the next multiple of 4 columns. A control or BiDi character,
@@ -48,6 +53,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
+use super::live::{self, Run, Show};
 use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
@@ -143,6 +149,44 @@ fn width_at(grapheme: &str, column: usize) -> usize {
     }
 }
 
+/// How live mode draws the text (steps LE1 to LE7): the runs of the last
+/// frame (`live::runs`) and the bytes drawn as written, the lines the
+/// cursor and the selection are on. Not live: no runs, so every grapheme
+/// is drawn as written.
+#[derive(Default)]
+struct Live {
+    runs: Vec<Run>,
+    raw: Range<usize>,
+}
+
+impl Live {
+    /// How the grapheme starting at `at` is drawn, and its style. A fixed
+    /// string is drawn once, at its run's start; the rest of the run is
+    /// hidden.
+    fn at(&self, at: usize) -> (Show, Style) {
+        if self.raw.contains(&at) {
+            return (Show::Text, Style::PLAIN);
+        }
+        let i = self.runs.partition_point(|run| run.range.end <= at);
+        match self.runs.get(i) {
+            Some(run) if run.range.start <= at => match run.show {
+                Show::Fixed(_) if at != run.range.start => (Show::Hidden, run.style),
+                show => (show, run.style),
+            },
+            _ => (Show::Text, Style::PLAIN),
+        }
+    }
+
+    /// The columns the grapheme at `at` takes when it starts at `column`.
+    fn width(&self, at: usize, grapheme: &str, column: usize) -> usize {
+        match self.at(at).0 {
+            Show::Text => width_at(grapheme, column),
+            Show::Hidden => 0,
+            Show::Fixed(fixed) => display_width(fixed),
+        }
+    }
+}
+
 /// One screen row of text.
 struct Row {
     /// The bytes it shows (without its line break).
@@ -168,7 +212,7 @@ impl Row {
 
 /// The row starting at `start` (a row start), `width` columns wide. A
 /// grapheme wider than a whole row gets a row of its own.
-fn row_at(text: &str, start: usize, width: usize) -> Row {
+fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
     let rest = text.get(start..).unwrap_or("");
     let mut column = 0;
     for (i, grapheme) in rest.grapheme_indices(true) {
@@ -181,7 +225,7 @@ fn row_at(text: &str, start: usize, width: usize) -> Row {
                 ends_line: true,
             };
         }
-        let w = width_at(grapheme, column);
+        let w = live.width(at, grapheme, column);
         if column > 0 && column + w > width {
             return Row {
                 range: start..at,
@@ -205,10 +249,10 @@ fn line_start(text: &str, at: usize) -> usize {
 }
 
 /// The start of the row the cursor at `at` is drawn on.
-fn row_start(text: &str, at: usize, width: usize) -> usize {
+fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
     let mut start = line_start(text, at);
     loop {
-        let row = row_at(text, start, width);
+        let row = row_at(text, start, width, live);
         match row.next {
             Some(next) if !row.contains(at) => start = next,
             _ => return start,
@@ -231,8 +275,10 @@ pub struct View {
     /// on its first row, for the mouse; `None` when it was not drawn.
     list: Option<(Rect, usize)>,
     /// `edit --live`: markup styled on lines away from the cursor (steps
-    /// LE1 to LE7). Only the title shows it yet.
+    /// LE1 to LE7).
     live: bool,
+    /// Live mode's runs, from the last frame; empty when not live.
+    look: Live,
 }
 
 impl View {
@@ -290,13 +336,25 @@ impl View {
         let area = Rect::new(body.x + gutter, body.y, body.width - gutter, body.height);
         let width = usize::from(area.width - 1);
         self.area = Some(area);
+        if self.live {
+            // The lines the cursor and the selection are on stay as written.
+            let cursor = editor.cursor();
+            let selection = editor.selection().unwrap_or(cursor..cursor);
+            let first = line_start(text, cursor.min(selection.start));
+            let last = cursor.max(selection.end);
+            let last = text[last..].find('\n').map_or(text.len(), |i| last + i);
+            self.look = Live {
+                runs: live::runs(text),
+                raw: first..last,
+            };
+        }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
         let mut number = lines::count(&text[..line_start(text, self.top)]);
         let mut start = Some(self.top);
         for y in area.y..area.bottom() {
             let Some(row_start) = start else { break };
-            let row = row_at(text, row_start, width);
+            let row = row_at(text, row_start, width, &self.look);
             let starts_line = row_start == 0 || text.as_bytes()[row_start - 1] == b'\n';
             let line = text[row_start..].split_inclusive('\n').next().unwrap_or("");
             if starts_line && !lines::is_blank(line) {
@@ -306,7 +364,8 @@ impl View {
                     grid.put_str(body.x, y, &shown, HINT, gutter - 1);
                 }
             }
-            if let Some(x) = draw_row(grid, Rect::new(area.x, y, area.width, 1), editor, &row) {
+            let row_area = Rect::new(area.x, y, area.width, 1);
+            if let Some(x) = draw_row(grid, row_area, editor, &row, &self.look) {
                 self.cursor = Some((x, y));
             }
             start = row.next;
@@ -433,18 +492,18 @@ impl View {
         let y = row.clamp(area.y, area.bottom() - 1);
         let width = usize::from(area.width - 1);
         let top = if text.is_char_boundary(self.top) {
-            row_start(text, self.top, width)
+            row_start(text, self.top, width, &self.look)
         } else {
             0
         };
         let mut start = top;
         for _ in area.y..y {
-            match row_at(text, start, width).next {
+            match row_at(text, start, width, &self.look).next {
                 Some(next) => start = next,
                 None => return Some(text.len()),
             }
         }
-        let row = row_at(text, start, width);
+        let row = row_at(text, start, width, &self.look);
         let target = usize::from(column.saturating_sub(area.x));
         // The column kept free on the right: the line's end, where the
         // cursor is drawn there.
@@ -455,7 +514,7 @@ impl View {
         let mut last = row.range.start;
         for (i, grapheme) in text[row.range.clone()].grapheme_indices(true) {
             last = row.range.start + i;
-            column += width_at(grapheme, column);
+            column += self.look.width(last, grapheme, column);
             if target < column {
                 return Some(last);
             }
@@ -469,14 +528,15 @@ impl View {
             self.top = 0;
         }
         // An edit or a new width may have moved the row starts.
-        self.top = row_start(text, self.top, width);
+        let live = &self.look;
+        self.top = row_start(text, self.top, width, live);
         if cursor < self.top {
-            self.top = row_start(text, cursor, width);
+            self.top = row_start(text, cursor, width, live);
             return;
         }
         let mut start = self.top;
         for _ in 0..rows {
-            let row = row_at(text, start, width);
+            let row = row_at(text, start, width, live);
             if row.contains(cursor) {
                 return;
             }
@@ -486,7 +546,7 @@ impl View {
             }
         }
         // Below the screen: the cursor's row becomes the last one shown.
-        self.top = top_for(text, cursor, width, rows);
+        self.top = top_for(text, cursor, width, rows, live);
     }
 }
 
@@ -497,7 +557,7 @@ impl View {
 /// it needs: on a line of a million rows, finding the row above by
 /// walking from the line's start again for every screen row took seconds
 /// per key (found by review).
-fn top_for(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
+fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) -> usize {
     let mut need = rows.max(1);
     let mut line = line_start(text, cursor);
     // On the cursor's line, the walk stops at the cursor's row; on the
@@ -511,7 +571,7 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
                 last.pop_front();
             }
             last.push_back(start);
-            let row = row_at(text, start, width);
+            let row = row_at(text, start, width, live);
             let done = row.ends_line || until.is_some_and(|at| row.contains(at));
             match row.next {
                 Some(next) if !done => start = next,
@@ -530,9 +590,9 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
 }
 
 /// Draws one row: its graphemes, the selection, and the cursor (after the
-/// last grapheme when it sits at the line's end). Returns the column the
-/// cursor was drawn at, if on this row.
-fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) -> Option<u16> {
+/// last grapheme when it sits at the line's end), each grapheme as `live`
+/// says. Returns the column the cursor was drawn at, if on this row.
+fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live) -> Option<u16> {
     let mut cursor = None;
     let text = editor.text();
     let selection = editor.selection().unwrap_or(0..0);
@@ -540,7 +600,7 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) -> Option<u
         (true, false) if !selection.is_empty() => CURSOR_BESIDE,
         (true, _) => CURSOR,
         (false, true) => SELECTED,
-        (false, false) => Style::PLAIN,
+        (false, false) => live.at(at).1,
     };
     let mut column = 0;
     let mut buf = [0; ESCAPE_LEN];
@@ -553,6 +613,16 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row) -> Option<u
         let room = area.width.saturating_sub(x - area.x);
         if at == editor.cursor() {
             cursor = Some(x);
+        }
+        // Live mode: hidden markup takes no column, a fixed string stands
+        // for its run. The cursor's lines are always drawn as written.
+        match live.at(at).0 {
+            Show::Hidden => continue,
+            Show::Fixed(fixed) => {
+                column += usize::from(grid.put_str(x, area.y, fixed, style, room));
+                continue;
+            }
+            Show::Text => {}
         }
         match shape(grapheme) {
             Shape::Text(g, _) => {
@@ -862,12 +932,12 @@ mod tests {
     /// cursor's row, step to the row above `rows - 1` times, each found by
     /// walking its line from the start. Right, but quadratic on long lines.
     fn top_by_rows(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
-        let mut top = row_start(text, cursor, width);
+        let mut top = row_start(text, cursor, width, &Live::default());
         for _ in 1..rows {
             let Some(c) = text.get(..top).and_then(|head| head.chars().next_back()) else {
                 break;
             };
-            top = row_start(text, top - c.len_utf8(), width);
+            top = row_start(text, top - c.len_utf8(), width, &Live::default());
         }
         top
     }
@@ -1191,7 +1261,7 @@ mod tests {
             stops.push(text.len());
             let cursor = stops[pick.index(stops.len())];
             prop_assert_eq!(
-                top_for(&text, cursor, width, rows),
+                top_for(&text, cursor, width, rows, &Live::default()),
                 top_by_rows(&text, cursor, width, rows)
             );
         }
@@ -1337,6 +1407,104 @@ mod tests {
                             cell
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// The style the cell (`x`, `y`) is drawn in.
+    fn style_at(grid: &Grid, x: u16, y: u16) -> Style {
+        grid.cell(x, y).unwrap().style()
+    }
+
+    /// Live mode (step LE3): lines away from the cursor have their markup
+    /// hidden and styled; the cursor's line, and every line a selection
+    /// touches, is drawn as written.
+    #[test]
+    fn live_mode_styles_lines_away_from_the_cursor() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("# Title\n**bold** and [[Note|alias]]\nlast").unwrap();
+        for key in [Key::Down, Key::Down, Key::End] {
+            ed.key(key, &mut clip);
+        }
+        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
+        let (icon, heading) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        assert_eq!(
+            rows(&grid)[1..4],
+            [
+                format!("1 {icon}Title"),
+                "2 bold and alias".into(),
+                "3 last".into()
+            ]
+        );
+        assert_eq!(style_at(&grid, 4, 1), heading, "the heading's T");
+        assert!(style_at(&grid, 2, 2).mods.contains(Mods::BOLD), "b");
+        assert_eq!(
+            style_at(&grid, 11, 2),
+            crate::md::render::LINK,
+            "a of alias"
+        );
+        // The cursor on the second line: it is drawn as written.
+        ed.key(Key::Up, &mut clip);
+        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
+        assert_eq!(rows(&grid)[2], "2 **bold** and [[Note|alias]]");
+        assert_eq!(rows(&grid)[1], format!("1 {icon}Title"));
+        // A selection from there into the first line: both as written.
+        ed.key(Key::ShiftUp, &mut clip);
+        let grid = drawn(&mut ed, &mut View::live(), 40, 5);
+        assert_eq!(
+            rows(&grid)[1..4],
+            ["1 # Title", "2 **bold** and [[Note|alias]]", "3 last"]
+        );
+        // Not live: everything as written.
+        let grid = drawn(&mut ed, &mut View::default(), 40, 5);
+        assert_eq!(rows(&grid)[3], "3 last");
+        assert_eq!(rows(&grid)[1], "1 # Title");
+    }
+
+    /// Live rows wrap by the width shown, not the width written.
+    #[test]
+    fn live_rows_wrap_by_what_is_shown() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("**aaaa** bbbb\nx").unwrap();
+        ed.key(Key::Down, &mut clip);
+        // 10 columns of text and the cursor's (too narrow for a gutter).
+        let grid = drawn(&mut ed, &mut View::live(), 11, 5);
+        assert_eq!(rows(&grid)[1..3], ["aaaa bbbb", "x"]);
+        // As written, the first line needs two rows.
+        let grid = drawn(&mut ed, &mut View::default(), 11, 5);
+        assert_eq!(rows(&grid)[1..4], ["**aaaa** b", "bbb", "x"]);
+    }
+
+    proptest! {
+        /// Live mode, any Markdown-ish text, cursor and screen: no panic,
+        /// the cursor drawn exactly once, and no cell holds a control
+        /// character.
+        #[test]
+        fn live_mode_always_draws_the_cursor(
+            text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}){0,60}",
+            width in 3u16..30,
+            height in 3u16..8,
+            moves in prop::collection::vec(0u8..5, 0..12),
+        ) {
+            let mut clip = Clipboard::default();
+            let mut ed = Editor::new(&text).unwrap();
+            for m in moves {
+                let key = match m {
+                    0 => Key::Up,
+                    1 => Key::Down,
+                    2 => Key::Left,
+                    3 => Key::Right,
+                    _ => Key::ShiftDown,
+                };
+                ed.key(key, &mut clip);
+            }
+            let grid = drawn(&mut ed, &mut View::live(), width, height);
+            prop_assert!(cursor_cell(&grid).is_some());
+            for y in 0..height {
+                for x in 0..width {
+                    let symbol = grid.cell(x, y).unwrap().symbol();
+                    prop_assert!(!symbol.chars().any(char::is_control));
                 }
             }
         }
