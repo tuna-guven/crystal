@@ -19,14 +19,6 @@
 //! back with the id on the chosen one (found by the property test too).
 //! Everything is a range into the note; nothing is copied.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by the link suggestions from roadmap step J4"
-    )
-)]
-
 use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};

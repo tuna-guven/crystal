@@ -29,7 +29,7 @@ are allowed only with certain arguments (step S5, last column).
 | `fcntl` | `term::TerminalGuard::engage` on resume after a suspend (`File::try_clone`, through musl's `fcntl()`); in debug builds also std's `debug_assert_fd_is_open` on every fd close | `F_DUPFD_CLOEXEC`: a second terminal fd for the panic hook's restore; musl then sets `FD_CLOEXEC` on it once more. `F_GETFD`: a debug-only check in std, never in release | `F_DUPFD_CLOEXEC`; `F_SETFD` with `FD_CLOEXEC`; debug builds also `F_GETFD` |
 | `getpid`, `kill` | `term::TerminalGuard::suspend` | Stop ourselves with `SIGSTOP` after restoring the terminal | `getpid`: none. `kill`: our own pid (taken when the filter is built) and `SIGSTOP` only |
 | `rt_sigreturn` | kernel, after signal-hook's handler | Return from a signal handler | none |
-| `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces | any |
+| `getrandom` | `crypto::fill_random` | Note and vault ids, temp file names, age file keys and nonces; new block ids chosen in the editor's link suggestions (`editor::suggest::new_id`, 16-byte buffer, [decision 0075](../decisions.md#0075)) | any |
 | `clock_gettime` | `session::now`, `term::Idle` | Timestamps and auto-lock (usually answered by the vDSO; the syscall is the fallback) | any |
 | `prlimit64` | `crypto::scrypt_policy`, before the first passphrase is used | Read the memlock hard limit, to refuse an scrypt work factor that cannot fit | pid 0, `RLIMIT_MEMLOCK`, new limit NULL (read only) |
 | `brk`, `mmap`, `munmap` | musl's allocator, under `zalloc` | Heap memory, including scrypt's 1 GiB | `mmap`: no `PROT_EXEC`. `brk`, `munmap`: any |

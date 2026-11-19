@@ -105,6 +105,8 @@ pub struct Editor {
     /// were parsed from (`suggest::BlocksFor`).
     blocks: Vec<crate::md::blocks::Block>,
     blocks_for: Option<suggest::BlocksFor>,
+    /// Where new block ids' randomness comes from (`suggest::new_id`).
+    random: suggest::Random,
     /// The note shown, if saved, and whether it is Markdown (`set_note`).
     own: Option<usize>,
     markdown: bool,
@@ -128,6 +130,7 @@ impl Editor {
             own_headings_at: None,
             blocks: Vec::new(),
             blocks_for: None,
+            random: crate::crypto::fill_random,
             own: None,
             markdown: true,
         })
