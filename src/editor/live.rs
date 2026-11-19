@@ -79,6 +79,12 @@ pub struct Parsed {
     pub layout: layout::Layout,
     /// The links a click follows (step LF3), in order.
     pub links: Vec<Link>,
+    /// Code: each code block and inline code span, without a final line
+    /// break, in order. Drawn as written, it keeps the code style.
+    pub code: Vec<Range<usize>>,
+    /// Each fenced code block and its fences (without line breaks): the
+    /// cursor in the block shows its fences, its code stays styled.
+    pub fenced: Vec<(Range<usize>, Vec<Range<usize>>)>,
 }
 
 /// A link a click follows (step LF3). Holds offsets, never text.
@@ -144,6 +150,7 @@ pub fn parse(text: &str) -> Parsed {
         text,
         runs: Vec::new(),
         elements: Vec::new(),
+        code: Vec::new(),
         pos: 0,
     };
     let top = Frame {
@@ -154,6 +161,9 @@ pub fn parse(text: &str) -> Parsed {
     let mut stack = vec![top];
     let mut lines = layout::Builder::new(text);
     let mut links = Vec::new();
+    // The fenced code block being read: its start, and its fences so far.
+    let mut fence: Option<(usize, Vec<Range<usize>>)> = None;
+    let mut fenced = Vec::new();
     for (event, range) in Parser::new_ext(text, OPTIONS).into_offset_iter() {
         lines.event(&event, &range);
         let frame = stack.last().copied().unwrap_or(top);
@@ -192,10 +202,19 @@ pub fn parse(text: &str) -> Parsed {
                             | Tag::Strikethrough
                             | Tag::Link { .. }
                             | Tag::Image { .. }
-                            | Tag::CodeBlock(CodeBlockKind::Fenced(_))
                     )
                 {
                     out.element(range.clone());
+                }
+                // A code block: its fences are elements of their own, so
+                // the cursor in its code leaves it styled.
+                if let Tag::CodeBlock(kind) = &tag
+                    && !frame.raw
+                {
+                    out.code(range.clone());
+                    if matches!(kind, CodeBlockKind::Fenced(_)) {
+                        fence = Some((range.start, Vec::new()));
+                    }
                 }
                 match tag {
                     _ if frame.raw => {}
@@ -251,11 +270,19 @@ pub fn parse(text: &str) -> Parsed {
                 } else {
                     out.gap(range.end, frame);
                 }
+                // A fenced block's closing fence (or both, if it has no
+                // code): from its code's end to its own.
+                if let (TagEnd::CodeBlock, Some((block, mut fences))) = (tag, fence.take()) {
+                    let first = if fences.is_empty() { block } else { start };
+                    fences.extend(out.element(first..range.end));
+                    fenced.push((block..range.end, fences));
+                }
                 stack.pop();
             }
             Event::Code(_) if !frame.raw => {
                 out.gap(range.start, frame);
                 out.element(range.clone());
+                out.code(range.clone());
                 // The backticks around inline code are hidden.
                 let inner = text[range.clone()].trim_matches('`');
                 let start = range.start + (text[range.clone()].len() - inner.len()) / 2;
@@ -279,6 +306,16 @@ pub fn parse(text: &str) -> Parsed {
                 out.push(range, Show::Text, TASK);
             }
             _ => {
+                // A fenced block's first code: its opening fence ends here.
+                if let Some((block, fences)) = &mut fence
+                    && fences.is_empty()
+                {
+                    fences.extend(out.element(*block..range.start));
+                    // Marked, even when the fence made no element.
+                    if fences.is_empty() {
+                        fences.push(*block..*block);
+                    }
+                }
                 out.gap(range.start, frame);
                 let style = if frame.raw { Style::PLAIN } else { frame.style };
                 out.push(range, Show::Text, style);
@@ -292,6 +329,8 @@ pub fn parse(text: &str) -> Parsed {
         elements: out.elements,
         layout: lines.finish(),
         links,
+        code: out.code,
+        fenced,
     }
 }
 
@@ -310,19 +349,32 @@ struct Runs<'a> {
     text: &'a str,
     runs: Vec<Run>,
     elements: Vec<Range<usize>>,
+    code: Vec<Range<usize>>,
     pos: usize,
 }
 
 impl Runs<'_> {
     /// Records an element, without its final line break.
-    fn element(&mut self, range: Range<usize>) {
+    fn element(&mut self, range: Range<usize>) -> Option<Range<usize>> {
+        let range = self.trimmed(range)?;
+        self.elements.push(range.clone());
+        Some(range)
+    }
+
+    /// Records code (a block or an inline span), without its line break.
+    fn code(&mut self, range: Range<usize>) {
+        if let Some(range) = self.trimmed(range) {
+            self.code.push(range);
+        }
+    }
+
+    /// `range` without a final line break; `None` if nothing is left.
+    fn trimmed(&self, range: Range<usize>) -> Option<Range<usize>> {
         let end = range.start
             + self.text[range.clone()]
                 .trim_end_matches(['\n', '\r'])
                 .len();
-        if range.start < end {
-            self.elements.push(range.start..end);
-        }
+        (range.start < end).then_some(range.start..end)
     }
 
     /// Adds `range` (its part past `pos`), joined to the last run when

@@ -61,6 +61,7 @@ use super::buffer::Change;
 use super::live::layout::{Layout, Piece};
 use super::live::{self, Link, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
+use crate::md::render::CODE;
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
@@ -186,6 +187,8 @@ struct Live {
     /// The lines the viewer's added blank row goes before (step LV2),
     /// sorted: each a line drawn, past any skipped ones.
     gaps: Vec<usize>,
+    /// Code blocks and inline code, sorted (`Parsed::code`).
+    code: Vec<Range<usize>>,
 }
 
 /// What a mouse event in live mode was for (steps LF2, LF3).
@@ -367,6 +370,13 @@ impl Live {
             .collect();
         let elements = merged(elements);
         let mut raw = elements.clone();
+        // The cursor or the selection in a fenced code block shows its
+        // fences; its code stays styled, so it is typed in yellow on gray.
+        for (block, fences) in &parsed.fenced {
+            if (block.start..=block.end).contains(&cursor) || selected(block) {
+                raw.extend(fences.iter().filter(|f| !f.is_empty()).cloned());
+            }
+        }
         let mut hidden = Vec::new();
         for line in &parsed.layout.lines {
             let markup = &line.markup;
@@ -450,6 +460,7 @@ impl Live {
             skips,
             skip_end,
             gaps,
+            code: parsed.code,
         }
     }
 
@@ -550,7 +561,10 @@ impl Live {
     /// hidden.
     fn at(&self, at: usize) -> (Show, Style) {
         if overlaps(&self.raw, &(at..at + 1)) {
-            return (Show::Text, Style::PLAIN);
+            // Code drawn as written keeps the code style (a fence, inline
+            // code being edited).
+            let code = overlaps(&self.code, &(at..at + 1));
+            return (Show::Text, if code { CODE } else { Style::PLAIN });
         }
         if overlaps(&self.hidden, &(at..at + 1)) {
             return (Show::Hidden, Style::PLAIN);
@@ -1235,7 +1249,7 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
             let x = area.x + u16::try_from(column).unwrap_or(u16::MAX);
             let fill = (end - column).min(usize::from(area.width) - column);
             let fill = u16::try_from(fill).unwrap_or(u16::MAX);
-            grid.fill(Rect::new(x, area.y, fill, 1), crate::md::render::CODE);
+            grid.fill(Rect::new(x, area.y, fill, 1), CODE);
         }
     }
     // A folded heading: ` …` after it, as in the viewer.
@@ -2713,5 +2727,43 @@ mod tests {
             assert!(seen.is_some(), "{word} not in the viewer");
             assert_eq!(find(&live, word), seen, "{word}");
         }
+    }
+
+    /// Typing in a code block (live mode): its code stays yellow on gray,
+    /// its fences show in the box, in the code style; the box widens as
+    /// a line grows. Inline code being edited keeps the code style too.
+    #[test]
+    fn live_code_stays_styled_while_typed() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("```\nab\n```\n\n`x` y").unwrap();
+        // The cursor at the closing fence: in the block, off the code.
+        ed.jump_to(7);
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 30, 8);
+        // Rows: the fence, the code, the fence; the gutter's 2 columns
+        // and the box's gray column first.
+        assert_eq!(rows(&grid)[1..4], ["   ```", "   ab", "   ```"]);
+        assert_eq!(style_at(&grid, 3, 1), CODE, "the opening fence");
+        assert_eq!(style_at(&grid, 4, 2), CODE, "b");
+        // The box: the gray column, `ab`, and one more.
+        for x in [2, 5] {
+            assert_eq!(style_at(&grid, x, 2).bg, CODE.bg, "({x}, 2)");
+        }
+        assert_eq!(style_at(&grid, 6, 2).bg, Color::Default);
+        // A longer line: the box grows with it, the fences' rows too.
+        for key in [Key::Up, Key::End, Key::Char('c'), Key::Char('d')] {
+            ed.key(key, &mut clip);
+        }
+        let grid = drawn(&mut ed, &mut view, 30, 8);
+        assert_eq!(rows(&grid)[2], "   abcd");
+        assert_eq!(style_at(&grid, 6, 2), CODE, "d");
+        assert_eq!(style_at(&grid, 7, 1).bg, CODE.bg, "the fence's row");
+        assert_eq!(style_at(&grid, 8, 1).bg, Color::Default);
+        // Inline code being edited: its backticks show, in the code style.
+        ed.jump_to(ed.text().find("`x`").unwrap() + 1);
+        let grid = drawn(&mut ed, &mut view, 30, 8);
+        let row = rows(&grid).iter().position(|r| r.contains("`x`")).unwrap();
+        let y = u16::try_from(row).unwrap();
+        assert_eq!(style_at(&grid, 2, y), CODE, "the backtick");
     }
 }

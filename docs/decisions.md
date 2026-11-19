@@ -471,8 +471,9 @@ viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
 rows are the viewer's; tables stay as written, and rows wrap by
 character. Drawn as written are only the elements the
-cursor is in or beside (an inline tag, inline code, a fenced code
-block, a rule, a heading's closing `#`s), a line's leading markup while
+cursor is in or beside (an inline tag, inline code, a rule, a heading's
+closing `#`s, a code block's fences while the cursor is in the block,
+its code staying yellow on gray in its box), a line's leading markup while
 the cursor is in it, and whatever the selection touches; a heading
 keeps its icon and color while the cursor is in its text, so typing in
 it stays in its style. What is not being edited works as in the

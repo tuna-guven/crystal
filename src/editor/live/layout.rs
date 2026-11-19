@@ -273,8 +273,10 @@ impl<'a> Builder<'a> {
             TagEnd::CodeBlock => {
                 if let Some(first) = self.code.take().filter(|&i| i != usize::MAX) {
                     let lines = &mut self.layout.lines[first..];
+                    // The fences do not count, as the viewer has none.
                     let widest = lines
                         .iter()
+                        .filter(|line| !line.skip)
                         .map(|line| code_width(self.text, line))
                         .max()
                         .unwrap_or(0);
@@ -333,7 +335,10 @@ impl<'a> Builder<'a> {
             .containers
             .iter()
             .any(|c| matches!(c, Container::Quote));
-        let markup = if self.hide_bare {
+        // A heading's bare line (a Setext underline, an empty heading) is
+        // markup whole; a fence only up to its backticks, so shown while
+        // the cursor is in its block it sits in the gray box like code.
+        let markup = if self.hide_bare && self.code.is_none() {
             line.len()
         } else {
             line.len()
@@ -560,10 +565,10 @@ mod tests {
             [
                 line("• ", "  ", "- "),
                 line("  ", "  ", ""),
-                line("   ", "   ", "  ```"),
                 line("   ", "   ", "  "),
                 line("   ", "   ", "  "),
-                line("   ", "   ", "  ```"),
+                line("   ", "   ", "  "),
+                line("   ", "   ", "  "),
                 line("", "", ""),
             ]
         );
