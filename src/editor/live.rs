@@ -1,5 +1,8 @@
-//! Live mode's runs (`edit --live`, steps LE1 to LE7): which bytes of the
-//! editor's text are shown, hidden or replaced, and in which style.
+//! Live mode's runs (`edit --live`, steps LE1 to LE7, LR1, LI1, LI2):
+//! which bytes of the editor's text are shown, hidden or replaced, and in
+//! which style; which elements the cursor reveals; and each line's layout
+//! (`layout`: the viewer's indent, list markers, quote bars and heading
+//! icons, standing in for the line's leading markup).
 //!
 //! The text is parsed with pulldown-cmark, as the viewer parses it
 //! (`render::OPTIONS`), keeping each event's source range. Text the
@@ -10,16 +13,13 @@
 //! The text is walked once, in order. Between two events lies markup:
 //! inside emphasis, strong, strikethrough, a link, an image or a heading
 //! it is hidden (`**`, `[`, `](url)`, `## `), anywhere else it is shown
-//! as written. A heading's leading `#`s are replaced by the viewer's
-//! icon. A line break is never hidden, so lines stay lines.
+//! as written. A line break is never hidden, so lines stay lines.
 //!
-//! Blocks look as in the viewer: a `-`, `*` or `+` list marker becomes
-//! `•` (numbers stay), a task box `[ ]` or `[x]` is dimmed, a quote's
-//! `>` becomes a gray `│`, a rule becomes a gray line, a fenced code
-//! block is gray with its fences hidden (their rows stay, empty), an
-//! indented one is gray as written. A table is shown as written.
+//! Blocks look as in the viewer: a task box `[ ]` or `[x]` is dimmed, a
+//! rule becomes a gray line, a code block's text is gray. A table is
+//! shown as written.
 
-mod layout;
+pub mod layout;
 
 use std::ops::Range;
 
@@ -35,7 +35,7 @@ pub enum Show {
     Text,
     /// Not at all: zero columns.
     Hidden,
-    /// This fixed string in their place (a heading's icon).
+    /// This fixed string in their place (a rule's line).
     Fixed(&'static str),
 }
 
@@ -55,8 +55,6 @@ struct Frame {
     hide: bool,
     /// Everything here is shown as written, unstyled (a table).
     raw: bool,
-    /// Inside a block quote: a `>` in shown markup becomes `│`.
-    quote: bool,
 }
 
 /// A task box, dimmed as in the viewer.
@@ -68,13 +66,11 @@ pub struct Parsed {
     /// non-empty and on char boundaries.
     pub runs: Vec<Run>,
     /// Each element the cursor reveals (step LR1), by start: an inline
-    /// tag, inline code, a heading, a fenced code block, a list marker, a
-    /// quote's `>` or a rule, without a final line break. Every byte not
-    /// shown as written lies in one.
+    /// tag, inline code, a heading, a fenced code block or a rule, without
+    /// a final line break. Every byte the runs do not show as written lies
+    /// in one; a line's leading markup is the layout's.
     pub elements: Vec<Range<usize>>,
-    /// Each line indented as in the viewer (step LI1; drawn from LI2,
-    /// which removes the `expect`).
-    #[expect(dead_code)]
+    /// Each line indented as in the viewer (steps LI1, LI2).
     pub layout: layout::Layout,
 }
 
@@ -90,11 +86,8 @@ pub fn parse(text: &str) -> Parsed {
         style: Style::PLAIN,
         hide: false,
         raw: false,
-        quote: false,
     };
     let mut stack = vec![top];
-    // The icon a heading's leading markup becomes.
-    let mut icon = None;
     let mut lines = layout::Builder::new(text);
     for (event, range) in Parser::new_ext(text, OPTIONS).into_offset_iter() {
         lines.event(&event, &range);
@@ -124,23 +117,13 @@ pub fn parse(text: &str) -> Parsed {
                     Tag::Strikethrough => inner.style = add(frame.style, Mods::CROSSED_OUT),
                     Tag::Link { .. } => inner.style = LINK,
                     Tag::Image { .. } => inner.style = add(frame.style, Mods::DIM),
-                    Tag::Heading { level, .. } => {
-                        let (mark, style) = heading_mark(level);
-                        inner.style = style;
-                        icon = Some(mark);
-                    }
+                    Tag::Heading { level, .. } => inner.style = heading_mark(level).1,
                     Tag::CodeBlock(_) => inner.style = CODE,
-                    Tag::BlockQuote(_) => inner.quote = true,
-                    Tag::Item if text[range.start..].starts_with(['-', '*', '+']) => {
-                        out.element(range.start..range.start + 1);
-                        out.push(range.start..range.start + 1, Show::Fixed("•"), Style::PLAIN);
-                    }
                     Tag::Table(_) => {
                         inner = Frame {
                             style: Style::PLAIN,
                             hide: false,
                             raw: true,
-                            quote: false,
                         };
                     }
                     _ => {}
@@ -157,19 +140,6 @@ pub fn parse(text: &str) -> Parsed {
                             | Tag::CodeBlock(CodeBlockKind::Fenced(_))
                     );
                 stack.push(inner);
-                if let Some(mark) = icon.take() {
-                    // The `#`s and spaces before the heading's text; a
-                    // Setext heading has none, and gets no icon.
-                    let start = text[range.start..range.end]
-                        .find(|c| c != '#')
-                        .map_or(range.end, |i| range.start + i);
-                    let start = text[start..range.end]
-                        .find(|c| c != ' ' && c != '\t')
-                        .map_or(range.end, |i| start + i);
-                    if start > range.start && text[range.start..].starts_with('#') {
-                        out.push(range.start..start, Show::Fixed(mark), inner.style);
-                    }
-                }
             }
             Event::End(_) => {
                 // The closing markup belongs to the tag.
@@ -291,18 +261,10 @@ impl Runs<'_> {
     }
 
     /// The markup from `pos` to `end`: hidden inside `frame` if it hides
-    /// markup, else shown as written, a quote's `>` as `│`.
+    /// markup, else shown as written.
     fn gap(&mut self, end: usize, frame: Frame) {
         if frame.hide {
             self.hide(self.pos..end);
-        } else if frame.quote {
-            let start = self.pos;
-            for (i, _) in self.text[start..end.max(start)].match_indices('>') {
-                self.push(self.pos..start + i, Show::Text, Style::PLAIN);
-                self.element(start + i..start + i + 1);
-                self.push(start + i..start + i + 1, Show::Fixed("│"), QUOTE_BAR);
-            }
-            self.push(self.pos..end, Show::Text, Style::PLAIN);
         } else {
             self.push(self.pos..end, Show::Text, Style::PLAIN);
         }
@@ -371,19 +333,17 @@ mod tests {
     }
 
     #[test]
-    fn headings_get_the_viewers_icon_and_style() {
+    fn headings_get_the_viewers_style() {
+        // The `#`s are hidden; the icon is the layout's (step LI2).
         let text = "## Title\nbody";
-        let (icon, style) = heading_mark(pulldown_cmark::HeadingLevel::H2);
-        assert_eq!(shown(text), format!("{icon}Title\nbody"));
+        let style = heading_mark(pulldown_cmark::HeadingLevel::H2).1;
+        assert_eq!(shown(text), "Title\nbody");
         assert_eq!(style_of(text, "Title"), style);
         assert_eq!(style.fg, Color::Green);
         assert_eq!(style_of(text, "body"), Style::PLAIN);
         // Closing `#`s hidden; a Setext heading keeps its line break and
         // hides its underline.
-        assert_eq!(
-            shown("# A ##"),
-            format!("{}A", heading_mark(pulldown_cmark::HeadingLevel::H1).0)
-        );
+        assert_eq!(shown("# A ##"), "A");
         assert_eq!(shown("Title\n==="), "Title\n");
     }
 
@@ -405,20 +365,12 @@ mod tests {
     /// Blocks look as in the viewer (step LE4).
     #[test]
     fn blocks_look_as_in_the_viewer() {
-        // Bullets, nested too; a task box dimmed.
-        let text = "- item\n  * nested\n+ [ ] task\n- [x] done";
-        assert_eq!(shown(text), "• item\n  • nested\n• [ ] task\n• [x] done");
+        // A task box dimmed. List markers and quotes' `>`s are leading
+        // markup: the layout's (steps LI1, LI2).
+        let text = "- item\n+ [ ] task";
         assert_eq!(style_of(text, "[ ]"), TASK);
         assert_eq!(style_of(text, "item"), Style::PLAIN);
-        // Quotes: every `>` a gray bar, nested and over lines; a `>` in
-        // the text stays.
-        let text = "> a > b\n> c\n>> d";
-        assert_eq!(shown(text), "│ a > b\n│ c\n││ d");
-        let bar = runs(text)
-            .into_iter()
-            .find(|run| run.show == Show::Fixed("│"))
-            .unwrap();
-        assert_eq!(bar.style, QUOTE_BAR);
+        assert_eq!(shown("> a > b"), "> a > b");
         // A fenced code block: fences hidden, rows kept, text gray.
         let text = "```rust\nlet x;\n```\nafter";
         assert_eq!(shown(text), "\nlet x;\n\nafter");
@@ -431,6 +383,8 @@ mod tests {
         // Rules, after a blank line (else `---` makes a heading).
         assert_eq!(shown("a\n\n---\nb"), format!("a\n\n{DASHES}\nb"));
         assert_eq!(shown("***"), DASHES);
+        let rule = runs("***").into_iter().next().unwrap();
+        assert_eq!(rule.style, QUOTE_BAR);
     }
 
     proptest! {

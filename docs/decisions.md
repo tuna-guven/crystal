@@ -466,7 +466,7 @@ clipboard are the plain editor's, so copying and saving keep the
 Markdown as written. Every grapheme drawn is the note's own, through
 the same checks as below, or a fixed marker (an icon, `•`, `│`, a
 rule); text the parser decodes is never drawn. The whole note is parsed
-on every frame (43 ms for 1 MiB in a release build), so a note over
+on every frame (about 62 ms for 1 MiB in a release build), so a note over
 1 MiB is drawn as written. `--live` never creates a note, and a text
 note opens as usual.
 A Helix-style modal editor was

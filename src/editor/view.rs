@@ -2,10 +2,13 @@
 //! name on the top row, the text below, a key line at the bottom.
 //!
 //! The text is drawn as written, never rendered, except in live mode
-//! (`edit --live`, steps LE1 to LE7, LR1): there the text is drawn as
-//! `live::parse` says, its markup hidden (zero columns) or replaced by a
-//! fixed string, its text styled, except the elements the cursor touches
-//! or the selection overlaps, drawn as written; every grapheme shown still goes through the checks below. The
+//! (`edit --live`, steps LE1 to LE7, LR1, LI2): there the text is drawn
+//! as `live::parse` says, its markup hidden (zero columns) or replaced by
+//! a fixed string, its text styled, except the elements the cursor
+//! touches or the selection overlaps, drawn as written; each row starts
+//! with the viewer's prefix for its line (`live::layout`), which stands
+//! in for the line's leading markup unless the cursor is in it, and a
+//! code line ends in its block's gray box; every grapheme shown still goes through the checks below. The
 //! runs are made again on every frame, so a note over `LIVE_MAX` is drawn
 //! as written. It wraps by grapheme: a
 //! row ends where the next grapheme would not fit, or at a line break.
@@ -54,7 +57,8 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
-use super::live::{self, Run, Show};
+use super::live::layout::{Layout, Piece};
+use super::live::{self, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
@@ -86,8 +90,8 @@ const BLOCK_HINTS: &str = "Blocks · Up/Down, wheel: choose · Enter, Tab, click
                            is added if missing) · Esc close";
 const TAB_STOP: usize = 4;
 /// Live mode draws a note only up to this size: the whole note is parsed
-/// on every frame, about 43 ms for 1 MiB in a release build (370 ms for
-/// 8 MiB). A larger note is drawn as written.
+/// on every frame, about 62 ms for 1 MiB in a release build (before the
+/// line layout, 370 ms for 8 MiB). A larger note is drawn as written.
 pub const LIVE_MAX: usize = 1 << 20;
 /// Line numbers are shown only if this many columns stay for the text, as
 /// in the viewer.
@@ -154,48 +158,144 @@ fn width_at(grapheme: &str, column: usize) -> usize {
     }
 }
 
-/// How live mode draws the text (steps LE1 to LE7, LR1): the runs of the
-/// last frame (`live::parse`) and the bytes drawn as written, the
-/// elements the cursor and the selection touch (sorted, merged). Not
-/// live: no runs, so every grapheme is drawn as written.
+/// How live mode draws the text (steps LE1 to LE7, LR1, LI2): the runs
+/// and the line layout of the last frame (`live::parse`), the bytes drawn
+/// as written (sorted, merged) and the lines' leading markup hidden behind
+/// their prefix (sorted). Not live: all empty, so every grapheme is drawn
+/// as written, with no prefix.
 #[derive(Default)]
 struct Live {
     runs: Vec<Run>,
     raw: Vec<Range<usize>>,
+    hidden: Vec<Range<usize>>,
+    layout: Layout,
 }
 
-/// The elements drawn as written: those the cursor is in or beside (both
-/// ends count, so the cursor just after `**b**` reveals it) and those the
-/// selection overlaps; sorted and merged.
-fn revealed(
-    elements: &[Range<usize>],
-    cursor: usize,
-    selection: &Range<usize>,
-) -> Vec<Range<usize>> {
-    let mut raw: Vec<Range<usize>> = Vec::new();
-    for element in elements {
-        let touched = (element.start..=element.end).contains(&cursor)
-            || (selection.start < element.end && element.start < selection.end);
-        if !touched {
-            continue;
-        }
-        // Sorted by start: an element overlapping the last one joins it.
-        match raw.last_mut() {
-            Some(last) if element.start <= last.end => last.end = last.end.max(element.end),
-            _ => raw.push(element.clone()),
+/// Indents are slices of this.
+const SPACES: &str = "                                                                ";
+
+/// What is drawn left of a row's text in live mode.
+struct Prefix<'a> {
+    /// Spaces first: the section's indent before a line whose markup is
+    /// drawn as written.
+    spaces: u16,
+    pieces: &'a [Piece],
+    /// A code line: its block's widest line, for the gray box.
+    code: Option<u16>,
+}
+
+impl Prefix<'_> {
+    const NONE: Prefix<'static> = Prefix {
+        spaces: 0,
+        pieces: &[],
+        code: None,
+    };
+
+    fn width(&self) -> usize {
+        usize::from(self.spaces)
+            + self
+                .pieces
+                .iter()
+                .map(|(s, _)| display_width(s))
+                .sum::<usize>()
+    }
+}
+
+/// Whether `range` overlaps one of the sorted, disjoint `ranges`.
+fn overlaps(ranges: &[Range<usize>], range: &Range<usize>) -> bool {
+    let i = ranges.partition_point(|r| r.end <= range.start);
+    ranges.get(i).is_some_and(|r| r.start < range.end)
+}
+
+/// Sorts `ranges` and joins those that overlap or touch.
+fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match out.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => out.push(range),
         }
     }
-    raw
+    out
 }
 
 impl Live {
+    /// Live mode's look of `parsed` with the cursor at `cursor`. Drawn as
+    /// written: the elements the cursor is in or beside (both ends count,
+    /// so the cursor just after `**b**` reveals it) or the selection
+    /// overlaps, and a line's markup when the cursor is in it, the
+    /// selection or a revealed element (a heading, a code block) overlaps
+    /// it. Every other line's markup is hidden.
+    fn new(parsed: Parsed, cursor: usize, selection: &Range<usize>) -> Self {
+        let selected = |r: &Range<usize>| selection.start < r.end && r.start < selection.end;
+        let elements = parsed
+            .elements
+            .iter()
+            .filter(|e| (e.start..=e.end).contains(&cursor) || selected(e))
+            .cloned()
+            .collect();
+        let elements = merged(elements);
+        let mut raw = elements.clone();
+        let mut hidden = Vec::new();
+        for line in &parsed.layout.lines {
+            let markup = &line.markup;
+            if markup.is_empty() {
+                continue;
+            }
+            if markup.contains(&cursor) || selected(markup) || overlaps(&elements, markup) {
+                raw.push(markup.clone());
+            } else {
+                hidden.push(markup.clone());
+            }
+        }
+        Self {
+            runs: parsed.runs,
+            raw: merged(raw),
+            hidden,
+            layout: parsed.layout,
+        }
+    }
+
+    /// The prefix of the row starting at `start`: a line's first row gets
+    /// its first prefix, or only its section's indent while its markup is
+    /// drawn as written; a wrapped row its rest prefix.
+    fn prefix(&self, start: usize) -> Prefix<'_> {
+        let lines = &self.layout.lines;
+        let i = lines.partition_point(|line| line.markup.start <= start);
+        let Some(line) = i.checked_sub(1).and_then(|i| lines.get(i)) else {
+            return Prefix::NONE;
+        };
+        if start != line.markup.start {
+            return Prefix {
+                spaces: 0,
+                pieces: self.layout.prefix(&line.rest),
+                code: line.code,
+            };
+        }
+        if !line.markup.is_empty() && !overlaps(&self.hidden, &line.markup) {
+            return Prefix {
+                spaces: line.section,
+                pieces: &[],
+                code: None,
+            };
+        }
+        Prefix {
+            spaces: 0,
+            pieces: self.layout.prefix(&line.first),
+            code: line.code,
+        }
+    }
+
     /// How the grapheme starting at `at` is drawn, and its style. A fixed
     /// string is drawn once, at its run's start; the rest of the run is
     /// hidden.
     fn at(&self, at: usize) -> (Show, Style) {
-        let i = self.raw.partition_point(|range| range.end <= at);
-        if self.raw.get(i).is_some_and(|range| range.start <= at) {
+        if overlaps(&self.raw, &(at..at + 1)) {
             return (Show::Text, Style::PLAIN);
+        }
+        if overlaps(&self.hidden, &(at..at + 1)) {
+            return (Show::Hidden, Style::PLAIN);
         }
         let i = self.runs.partition_point(|run| run.range.end <= at);
         match self.runs.get(i) {
@@ -225,6 +325,9 @@ struct Row {
     next: Option<usize>,
     /// Ended by a line break or the end of the text, not by wrapping.
     ends_line: bool,
+    /// Columns left of its text for live mode's prefix (0 when the prefix
+    /// would leave no room).
+    indent: usize,
 }
 
 impl Row {
@@ -243,6 +346,10 @@ impl Row {
 /// The row starting at `start` (a row start), `width` columns wide. A
 /// grapheme wider than a whole row gets a row of its own.
 fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
+    // Live mode's prefix takes its columns first, if text still fits.
+    let indent = live.prefix(start).width();
+    let indent = if indent < width { indent } else { 0 };
+    let width = width - indent;
     let rest = text.get(start..).unwrap_or("");
     let mut column = 0;
     for (i, grapheme) in rest.grapheme_indices(true) {
@@ -253,6 +360,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 range: start..at,
                 next: Some(next),
                 ends_line: true,
+                indent,
             };
         }
         let w = live.width(at, grapheme, column);
@@ -261,6 +369,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 range: start..at,
                 next: Some(at),
                 ends_line: false,
+                indent,
             };
         }
         column += w;
@@ -269,6 +378,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
         range: start..text.len(),
         next: None,
         ends_line: true,
+        indent,
     }
 }
 
@@ -377,11 +487,7 @@ impl View {
         if live {
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
-            let parsed = live::parse(text);
-            self.look = Live {
-                raw: revealed(&parsed.elements, cursor, &selection),
-                runs: parsed.runs,
-            };
+            self.look = Live::new(live::parse(text), cursor, &selection);
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
@@ -539,10 +645,12 @@ impl View {
             }
         }
         let row = row_at(text, start, width, &self.look);
-        let target = usize::from(column.saturating_sub(area.x));
+        // Live mode's prefix: a click there lands on the row's first
+        // grapheme shown.
+        let target = usize::from(column.saturating_sub(area.x)).saturating_sub(row.indent);
         // The column kept free on the right: the line's end, where the
         // cursor is drawn there.
-        if target >= width && row.ends_line {
+        if target >= width - row.indent && row.ends_line {
             return Some(row.range.end);
         }
         let mut column = 0;
@@ -628,6 +736,21 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
 /// last grapheme when it sits at the line's end), each grapheme as `live`
 /// says. Returns the column the cursor was drawn at, if on this row.
 fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live) -> Option<u16> {
+    // Live mode's prefix, then the text right of it.
+    let prefix = live.prefix(row.range.start);
+    let code = if row.indent > 0 {
+        let mut x = area.x;
+        let spaces = &SPACES[..usize::from(prefix.spaces).min(SPACES.len())];
+        x += grid.put_str(x, area.y, spaces, Style::PLAIN, area.width);
+        for (piece, style) in prefix.pieces {
+            x += grid.put_str(x, area.y, piece, *style, area.right().saturating_sub(x));
+        }
+        prefix.code
+    } else {
+        None
+    };
+    let indent = u16::try_from(row.indent).unwrap_or(u16::MAX);
+    let area = Rect::new(area.x + indent, area.y, area.width - indent, area.height);
     let mut cursor = None;
     let text = editor.text();
     let selection = editor.selection().unwrap_or(0..0);
@@ -678,6 +801,16 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
             Shape::Break => {}
         }
         column += width_at(grapheme, column);
+    }
+    // A code line's gray box, to one column past its block's widest line.
+    if let Some(widest) = code {
+        let end = usize::from(widest) + 1;
+        if column < end && column < usize::from(area.width) {
+            let x = area.x + u16::try_from(column).unwrap_or(u16::MAX);
+            let fill = (end - column).min(usize::from(area.width) - column);
+            let fill = u16::try_from(fill).unwrap_or(u16::MAX);
+            grid.fill(Rect::new(x, area.y, fill, 1), crate::md::render::CODE);
+        }
     }
     // The line's end: the cursor there, or a selected line break.
     if row.ends_line {
@@ -1469,23 +1602,30 @@ mod tests {
             rows(&grid)[1..4],
             [
                 format!("{icon}Title"),
-                "bold and alias".into(),
-                "last".into()
+                "  bold and alias".into(),
+                "  last".into()
             ]
         );
         assert_eq!(style_at(&grid, 2, 1), heading, "the heading's T");
-        assert!(style_at(&grid, 0, 2).mods.contains(Mods::BOLD), "b");
-        assert_eq!(style_at(&grid, 9, 2), crate::md::render::LINK, "a of alias");
+        assert!(style_at(&grid, 2, 2).mods.contains(Mods::BOLD), "b");
+        assert_eq!(
+            style_at(&grid, 11, 2),
+            crate::md::render::LINK,
+            "a of alias"
+        );
         // The cursor on the second line: it is drawn as written.
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[2], "**bold** and alias");
+        assert_eq!(rows(&grid)[2], "  **bold** and alias");
         assert_eq!(rows(&grid)[1], format!("{icon}Title"));
         // A selection from there into the first line: the heading and the
         // bold text as written, the link it does not reach styled.
         ed.key(Key::ShiftUp, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[1..4], ["# Title", "**bold** and alias", "last"]);
+        assert_eq!(
+            rows(&grid)[1..4],
+            ["# Title", "  **bold** and alias", "  last"]
+        );
         // Not live: everything as written.
         let grid = drawn(&mut ed, &mut View::default(), 40, 5);
         assert_eq!(rows(&grid)[3], "3 last");
@@ -1562,25 +1702,25 @@ mod tests {
         }
         let mut view = View::live();
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "bold word");
+        assert_eq!(rows(&grid)[2], "  bold word");
         let at = |view: &View, x, y| view.position_at(ed.text(), x, y, false);
-        // `w` of word, after `bold ` (no line numbers when live).
-        assert_eq!(at(&view, 5, 2), Some(17));
+        // `w` of word, after the section's indent and `bold `.
+        assert_eq!(at(&view, 7, 2), Some(17));
         // `b` of bold, past the hidden `**`.
-        assert_eq!(at(&view, 0, 2), Some(10));
-        // Both cells of the icon: the heading's start; then `T`.
-        assert_eq!(at(&view, 0, 1), Some(0));
-        assert_eq!(at(&view, 1, 1), Some(0));
-        assert_eq!(at(&view, 2, 1), Some(2));
+        assert_eq!(at(&view, 2, 2), Some(10));
+        // Both cells of the icon: its first letter, past the hidden `# `.
+        assert_eq!(at(&view, 0, 1), Some(2));
+        assert_eq!(at(&view, 1, 1), Some(2));
+        assert_eq!(at(&view, 3, 1), Some(3));
         ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
         assert_eq!(ed.cursor(), 17);
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "bold word");
-        assert_eq!(cursor_cell(&grid), Some((5, 2)));
+        assert_eq!(rows(&grid)[2], "  bold word");
+        assert_eq!(cursor_cell(&grid), Some((7, 2)));
         // On `bold`: that element is drawn as written.
         ed.mouse(MouseEvent::Press, Some(10), std::time::Instant::now());
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "**bold** word");
+        assert_eq!(rows(&grid)[2], "  **bold** word");
     }
 
     /// Reveal by word (step LR1): the cursor just after `**b**` shows it as
@@ -1604,15 +1744,19 @@ mod tests {
         }
         let (icon, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H2);
         let grid = drawn(&mut ed, &mut view, 30, 4);
-        assert_eq!(rows(&grid)[1..3], [format!("{icon}Head"), "• item".into()]);
+        // As in the viewer: the heading 2 columns in, its section 4.
+        assert_eq!(
+            rows(&grid)[1..3],
+            [format!("  {icon}Head"), "    • item".into()]
+        );
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut view, 30, 4);
-        assert_eq!(rows(&grid)[1..3], ["## Head", "• item"]);
+        assert_eq!(rows(&grid)[1..3], ["  ## Head", "    • item"]);
         // The cursor at the marker: `-` shows.
         for key in [Key::Down, Key::Home] {
             ed.key(key, &mut clip);
         }
-        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "- item");
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "    - item");
     }
 
     /// Crystal's clipboard in live mode (step LE5): copying takes the
@@ -1657,5 +1801,51 @@ mod tests {
         let shown = rows(&grid);
         assert!(shown[0].ends_with(" [+]") && !shown[0].contains("live"));
         assert_eq!(shown[1], "1 **b**");
+    }
+
+    /// The viewer's layout in live mode (step LI2): a quote's bar on its
+    /// wrapped rows too, a bullet, a code block as a gray box as wide as
+    /// its widest line plus a column each side (its fences gray rows), and
+    /// a click on a prefix landing on the row's first character.
+    #[test]
+    fn live_lines_are_laid_out_as_in_the_viewer() {
+        let mut clip = Clipboard::default();
+        let text = "> quote that wraps here\n- item\n\n```\ncode\nlonger\n```\nend";
+        let mut ed = Editor::new(text).unwrap();
+        for _ in 0..7 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let mut view = View::live();
+        // 15 columns of text and the cursor's.
+        let grid = drawn(&mut ed, &mut view, 16, 12);
+        assert_eq!(
+            rows(&grid)[1..10],
+            [
+                "│ quote that wr",
+                "│ aps here",
+                "• item",
+                "",
+                "",
+                " code",
+                " longer",
+                "",
+                "end"
+            ]
+        );
+        assert_eq!(style_at(&grid, 0, 2), crate::md::render::QUOTE_BAR);
+        // The box: columns 0 to 7 of the fences' and code's rows.
+        for y in 5..=8 {
+            for x in 0..8 {
+                let bg = style_at(&grid, x, y).bg;
+                assert_eq!(bg, crate::md::render::CODE.bg, "({x}, {y})");
+            }
+            assert_eq!(style_at(&grid, 8, y).bg, Color::Default, "(8, {y})");
+        }
+        // A click on the bar: the quote's first letter.
+        assert_eq!(view.position_at(ed.text(), 0, 1, false), Some(2));
+        // The cursor in a line's markup shows it as written.
+        ed.mouse(MouseEvent::Press, Some(24), std::time::Instant::now());
+        let grid = drawn(&mut ed, &mut view, 16, 12);
+        assert_eq!(rows(&grid)[3], "- item");
     }
 }
