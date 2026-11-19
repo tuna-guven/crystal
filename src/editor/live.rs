@@ -23,9 +23,13 @@ pub mod layout;
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, LinkType, Parser, Tag, TagEnd};
+use zeroize::Zeroizing;
 
-use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, heading_mark};
+use crate::md::blocks::blocks;
+use crate::md::link::clickable;
+use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, eq_ci, heading_mark};
+use crate::notes::Fragment;
 use crate::ui::grid::{Mods, Style};
 
 /// How a run's bytes are drawn.
@@ -73,6 +77,65 @@ pub struct Parsed {
     pub elements: Vec<Range<usize>>,
     /// Each line indented as in the viewer (steps LI1, LI2).
     pub layout: layout::Layout,
+    /// The links a click follows (step LF3), in order.
+    pub links: Vec<Link>,
+}
+
+/// A link a click follows (step LF3). Holds offsets, never text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    /// The whole link as written.
+    pub range: Range<usize>,
+    /// Where its target is written: a `[[link]]`'s name and fragment, or
+    /// a web address `md::link::clickable` accepts.
+    pub target: Range<usize>,
+    /// A web link: the terminal's to open (Ctrl+click), never Crystal's.
+    pub web: bool,
+}
+
+/// Where `fragment` starts in `body` (step LF3): the text of the heading
+/// with that text, ignoring case as the viewer does (past its `#`s, so it
+/// stays styled), or the start of the block with that `^id`.
+pub fn fragment_at(body: &str, fragment: &Fragment<'_>) -> Option<usize> {
+    match fragment {
+        Fragment::Block(id) => blocks(body)
+            .into_iter()
+            .find(|block| {
+                block
+                    .id
+                    .as_ref()
+                    .is_some_and(|r| body.get(r.clone()) == Some(*id))
+            })
+            .map(|block| block.text.start),
+        Fragment::Heading(heading) => {
+            // The heading's text as the parser reads it, in zeroizing
+            // memory: it is note text.
+            // Its first text's start, and its text.
+            let mut open: Option<(Option<usize>, Zeroizing<String>)> = None;
+            for (event, range) in Parser::new_ext(body, OPTIONS).into_offset_iter() {
+                match event {
+                    Event::Start(Tag::Heading { .. }) => {
+                        open = Some((None, Zeroizing::new(String::new())));
+                    }
+                    Event::Text(t) | Event::Code(t) => {
+                        if let Some((start, text)) = &mut open {
+                            start.get_or_insert(range.start);
+                            text.push_str(&t);
+                        }
+                    }
+                    Event::End(TagEnd::Heading(_)) => {
+                        if let Some((start, text)) = open.take()
+                            && eq_ci(&text, heading)
+                        {
+                            return Some(start.unwrap_or(range.start));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Parses `text` into its runs and elements.
@@ -90,6 +153,7 @@ pub fn parse(text: &str) -> Parsed {
     };
     let mut stack = vec![top];
     let mut lines = layout::Builder::new(text);
+    let mut links = Vec::new();
     for (event, range) in Parser::new_ext(text, OPTIONS).into_offset_iter() {
         lines.event(&event, &range);
         let frame = stack.last().copied().unwrap_or(top);
@@ -97,6 +161,29 @@ pub fn parse(text: &str) -> Parsed {
             Event::Start(tag) => {
                 out.gap(range.start, frame);
                 let mut inner = frame;
+                // A link a click follows: a `[[link]]`, or a web address
+                // the viewer would make clickable; its target where it is
+                // written (one decoded from escapes is not followed).
+                if let Tag::Link {
+                    link_type,
+                    dest_url,
+                    ..
+                } = &tag
+                    && !frame.raw
+                {
+                    let wiki = matches!(link_type, LinkType::WikiLink { .. });
+                    let found = text[range.clone()].find(&**dest_url);
+                    if let Some(i) = found.filter(|_| !dest_url.is_empty())
+                        && (wiki || clickable(dest_url))
+                    {
+                        let start = range.start + i;
+                        links.push(Link {
+                            range: range.clone(),
+                            target: start..start + dest_url.len(),
+                            web: !wiki,
+                        });
+                    }
+                }
                 if !frame.raw
                     && matches!(
                         tag,
@@ -204,6 +291,7 @@ pub fn parse(text: &str) -> Parsed {
         runs: out.runs,
         elements: out.elements,
         layout: lines.finish(),
+        links,
     }
 }
 
@@ -409,6 +497,36 @@ mod tests {
         assert_eq!(shown("***"), DASHES);
         let rule = runs("***").into_iter().next().unwrap();
         assert_eq!(rule.style, QUOTE_BAR);
+    }
+
+    /// Links a click follows (step LF3): a `[[link]]` and a web address
+    /// the viewer makes clickable, their targets where written; another
+    /// address is not one.
+    #[test]
+    fn links_record_their_targets() {
+        let text = "see [[Note#Head|alias]], [site](https://example.org) and [rel](notes.md)";
+        let links = parse(text).links;
+        let targets: Vec<(&str, bool)> = links
+            .iter()
+            .map(|link| (&text[link.target.clone()], link.web))
+            .collect();
+        assert_eq!(
+            targets,
+            [("Note#Head", false), ("https://example.org", true)]
+        );
+        assert_eq!(&text[links[0].range.clone()], "[[Note#Head|alias]]");
+    }
+
+    /// Where a link's fragment leads (step LF3): a heading's text, matched
+    /// ignoring case; a block's start; nothing for a missing one.
+    #[test]
+    fn fragments_lead_to_their_line() {
+        let body = "# Intro\ntext\n## Next *Part*\nx ^abc\n";
+        assert_eq!(fragment_at(body, &Fragment::Heading("next part")), Some(16));
+        assert_eq!(fragment_at(body, &Fragment::Heading("Intro")), Some(2));
+        assert_eq!(fragment_at(body, &Fragment::Block("abc")), Some(28));
+        assert_eq!(fragment_at(body, &Fragment::Heading("none")), None);
+        assert_eq!(fragment_at(body, &Fragment::Block("zzz")), None);
     }
 
     proptest! {

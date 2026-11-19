@@ -187,7 +187,7 @@ pub fn block_id(text: &str) -> Option<(usize, &str)> {
 }
 
 /// `a` and `b` equal ignoring case, without lowercase copies.
-fn eq_ci(a: &str, b: &str) -> bool {
+pub fn eq_ci(a: &str, b: &str) -> bool {
     a.chars()
         .flat_map(char::to_lowercase)
         .eq(b.chars().flat_map(char::to_lowercase))

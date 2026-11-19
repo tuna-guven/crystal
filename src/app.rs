@@ -17,14 +17,15 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::commands::{self, Open};
+use crate::editor::live::fragment_at;
 use crate::editor::suggest::{ID_FULL, ID_REFUSED};
-use crate::editor::view::{LIVE_MAX, View};
+use crate::editor::view::{Click, LIVE_MAX, View};
 use crate::editor::{Editor, EditorAction};
 use crate::md::blocks::{add_id, blocks};
 use crate::md::render::{Kind, kind_of, shown};
 use crate::model::{NoteText, lines};
 use crate::notes::Notes;
-use crate::pager::{Pager, PagerAction};
+use crate::pager::{Pager, PagerAction, WEB_LINK};
 use crate::session::{Change, SaveError, Session};
 use crate::shell::keys::{Key, MouseEvent};
 use crate::shell::{self, ERROR_STYLE, Shell};
@@ -39,6 +40,10 @@ const COPIED: &str = "Copied inside Crystal; it never leaves it.";
 /// holds unsaved changes.
 const SAVE_FIRST: &str =
     "Unsaved changes here: Ctrl+S saves them, then Ctrl+E edits the other note.";
+/// A click on a link to another note in the live editor, while it holds
+/// unsaved changes (step LF3).
+const SAVE_FIRST_LINK: &str =
+    "Unsaved changes here: Ctrl+S saves them, then a click follows the link.";
 
 /// Auto-lock after this long without a key or paste, fixed (decision 0048).
 pub const AUTO_LOCK: Duration = Duration::from_secs(5 * 60);
@@ -481,12 +486,23 @@ fn run_loop(
                             // stops at its edge (decision 0073). The list
                             // of link suggestions, drawn over the text,
                             // comes first.
-                            let action = if let Key::Mouse { event, column, row } = key
-                                && e.view.mouse(event, column, row)
-                            {
-                                // A heading's marker (live mode).
-                                EditorAction::Stay
-                            } else if let Key::Mouse { event, column, row } = key {
+                            // Live mode first: a heading's marker, or a
+                            // link to follow (steps LF2, LF3).
+                            if let Key::Mouse { event, column, row } = key {
+                                match e.view.mouse(e.editor.text(), event, column, row) {
+                                    Click::Taken => continue,
+                                    Click::Link { target, web } => {
+                                        if let Some(next) =
+                                            follow(session.notes(), e, target, web, shell)
+                                        {
+                                            mode = next;
+                                        }
+                                        continue;
+                                    }
+                                    Click::Editor => {}
+                                }
+                            }
+                            let action = if let Key::Mouse { event, column, row } = key {
                                 let clamp = event != MouseEvent::Press;
                                 let at = e.view.position_at(e.editor.text(), column, row, clamp);
                                 let entry = e.view.suggestion_at(column, row);
@@ -557,6 +573,56 @@ fn save_before_lock(
         Edits::Lost
     } else {
         Edits::Saved
+    }
+}
+
+/// Follows a link clicked in the live editor (step LF3), as the viewer
+/// does: a web link is the terminal's (Ctrl+click); an internal one moves
+/// the cursor within this note, or opens its note live at its heading or
+/// block once this note's changes are saved; a broken one says why.
+/// Returns the mode to switch to, if another note opens.
+fn follow(
+    notes: &Notes,
+    e: &mut Editing,
+    target: std::ops::Range<usize>,
+    web: bool,
+    shell: &mut Shell,
+) -> Option<Mode> {
+    if web {
+        e.editor.tell(WEB_LINK);
+        return None;
+    }
+    // The text may have changed since the frame the click is on.
+    let target = Zeroizing::new(e.editor.text().get(target)?.to_owned());
+    let Target::Note(from) = e.target else {
+        e.editor
+            .tell("A new note's links work once Ctrl+S saved it.");
+        return None;
+    };
+    match notes.resolve(from, &target) {
+        Err(why) => {
+            e.editor.tell(why.describe());
+            None
+        }
+        Ok((note, fragment)) if note == from => {
+            if let Some(at) = fragment.and_then(|f| fragment_at(e.editor.text(), &f)) {
+                e.editor.jump_to(at);
+            }
+            None
+        }
+        Ok(_) if e.editor.is_dirty() => {
+            e.editor.tell(SAVE_FIRST_LINK);
+            None
+        }
+        Ok((note, fragment)) => {
+            let mut mode = edit(notes, Target::Note(note), true, shell);
+            if let (Mode::Edit(next), Some(fragment)) = (&mut mode, fragment)
+                && let Some(at) = fragment_at(notes.note(note).body.as_str(), &fragment)
+            {
+                next.editor.jump_to(at);
+            }
+            Some(mode)
+        }
     }
 }
 

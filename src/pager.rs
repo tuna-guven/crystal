@@ -50,7 +50,7 @@ pub const GUTTER: u16 = 2;
 pub const MARKER: Style = Style::PLAIN.fg(Color::Indexed(208)).mods(Mods::BOLD);
 /// Shown on a click on a web link: the terminal opens it, never Crystal
 /// (decision 0076).
-const WEB_LINK: &str = "Web links open with Ctrl+click: the terminal opens them, not Crystal.";
+pub const WEB_LINK: &str = "Web links open with Ctrl+click: the terminal opens them, not Crystal.";
 /// Rows one step of the mouse wheel scrolls (as in the editor, 0073).
 const WHEEL_ROWS: usize = 3;
 const HINTS: &str = "q shell · j/k scroll · Tab fold · n/N links · Enter follow · \

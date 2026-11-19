@@ -502,6 +502,13 @@ impl Editor {
         self.goal = None;
     }
 
+    /// Puts the cursor at `at` (on a grapheme's start), the selection
+    /// dropped: where a link followed in live mode leads (step LF3).
+    pub fn jump_to(&mut self, at: usize) {
+        let at = self.snap(at.min(self.text().len()));
+        self.move_to(at, false);
+    }
+
     /// Selects `range`, the cursor at its end; an empty one only moves
     /// the cursor.
     fn select(&mut self, range: Range<usize>) {

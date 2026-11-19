@@ -597,7 +597,11 @@ the grid and by the frame writer, which always closes an open link
 before the frame ends, a redraw or a prompt. The terminal opens the link;
 Crystal spawns nothing and sends nothing. At the user's request a
 clickable link's address is hidden, an accepted risk (A3): the text of a
-link from an untrusted note can name another site than its target.
+link from an untrusted note can name another site than its target. The
+editor's live mode ([0045](#0045)) marks the same links the same way,
+on a link not drawn as written: its target where the note writes it,
+only when the parser's decoded target is that same text and
+`md::link::clickable` accepts it.
 
 ## 0055 Lines with text are numbered in the viewer and the editor; j/k go by line; narrow tables stay boxed {#0055}
 
@@ -1024,7 +1028,12 @@ open section and `>` for a folded one (plain ASCII, one column in every
 terminal); a click on the row folds or unfolds the section, except on a
 link in the heading, which it follows ([0052](#0052)). In live mode only
 a click on the marker's gutter cell folds: a click on the heading's
-text places the cursor, and a fold opens when the cursor enters it.
+text places the cursor, and a fold opens when the cursor enters it. A
+click on a link not drawn as written follows it as here: an internal
+one opens its note live at its heading or `^block` (with unsaved
+changes Crystal says to save first, nothing is lost), a web one only
+says to Ctrl+click it; the press's drag and release go nowhere else.
+Keys stay the editor's: no n/N, Enter or Backspace to go back.
 Markers always shown, and gray, were tried and dropped: too much on the
 screen, and too faint to find. The keyboard cursor and its
 orange `>` are gone: j/k and the arrows scroll a row, the wheel three,

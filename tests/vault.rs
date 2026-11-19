@@ -1527,6 +1527,37 @@ fn create_note(home: &Path, name: &str, body: &str) {
     assert!(ok, "{output}");
 }
 
+/// Live mode follows links as the viewer does (step LF3): with unsaved
+/// changes a click on `[[plan#Checks]]` asks to save first; saved, it
+/// opens `plan` live. Motion reports are on in the live editor and off
+/// again in the shell.
+#[test]
+fn live_editor_follows_links() {
+    let (home, _) = home_with_vault("live_links");
+    create_note(&home, "plan", "# Plan\r\r## Checks\r\rlast");
+    create_note(&home, "today", "see [[plan#Checks");
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit --live today\r".to_vec()));
+    // `  xsee plan#Checks` on row 2: the link from column 8 (1-based).
+    // The editor's key line: "live" is in the command's echo too.
+    steps.push(("Ctrl+S save", b"x".to_vec()));
+    steps.push(("[+]", b"\x1b[<0;10;2M\x1b[<0;10;2m".to_vec()));
+    // One word: the frame writer draws words one by one.
+    steps.push(("Unsaved", b"\x11\x11".to_vec()));
+    // Saved as it was: `  see plan#Checks`, the link from column 7.
+    steps.push((SHELL_READY, b"edit --live today\r".to_vec()));
+    steps.push(("Ctrl+S save", b"\x1b[<0;8;2M\x1b[<0;8;2m".to_vec()));
+    steps.push(("last", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(
+        output.contains("\x1b[?1003h"),
+        "motion reports in live mode"
+    );
+    assert!(output.rfind("\x1b[?1003l").unwrap() > output.rfind("\x1b[?1003h").unwrap());
+}
+
 /// The mouse in the viewer (decision 0076): a click on `[[plan#Checks]]`
 /// opens `plan` at that heading, a click on the heading's `>` folds it
 /// (` …`), Backspace goes back. The viewer turns every-motion reports on;
