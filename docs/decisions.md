@@ -458,8 +458,10 @@ open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
 preview (no security benefit; about 400 lines of code, comments
 included, and 400 of tests), draws a Markdown note with its markup
-hidden and its text styled as in the viewer on every line but those
-the cursor and the selection are on, without line numbers. The text, keys, undo and Crystal's
+hidden and its text styled as in the viewer, without line numbers;
+only the elements the cursor is in or beside (an inline tag, inline
+code, a heading's line, a fenced code block, a list marker, a quote's
+`>`, a rule) and those the selection touches are drawn as written. The text, keys, undo and Crystal's
 clipboard are the plain editor's, so copying and saving keep the
 Markdown as written. Every grapheme drawn is the note's own, through
 the same checks as below, or a fixed marker (an icon, `•`, `│`, a

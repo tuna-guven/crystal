@@ -2,10 +2,10 @@
 //! name on the top row, the text below, a key line at the bottom.
 //!
 //! The text is drawn as written, never rendered, except in live mode
-//! (`edit --live`, steps LE1 to LE7): there every line but those the
-//! cursor and the selection are on is drawn as `live::runs` says, its
-//! markup hidden (zero columns) or replaced by a fixed string, its text
-//! styled; every grapheme shown still goes through the checks below. The
+//! (`edit --live`, steps LE1 to LE7, LR1): there the text is drawn as
+//! `live::parse` says, its markup hidden (zero columns) or replaced by a
+//! fixed string, its text styled, except the elements the cursor touches
+//! or the selection overlaps, drawn as written; every grapheme shown still goes through the checks below. The
 //! runs are made again on every frame, so a note over `LIVE_MAX` is drawn
 //! as written. It wraps by grapheme: a
 //! row ends where the next grapheme would not fit, or at a line break.
@@ -154,14 +154,38 @@ fn width_at(grapheme: &str, column: usize) -> usize {
     }
 }
 
-/// How live mode draws the text (steps LE1 to LE7): the runs of the last
-/// frame (`live::runs`) and the bytes drawn as written, the lines the
-/// cursor and the selection are on. Not live: no runs, so every grapheme
-/// is drawn as written.
+/// How live mode draws the text (steps LE1 to LE7, LR1): the runs of the
+/// last frame (`live::parse`) and the bytes drawn as written, the
+/// elements the cursor and the selection touch (sorted, merged). Not
+/// live: no runs, so every grapheme is drawn as written.
 #[derive(Default)]
 struct Live {
     runs: Vec<Run>,
-    raw: Range<usize>,
+    raw: Vec<Range<usize>>,
+}
+
+/// The elements drawn as written: those the cursor is in or beside (both
+/// ends count, so the cursor just after `**b**` reveals it) and those the
+/// selection overlaps; sorted and merged.
+fn revealed(
+    elements: &[Range<usize>],
+    cursor: usize,
+    selection: &Range<usize>,
+) -> Vec<Range<usize>> {
+    let mut raw: Vec<Range<usize>> = Vec::new();
+    for element in elements {
+        let touched = (element.start..=element.end).contains(&cursor)
+            || (selection.start < element.end && element.start < selection.end);
+        if !touched {
+            continue;
+        }
+        // Sorted by start: an element overlapping the last one joins it.
+        match raw.last_mut() {
+            Some(last) if element.start <= last.end => last.end = last.end.max(element.end),
+            _ => raw.push(element.clone()),
+        }
+    }
+    raw
 }
 
 impl Live {
@@ -169,7 +193,8 @@ impl Live {
     /// string is drawn once, at its run's start; the rest of the run is
     /// hidden.
     fn at(&self, at: usize) -> (Show, Style) {
-        if self.raw.contains(&at) {
+        let i = self.raw.partition_point(|range| range.end <= at);
+        if self.raw.get(i).is_some_and(|range| range.start <= at) {
             return (Show::Text, Style::PLAIN);
         }
         let i = self.runs.partition_point(|run| run.range.end <= at);
@@ -350,15 +375,12 @@ impl View {
         self.area = Some(area);
         self.look = Live::default();
         if live {
-            // The lines the cursor and the selection are on stay as written.
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
-            let first = line_start(text, cursor.min(selection.start));
-            let last = cursor.max(selection.end);
-            let last = text[last..].find('\n').map_or(text.len(), |i| last + i);
+            let parsed = live::parse(text);
             self.look = Live {
-                runs: live::runs(text),
-                raw: first..last,
+                raw: revealed(&parsed.elements, cursor, &selection),
+                runs: parsed.runs,
             };
         }
         self.scroll(text, editor.cursor(), width, rows);
@@ -1430,10 +1452,10 @@ mod tests {
         grid.cell(x, y).unwrap().style()
     }
 
-    /// Live mode (step LE3): lines away from the cursor have their markup
-    /// hidden and styled; the cursor's line, and every line a selection
-    /// touches, is drawn as written. No line numbers when live; as written,
-    /// they are back.
+    /// Live mode (steps LE3, LR1): markup is hidden and styled except in
+    /// the element the cursor is in (here `**bold**`, the cursor in its
+    /// fourth column) and those a selection touches. No line numbers when
+    /// live; as written, they are back.
     #[test]
     fn live_mode_styles_lines_away_from_the_cursor() {
         let mut clip = Clipboard::default();
@@ -1457,15 +1479,13 @@ mod tests {
         // The cursor on the second line: it is drawn as written.
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[2], "**bold** and [[Note|alias]]");
+        assert_eq!(rows(&grid)[2], "**bold** and alias");
         assert_eq!(rows(&grid)[1], format!("{icon}Title"));
-        // A selection from there into the first line: both as written.
+        // A selection from there into the first line: the heading and the
+        // bold text as written, the link it does not reach styled.
         ed.key(Key::ShiftUp, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(
-            rows(&grid)[1..4],
-            ["# Title", "**bold** and [[Note|alias]]", "last"]
-        );
+        assert_eq!(rows(&grid)[1..4], ["# Title", "**bold** and alias", "last"]);
         // Not live: everything as written.
         let grid = drawn(&mut ed, &mut View::default(), 40, 5);
         assert_eq!(rows(&grid)[3], "3 last");
@@ -1510,7 +1530,17 @@ mod tests {
                 ed.key(key, &mut clip);
             }
             let grid = drawn(&mut ed, &mut View::live(), width, height);
-            prop_assert!(cursor_cell(&grid).is_some());
+            // The cursor: underlined cells in the default color, on one
+            // row (a link is underlined too, but cyan).
+            let cursor: Vec<(u16, u16)> = (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let style = grid.cell(x, y).unwrap().style();
+                    style.mods.contains(Mods::UNDERLINED) && style.fg == Color::Default
+                })
+                .collect();
+            prop_assert!(!cursor.is_empty());
+            prop_assert!(cursor.iter().all(|&(_, y)| y == cursor[0].1));
             for y in 0..height {
                 for x in 0..width {
                     let symbol = grid.cell(x, y).unwrap().symbol();
@@ -1520,9 +1550,9 @@ mod tests {
         }
     }
 
-    /// Live mode (step LE5): a click on a styled line lands on the
+    /// Live mode (steps LE5, LR1): a click on a styled line lands on the
     /// grapheme drawn under it, and a heading's icon on the heading's
-    /// start; the clicked line is then drawn as written.
+    /// start; a click beside an element leaves it styled.
     #[test]
     fn live_clicks_land_on_what_is_drawn() {
         let mut clip = Clipboard::default();
@@ -1545,8 +1575,44 @@ mod tests {
         ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
         assert_eq!(ed.cursor(), 17);
         let grid = drawn(&mut ed, &mut view, 40, 6);
+        assert_eq!(rows(&grid)[2], "bold word");
+        assert_eq!(cursor_cell(&grid), Some((5, 2)));
+        // On `bold`: that element is drawn as written.
+        ed.mouse(MouseEvent::Press, Some(10), std::time::Instant::now());
+        let grid = drawn(&mut ed, &mut view, 40, 6);
         assert_eq!(rows(&grid)[2], "**bold** word");
-        assert_eq!(cursor_cell(&grid), Some((9, 2)));
+    }
+
+    /// Reveal by word (step LR1): the cursor just after `**b**` shows it as
+    /// written; a space typed there styles it again. On a heading's line
+    /// its `#` shows; a list marker shows only when the cursor touches it.
+    #[test]
+    fn live_reveals_only_the_element_under_the_cursor() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("").unwrap();
+        let mut view = View::live();
+        for c in "a **b**".chars() {
+            ed.key(Key::Char(c), &mut clip);
+        }
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "a **b**");
+        ed.key(Key::Char(' '), &mut clip);
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "a b");
+        // A heading, a list item: the cursor at the item's text.
+        let mut ed = Editor::new("## Head\n- item").unwrap();
+        for key in [Key::Down, Key::End] {
+            ed.key(key, &mut clip);
+        }
+        let (icon, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H2);
+        let grid = drawn(&mut ed, &mut view, 30, 4);
+        assert_eq!(rows(&grid)[1..3], [format!("{icon}Head"), "• item".into()]);
+        ed.key(Key::Up, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 4);
+        assert_eq!(rows(&grid)[1..3], ["## Head", "• item"]);
+        // The cursor at the marker: `-` shows.
+        for key in [Key::Down, Key::Home] {
+            ed.key(key, &mut clip);
+        }
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "- item");
     }
 
     /// Crystal's clipboard in live mode (step LE5): copying takes the

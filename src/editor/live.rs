@@ -60,12 +60,24 @@ struct Frame {
 /// A task box, dimmed as in the viewer.
 const TASK: Style = Style::PLAIN.mods(Mods::DIM);
 
-/// The runs of `text`: in order, without gaps or overlaps, from 0 to
-/// `text.len()`, each non-empty and on char boundaries.
-pub fn runs(text: &str) -> Vec<Run> {
+/// A note's text as live mode sees it.
+pub struct Parsed {
+    /// In order, without gaps or overlaps, from 0 to the text's end, each
+    /// non-empty and on char boundaries.
+    pub runs: Vec<Run>,
+    /// Each element the cursor reveals (step LR1), by start: an inline
+    /// tag, inline code, a heading, a fenced code block, a list marker, a
+    /// quote's `>` or a rule, without a final line break. Every byte not
+    /// shown as written lies in one.
+    pub elements: Vec<Range<usize>>,
+}
+
+/// Parses `text` into its runs and elements.
+pub fn parse(text: &str) -> Parsed {
     let mut out = Runs {
         text,
         runs: Vec::new(),
+        elements: Vec::new(),
         pos: 0,
     };
     let top = Frame {
@@ -83,6 +95,20 @@ pub fn runs(text: &str) -> Vec<Run> {
             Event::Start(tag) => {
                 out.gap(range.start, frame);
                 let mut inner = frame;
+                if !frame.raw
+                    && matches!(
+                        tag,
+                        Tag::Emphasis
+                            | Tag::Strong
+                            | Tag::Strikethrough
+                            | Tag::Link { .. }
+                            | Tag::Image { .. }
+                            | Tag::Heading { .. }
+                            | Tag::CodeBlock(CodeBlockKind::Fenced(_))
+                    )
+                {
+                    out.element(range.clone());
+                }
                 match tag {
                     _ if frame.raw => {}
                     Tag::Emphasis => inner.style = add(frame.style, Mods::ITALIC),
@@ -98,6 +124,7 @@ pub fn runs(text: &str) -> Vec<Run> {
                     Tag::CodeBlock(_) => inner.style = CODE,
                     Tag::BlockQuote(_) => inner.quote = true,
                     Tag::Item if text[range.start..].starts_with(['-', '*', '+']) => {
+                        out.element(range.start..range.start + 1);
                         out.push(range.start..range.start + 1, Show::Fixed("•"), Style::PLAIN);
                     }
                     Tag::Table(_) => {
@@ -143,6 +170,7 @@ pub fn runs(text: &str) -> Vec<Run> {
             }
             Event::Code(_) if !frame.raw => {
                 out.gap(range.start, frame);
+                out.element(range.clone());
                 // The backticks around inline code are hidden.
                 let inner = text[range.clone()].trim_matches('`');
                 let start = range.start + (text[range.clone()].len() - inner.len()) / 2;
@@ -158,6 +186,7 @@ pub fn runs(text: &str) -> Vec<Run> {
                 out.gap(range.start, frame);
                 // The line break after it stays shown.
                 let end = range.start + text[range].trim_end_matches(['\n', '\r']).len();
+                out.element(out.pos..end);
                 out.push(out.pos..end, Show::Fixed(DASHES), QUOTE_BAR);
             }
             Event::TaskListMarker(_) if !frame.raw => {
@@ -172,7 +201,11 @@ pub fn runs(text: &str) -> Vec<Run> {
         }
     }
     out.push(out.pos..text.len(), Show::Text, Style::PLAIN);
-    out.runs
+    out.elements.sort_by_key(|range| range.start);
+    Parsed {
+        runs: out.runs,
+        elements: out.elements,
+    }
 }
 
 fn add(style: Style, mods: Mods) -> Style {
@@ -185,14 +218,26 @@ fn code(outer: Style) -> Style {
     CODE.mods(outer.mods)
 }
 
-/// The runs built so far, up to `pos`.
+/// The runs built so far, up to `pos`, and the elements found.
 struct Runs<'a> {
     text: &'a str,
     runs: Vec<Run>,
+    elements: Vec<Range<usize>>,
     pos: usize,
 }
 
 impl Runs<'_> {
+    /// Records an element, without its final line break.
+    fn element(&mut self, range: Range<usize>) {
+        let end = range.start
+            + self.text[range.clone()]
+                .trim_end_matches(['\n', '\r'])
+                .len();
+        if range.start < end {
+            self.elements.push(range.start..end);
+        }
+    }
+
     /// Adds `range` (its part past `pos`), joined to the last run when
     /// drawn alike.
     fn push(&mut self, range: Range<usize>, show: Show, style: Style) {
@@ -245,6 +290,7 @@ impl Runs<'_> {
             let start = self.pos;
             for (i, _) in self.text[start..end.max(start)].match_indices('>') {
                 self.push(self.pos..start + i, Show::Text, Style::PLAIN);
+                self.element(start + i..start + i + 1);
                 self.push(start + i..start + i + 1, Show::Fixed("│"), QUOTE_BAR);
             }
             self.push(self.pos..end, Show::Text, Style::PLAIN);
@@ -259,6 +305,10 @@ mod tests {
     use super::*;
     use crate::ui::grid::Color;
     use proptest::prelude::*;
+
+    fn runs(text: &str) -> Vec<Run> {
+        parse(text).runs
+    }
 
     /// The text as live mode shows it: hidden bytes left out, fixed
     /// strings in place.
@@ -390,6 +440,20 @@ mod tests {
                 at = run.range.end;
             }
             prop_assert_eq!(at, text.len());
+        }
+
+        /// Any text: every byte not shown as written lies in an element,
+        /// so a cursor there reveals it (step LR1).
+        #[test]
+        fn hidden_bytes_lie_in_elements(text in "([*_`#\\[\\]()|>~!\\\\ a\n\r-]|é|日){0,80}") {
+            let parsed = parse(&text);
+            // Per byte: two elements' hidden markup can make one run.
+            for run in parsed.runs.iter().filter(|run| run.show != Show::Text) {
+                for at in run.range.clone() {
+                    let inside = parsed.elements.iter().any(|e| e.contains(&at));
+                    prop_assert!(inside, "{} outside {:?}", at, parsed.elements);
+                }
+            }
         }
     }
 }
