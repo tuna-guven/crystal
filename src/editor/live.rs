@@ -23,7 +23,7 @@ pub mod layout;
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 
 use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, heading_mark};
 use crate::ui::grid::{Mods, Style};
@@ -57,7 +57,7 @@ struct Frame {
     raw: bool,
 }
 
-/// A task box, dimmed as in the viewer.
+/// A task box or a list's number, dimmed as in the viewer.
 const TASK: Style = Style::PLAIN.mods(Mods::DIM);
 
 /// A note's text as live mode sees it.
@@ -66,9 +66,10 @@ pub struct Parsed {
     /// non-empty and on char boundaries.
     pub runs: Vec<Run>,
     /// Each element the cursor reveals (step LR1), by start: an inline
-    /// tag, inline code, a heading, a fenced code block or a rule, without
-    /// a final line break. Every byte the runs do not show as written lies
-    /// in one; a line's leading markup is the layout's.
+    /// tag, inline code, a fenced code block, a rule, or a heading's
+    /// closing markup, without a final line break. Every byte the runs do
+    /// not show as written lies in one, or in a line's leading markup
+    /// (the layout's).
     pub elements: Vec<Range<usize>>,
     /// Each line indented as in the viewer (steps LI1, LI2).
     pub layout: layout::Layout,
@@ -104,7 +105,6 @@ pub fn parse(text: &str) -> Parsed {
                             | Tag::Strikethrough
                             | Tag::Link { .. }
                             | Tag::Image { .. }
-                            | Tag::Heading { .. }
                             | Tag::CodeBlock(CodeBlockKind::Fenced(_))
                     )
                 {
@@ -119,6 +119,17 @@ pub fn parse(text: &str) -> Parsed {
                     Tag::Image { .. } => inner.style = add(frame.style, Mods::DIM),
                     Tag::Heading { level, .. } => inner.style = heading_mark(level).1,
                     Tag::CodeBlock(_) => inner.style = CODE,
+                    // A numbered item's number, dimmed as in the viewer.
+                    Tag::Item => {
+                        let digits = text[range.start..]
+                            .bytes()
+                            .take_while(u8::is_ascii_digit)
+                            .count();
+                        let mark = text.as_bytes().get(range.start + digits);
+                        if digits > 0 && matches!(mark, Some(b'.' | b')')) {
+                            out.push(range.start..range.start + digits + 1, Show::Text, TASK);
+                        }
+                    }
                     Tag::Table(_) => {
                         inner = Frame {
                             style: Style::PLAIN,
@@ -136,14 +147,23 @@ pub fn parse(text: &str) -> Parsed {
                             | Tag::Strikethrough
                             | Tag::Link { .. }
                             | Tag::Image { .. }
-                            | Tag::Heading { .. }
                             | Tag::CodeBlock(CodeBlockKind::Fenced(_))
                     );
                 stack.push(inner);
             }
-            Event::End(_) => {
-                // The closing markup belongs to the tag.
-                out.gap(range.end, frame);
+            Event::End(tag) => {
+                // The closing markup belongs to the tag. A heading is no
+                // element: it stays styled while the cursor is in its
+                // text, and its leading `#`s are the line's markup (the
+                // layout's); only closing `#`s or a Setext underline are
+                // hidden here, as an element of their own.
+                let start = out.pos;
+                if matches!(tag, TagEnd::Heading(_)) && !frame.raw {
+                    out.hide(start..range.end);
+                    out.element(start..range.end);
+                } else {
+                    out.gap(range.end, frame);
+                }
                 stack.pop();
             }
             Event::Code(_) if !frame.raw => {
@@ -334,16 +354,17 @@ mod tests {
 
     #[test]
     fn headings_get_the_viewers_style() {
-        // The `#`s are hidden; the icon is the layout's (step LI2).
+        // The leading `#`s are the line's markup, the icon the layout's
+        // (step LI2): the runs show them.
         let text = "## Title\nbody";
         let style = heading_mark(pulldown_cmark::HeadingLevel::H2).1;
-        assert_eq!(shown(text), "Title\nbody");
+        assert_eq!(shown(text), "## Title\nbody");
         assert_eq!(style_of(text, "Title"), style);
         assert_eq!(style.fg, Color::Green);
         assert_eq!(style_of(text, "body"), Style::PLAIN);
         // Closing `#`s hidden; a Setext heading keeps its line break and
         // hides its underline.
-        assert_eq!(shown("# A ##"), "A");
+        assert_eq!(shown("# A ##"), "# A");
         assert_eq!(shown("Title\n==="), "Title\n");
     }
 
@@ -369,6 +390,9 @@ mod tests {
         // markup: the layout's (steps LI1, LI2).
         let text = "- item\n+ [ ] task";
         assert_eq!(style_of(text, "[ ]"), TASK);
+        // A list's number, dimmed as in the viewer.
+        assert_eq!(style_of("12) twelve", "12)"), TASK);
+        assert_eq!(style_of("12) twelve", "twelve"), Style::PLAIN);
         assert_eq!(style_of(text, "item"), Style::PLAIN);
         assert_eq!(shown("> a > b"), "> a > b");
         // A fenced code block: fences hidden, rows kept, text gray.
@@ -410,10 +434,12 @@ mod tests {
         #[test]
         fn hidden_bytes_lie_in_elements(text in "([*_`#\\[\\]()|>~!\\\\ a\n\r-]|é|日){0,80}") {
             let parsed = parse(&text);
-            // Per byte: two elements' hidden markup can make one run.
+            // Per byte: two elements' hidden markup can make one run. A
+            // heading's `#`s are its line's markup, which the view reveals.
             for run in parsed.runs.iter().filter(|run| run.show != Show::Text) {
                 for at in run.range.clone() {
-                    let inside = parsed.elements.iter().any(|e| e.contains(&at));
+                    let inside = parsed.elements.iter().any(|e| e.contains(&at))
+                        || parsed.layout.lines.iter().any(|l| l.markup.contains(&at));
                     prop_assert!(inside, "{} outside {:?}", at, parsed.elements);
                 }
             }

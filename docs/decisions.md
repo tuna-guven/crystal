@@ -462,13 +462,16 @@ hidden and its text styled as in the viewer, without line numbers.
 Each line is indented as the viewer indents it (sections under their
 heading, quote bars, list markers with wrapped rows hanging, heading
 icons, code blocks as a gray box), the viewer's prefix standing in for
-the line's own leading markup; a test compares the columns with the
+the line's own leading markup, after the viewer's blank 2-column
+gutter, its markers dimmed; a test compares the columns with the
 viewer's. Rows stay the note's lines: blank lines are the note's own,
 fences are the box's top and bottom rows, tables stay as written, and
 rows wrap by character. Drawn as written are only the elements the
-cursor is in or beside (an inline tag, inline code, a heading's line,
-a fenced code block, a rule), a line's leading markup while the cursor
-is in it, and whatever the selection touches. The text, keys, undo and
+cursor is in or beside (an inline tag, inline code, a fenced code
+block, a rule, a heading's closing `#`s), a line's leading markup while
+the cursor is in it, and whatever the selection touches; a heading
+keeps its icon and color while the cursor is in its text, so typing in
+it stays in its style. The text, keys, undo and
 Crystal's clipboard are the plain editor's, so copying and saving keep
 the Markdown as written. Every grapheme drawn is the note's own,
 through the same checks as below, or a fixed string (an icon, `•`,

@@ -39,8 +39,10 @@ const TITLE: Style = Style::PLAIN.mods(Mods::BOLD);
 const HINT: Style = Style::PLAIN.mods(Mods::DIM);
 const NOTICE: Style = Style::PLAIN.fg(Color::Yellow);
 const SELECTED: Style = Style::PLAIN.mods(Mods::REVERSED);
-/// Columns left of the note: a heading's marker and a space.
-const GUTTER: u16 = 2;
+/// Columns left of the note: a heading's marker and a space. The
+/// editor's live mode leaves the same columns, so lines start where the
+/// viewer draws them.
+pub const GUTTER: u16 = 2;
 /// A heading's marker in the gutter, shown only while the mouse is over
 /// it: `v` for an open section, `>` for a folded one; a click folds or
 /// unfolds it. Bold orange (256-color 208), to find at a glance

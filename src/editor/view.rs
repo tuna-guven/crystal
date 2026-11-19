@@ -62,6 +62,7 @@ use super::live::{self, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
 use crate::model::lines;
 use crate::notes::Notes;
+use crate::pager::GUTTER;
 use crate::ui::grid::{
     Color, Grid, MAX_CELL_BYTES, Mods, Style, display_width, grapheme_width, hides_something,
     is_forbidden,
@@ -474,8 +475,15 @@ impl View {
         // The gutter: the last number's digits and a space.
         let digits = lines::count(text).max(1).ilog10() + 1;
         let gutter = u16::try_from(digits).unwrap_or(u16::MAX).saturating_add(1);
-        // Live mode shows no line numbers, as the viewer.
-        let gutter = if !live && body.width >= gutter.saturating_add(MIN_TEXT) {
+        // Live mode shows no line numbers: it leaves the viewer's blank
+        // gutter, so lines start in the viewer's columns.
+        let gutter = if live {
+            if body.width >= GUTTER.saturating_add(MIN_TEXT) {
+                GUTTER
+            } else {
+                0
+            }
+        } else if body.width >= gutter.saturating_add(MIN_TEXT) {
             gutter
         } else {
             0
@@ -500,7 +508,7 @@ impl View {
             let line = text[row_start..].split_inclusive('\n').next().unwrap_or("");
             if starts_line && !lines::is_blank(line) {
                 number += 1;
-                if gutter > 0 {
+                if gutter > 0 && !live {
                     let shown = format!("{number:>width$}", width = gutter as usize - 1);
                     grid.put_str(body.x, y, &shown, HINT, gutter - 1);
                 }
@@ -1601,30 +1609,35 @@ mod tests {
         assert_eq!(
             rows(&grid)[1..4],
             [
-                format!("{icon}Title"),
-                "  bold and alias".into(),
-                "  last".into()
+                format!("  {icon}Title"),
+                "    bold and alias".into(),
+                "    last".into()
             ]
         );
-        assert_eq!(style_at(&grid, 2, 1), heading, "the heading's T");
-        assert!(style_at(&grid, 2, 2).mods.contains(Mods::BOLD), "b");
+        assert_eq!(style_at(&grid, 4, 1), heading, "the heading's T");
+        assert!(style_at(&grid, 4, 2).mods.contains(Mods::BOLD), "b");
         assert_eq!(
-            style_at(&grid, 11, 2),
+            style_at(&grid, 13, 2),
             crate::md::render::LINK,
             "a of alias"
         );
         // The cursor on the second line: it is drawn as written.
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
-        assert_eq!(rows(&grid)[2], "  **bold** and alias");
-        assert_eq!(rows(&grid)[1], format!("{icon}Title"));
-        // A selection from there into the first line: the heading and the
-        // bold text as written, the link it does not reach styled.
+        assert_eq!(rows(&grid)[2], "    **bold** and alias");
+        assert_eq!(rows(&grid)[1], format!("  {icon}Title"));
+        // A selection from there into the heading's text: the bold text
+        // as written; the heading stays styled (its `# ` is not selected),
+        // the link the selection does not reach too.
         ed.key(Key::ShiftUp, &mut clip);
         let grid = drawn(&mut ed, &mut View::live(), 40, 5);
         assert_eq!(
             rows(&grid)[1..4],
-            ["# Title", "  **bold** and alias", "  last"]
+            [
+                format!("  {icon}Title"),
+                "    **bold** and alias".into(),
+                "    last".into()
+            ]
         );
         // Not live: everything as written.
         let grid = drawn(&mut ed, &mut View::default(), 40, 5);
@@ -1702,30 +1715,34 @@ mod tests {
         }
         let mut view = View::live();
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "  bold word");
+        assert_eq!(rows(&grid)[2], "    bold word");
         let at = |view: &View, x, y| view.position_at(ed.text(), x, y, false);
-        // `w` of word, after the section's indent and `bold `.
-        assert_eq!(at(&view, 7, 2), Some(17));
+        // `w` of word, after the gutter, the section's indent and `bold `.
+        assert_eq!(at(&view, 9, 2), Some(17));
         // `b` of bold, past the hidden `**`.
-        assert_eq!(at(&view, 2, 2), Some(10));
-        // Both cells of the icon: its first letter, past the hidden `# `.
+        assert_eq!(at(&view, 4, 2), Some(10));
+        // The gutter and both cells of the icon: its first letter, past
+        // the hidden `# `.
         assert_eq!(at(&view, 0, 1), Some(2));
-        assert_eq!(at(&view, 1, 1), Some(2));
-        assert_eq!(at(&view, 3, 1), Some(3));
+        assert_eq!(at(&view, 2, 1), Some(2));
+        assert_eq!(at(&view, 3, 1), Some(2));
+        assert_eq!(at(&view, 5, 1), Some(3));
         ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
         assert_eq!(ed.cursor(), 17);
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "  bold word");
-        assert_eq!(cursor_cell(&grid), Some((7, 2)));
+        assert_eq!(rows(&grid)[2], "    bold word");
+        assert_eq!(cursor_cell(&grid), Some((9, 2)));
         // On `bold`: that element is drawn as written.
         ed.mouse(MouseEvent::Press, Some(10), std::time::Instant::now());
         let grid = drawn(&mut ed, &mut view, 40, 6);
-        assert_eq!(rows(&grid)[2], "  **bold** word");
+        assert_eq!(rows(&grid)[2], "    **bold** word");
     }
 
     /// Reveal by word (step LR1): the cursor just after `**b**` shows it as
-    /// written; a space typed there styles it again. On a heading's line
-    /// its `#` shows; a list marker shows only when the cursor touches it.
+    /// written; a space typed there styles it again. A heading stays
+    /// styled while the cursor is in its text; its `## ` shows only while
+    /// the cursor is in it, and its text stays green then too. A list
+    /// marker shows when the cursor is on it.
     #[test]
     fn live_reveals_only_the_element_under_the_cursor() {
         let mut clip = Clipboard::default();
@@ -1734,29 +1751,45 @@ mod tests {
         for c in "a **b**".chars() {
             ed.key(Key::Char(c), &mut clip);
         }
-        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "a **b**");
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "  a **b**");
         ed.key(Key::Char(' '), &mut clip);
-        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "a b");
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[1], "  a b");
         // A heading, a list item: the cursor at the item's text.
         let mut ed = Editor::new("## Head\n- item").unwrap();
         for key in [Key::Down, Key::End] {
             ed.key(key, &mut clip);
         }
-        let (icon, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H2);
+        let (icon, green) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H2);
         let grid = drawn(&mut ed, &mut view, 30, 4);
-        // As in the viewer: the heading 2 columns in, its section 4.
+        // As in the viewer: the gutter, the heading 2 columns in, its
+        // section 4.
         assert_eq!(
             rows(&grid)[1..3],
-            [format!("  {icon}Head"), "    • item".into()]
+            [format!("    {icon}Head"), "      • item".into()]
         );
+        // In the heading's text: still styled.
         ed.key(Key::Up, &mut clip);
         let grid = drawn(&mut ed, &mut view, 30, 4);
-        assert_eq!(rows(&grid)[1..3], ["  ## Head", "    • item"]);
+        assert_eq!(rows(&grid)[1], format!("    {icon}Head"));
+        assert_eq!(style_at(&grid, 6, 1), green, "H");
+        // In its `## `: shown as written, the text still green.
+        ed.key(Key::Home, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 4);
+        assert_eq!(rows(&grid)[1], "    ## Head");
+        assert_eq!(style_at(&grid, 7, 1), green, "H");
         // The cursor at the marker: `-` shows.
         for key in [Key::Down, Key::Home] {
             ed.key(key, &mut clip);
         }
-        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "    - item");
+        assert_eq!(rows(&drawn(&mut ed, &mut view, 30, 4))[2], "      - item");
+        // Typing a heading: green as it is typed, its `## ` hidden.
+        let mut ed = Editor::new("").unwrap();
+        for c in "## Sub".chars() {
+            ed.key(Key::Char(c), &mut clip);
+        }
+        let grid = drawn(&mut ed, &mut view, 30, 4);
+        assert_eq!(rows(&grid)[1], format!("    {icon}Sub"));
+        assert_eq!(style_at(&grid, 6, 1), green, "S");
     }
 
     /// Crystal's clipboard in live mode (step LE5): copying takes the
@@ -1795,7 +1828,7 @@ mod tests {
         let grid = drawn(&mut ed, &mut view, 40, 4);
         let shown = rows(&grid);
         assert!(shown[0].ends_with(" live"));
-        assert_eq!(shown[1], "b", "no line numbers when live");
+        assert_eq!(shown[1], "  b", "no line numbers when live: a blank gutter");
         ed.key(Key::Char('x'), &mut clip);
         let grid = drawn(&mut ed, &mut view, 40, 4);
         let shown = rows(&grid);
@@ -1833,6 +1866,7 @@ mod tests {
             ]
         );
         assert_eq!(style_at(&grid, 0, 2), crate::md::render::QUOTE_BAR);
+        assert!(style_at(&grid, 0, 3).mods.contains(Mods::DIM), "• dimmed");
         // The box: columns 0 to 7 of the fences' and code's rows.
         for y in 5..=8 {
             for x in 0..8 {
@@ -1891,7 +1925,8 @@ mod tests {
         ed.key(Key::End, &mut clip);
         let live = drawn(&mut ed, &mut View::live(), 61, 40);
         for word in words {
-            let seen = find(&viewer, word).map(|(x, _)| x);
+            // The page drawn alone: the pager puts its gutter left of it.
+            let seen = find(&viewer, word).map(|(x, _)| x + GUTTER);
             let shown = find(&live, word).map(|(x, _)| x);
             assert!(seen.is_some(), "{word} not in the viewer");
             assert_eq!(shown, seen, "{word}");

@@ -24,7 +24,7 @@ use std::ops::Range;
 use pulldown_cmark::{Event, Tag, TagEnd};
 
 use crate::md::render::{CODE, QUOTE_BAR, heading_mark};
-use crate::ui::grid::{Style, display_width};
+use crate::ui::grid::{Mods, Style, display_width};
 
 /// Containers deeper than this indent no more, as in the viewer.
 const MAX_LEVELS: usize = 8;
@@ -167,7 +167,8 @@ impl<'a> Builder<'a> {
             Tag::Item => {
                 let numbered = matches!(self.containers.last(), Some(Container::List(true)));
                 self.containers.push(Container::Item {
-                    marker: (!numbered).then_some(("• ", Style::PLAIN)),
+                    // Dimmed, as the viewer's.
+                    marker: (!numbered).then_some(("• ", Style::PLAIN.mods(Mods::DIM))),
                     number: at,
                     width: 2,
                     shown: false,
