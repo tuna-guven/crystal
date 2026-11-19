@@ -542,25 +542,22 @@ New transitive crates (`hybrid-array`, `ctutils`, `cmov`) were approved.
 The next upgrade follows the same rule: exact pins, and the vectors and
 stored files decide.
 
-## 0052 The viewer has a keyboard cursor and folds sections {#0052}
+## 0052 The viewer folds sections {#0052}
 
 *2026-11-14.* Headings get an icon and a color per level (`◉ ○ ● ✿ ◆ ◇`),
-with their sections indented. A read-only cursor, marked in the gutter
-([0053](#0053)), moves with j/k and the arrows ([0055](#0055)), Space
-and PgDn/PgUp by a screen, g/G to the ends. Tab on a heading folds its
-section up to the next peer (marked ` …`) or unfolds it; folds nest, a
-link or jump inside a fold opens it, and folds are never saved. n and N
-select links. There is no mouse: capturing it takes plain drag-selection
-from the terminal, the only way text leaves Crystal ([0041](#0041)), and
-adds a parser for mouse reports and a mode to undo on every exit.
+with their sections indented. A heading's section folds up to the next
+peer (marked ` …`) or unfolds again; folds nest, a link or jump inside a
+fold opens it, and folds are never saved. n and N select links. How a
+section is folded, and how the viewer moves, is in [0076](#0076), which
+replaced the keyboard cursor and the viewer without a mouse.
 
-## 0053 The viewer has a gutter for the cursor; y copies a line {#0053}
+## 0053 The viewer has a gutter; y copies a line {#0053}
 
-*2026-11-15.* A gutter left of the viewer's text shows the cursor's `>`
-([0057](#0057)); the cell colors stay as rendered. A line break in a note
-stays a line break, as in Obsidian's reading view, so every line starts a
-row. `y` copies the cursor's line as written into Crystal's clipboard,
-`Y` the whole note. Numbering rendered rows was rejected: the numbers
+*2026-11-15.* A gutter left of the viewer's text holds the headings'
+markers ([0057](#0057), [0076](#0076)); the cell colors stay as rendered.
+A line break in a note stays a line break, as in Obsidian's reading
+view, so every line starts a row. `y` copies a note line as written into
+Crystal's clipboard (which one: [0076](#0076)), `Y` the whole note. Numbering rendered rows was rejected: the numbers
 would change with the window and match nothing in the editor.
 
 ## 0054 Web and mail links are clickable (OSC 8), without their address {#0054}
@@ -584,13 +581,11 @@ link from an untrusted note can name another site than its target.
 module (`model::lines`) for the viewer, `y` and the editor, which shows
 them in a gutter (dim numbers, none on blank or wrapped rows, dropped
 below 20 columns); which lines count, and the viewer's gutter, are in
-[0057](#0057). In the viewer, j/k and the arrows, and so the mouse
-wheel, go from one numbered line to the next, showing a wrapped line
-whole. A table wider
+[0057](#0057). A table wider
 than the screen stays boxed: columns that fit their share keep their
 width, the wider ones split the rest, each cell wraps inside its column;
-only below 3 columns a cell is it drawn unboxed. Mouse clicks moving the
-cursor were declined again ([0052](#0052)).
+only below 3 columns a cell is it drawn unboxed. How the viewer moves is
+in [0076](#0076).
 
 ## 0056 One page for the decision log, one paragraph per decision {#0056}
 
@@ -605,19 +600,15 @@ consequences each record spelled out.
 
 ## 0057 The viewer shows no line numbers; fences and `|---|` lines are not counted {#0057}
 
-*2026-11-15.* The viewer's gutter is two columns, the cursor's bold
-orange `>` and a blank before the text; it shows no line numbers. j/k
-still go from one numbered line to the next ([0055](#0055)), and `y`
-copies the line by its number, so the numbers decide where the cursor
-stops without being drawn. The editor keeps its numbers. Besides blank
+*2026-11-15.* The viewer's gutter is two columns, a heading's marker
+([0076](#0076)) and a blank before the text; it shows no line numbers,
+though `y` copies a line by its number. The editor keeps its numbers. Besides blank
 lines, a code fence (three or more `` ` `` or `~`, after indentation, `>`
 and list markers such as `-` or `1.`; a backtick fence holds no other
 backtick) and a table's `|---|` line (only `|`, `-`, `:` and blanks, with
 a `|` and a `-`) get no number and are not counted, in the viewer and the
 editor alike: the viewer draws no row for them, so their numbers left
-gaps, and j skips the border under a table's header. Past the last
-numbered line j keeps the cursor and only scrolls the rows after it into
-view; k does the same before the first. Drawing the fences as dim rows,
+gaps. Drawing the fences as dim rows,
 and numbering the border under the header, were dropped for this.
 
 ## 0058 A vault is opened with `crystal unlock NAME` {#0058}
@@ -916,9 +907,9 @@ the wheel moves the cursor three lines. Any other button, a held modifier and a 
 that does not parse are dropped; a report inside a bracketed paste is
 pasted text ([0047](#0047)). Reports carry a button and a cell, never
 note text, and no note text enters the sequences that turn the mode on
-and off. The mode is off everywhere else: in the Ctrl+E preview and the
-viewer (the wheel still arrives as arrows and Ctrl+click still opens
-links, [0054](#0054)), the shell, the lock screen and every prompt,
+and off. The viewer and the Ctrl+E preview take the mouse their own way
+([0076](#0076)); the mode is off everywhere else: the shell, the lock
+screen and every prompt,
 which also discard pending input, so a late report cannot reach a
 passphrase; leaving the screen, a panic and a fatal signal turn it off.
 After `kill -9` it stays on in the terminal until `reset`, as bracketed
@@ -931,7 +922,7 @@ at the user's request: about 340 lines of code, comments included, and
 benefit. Rejected: scrolling while
 dragging past the screen's edge (Shift+arrows extend the selection),
 dragging word by word after a double click, Shift+click (VTE keeps it),
-and the mouse outside the editor.
+and the mouse in the shell or at prompts.
 
 ## 0074 Prompts skip escape sequences; only Esc alone cancels {#0074}
 
@@ -991,3 +982,32 @@ Accepted at the user's request, for no security benefit. Rejected:
 vault-wide `[[##` and `[[^^`; rewriting headings with link characters;
 keeping the new id unsaved until Ctrl+S (it needs a save of two notes
 at once, a change to the save path).
+
+## 0076 The viewer takes the mouse: links by click, heading markers, no cursor {#0076}
+
+*2026-11-19.* While the viewer or the editor's Ctrl+E preview shows,
+Crystal asks the terminal for mouse reports with every movement (mode
+1003, with 1006, SGR coordinates; the editor keeps 1002, [0073](#0073)).
+A left click on an internal link follows it, to its note, heading or
+`^block`, as n/N and Enter do, and Backspace goes back; a broken link
+says why. A click on a web link only says to Ctrl+click it: opening one
+stays the terminal's ([0054](#0054)), since Crystal opening it would
+mean starting a process. Each heading that opens a section has a gray
+`>` in the gutter, bold while the mouse is over it; a click on it folds
+or unfolds the section ([0052](#0052)). The keyboard cursor and its
+orange `>` are gone: j/k and the arrows scroll a row, the wheel three,
+Space and PgDn/PgUp a screen, g/G to the ends; `y` copies the first
+note line shown, Tab folds or unfolds the first heading shown (at or
+above the top row); n and N select links and scroll them into view,
+Enter follows the selected one. Reports carry a button and a cell, never
+note text; one with a modifier, another button, or that does not parse
+is dropped, and the mode is off at the shell, every prompt and the lock
+screen, and on exit, panic and fatal signal, as in [0073](#0073), every
+off sequence also ending mode 1003. The mouse moving with no button held
+is not activity: only keys, pastes, clicks and the wheel hold off
+auto-lock ([0048](#0048)), or a mouse moved over the window would keep
+the vault unlocked. Plain drag-selection no longer reaches the terminal
+in the viewer; Shift+drag selects, as in the editor ([0041](#0041)).
+Accepted at the user's request, for no security benefit: about 250 lines
+of code and 350 of tests. Rejected: Crystal opening web links; a double
+click to follow; keeping the keyboard cursor beside the mouse.
