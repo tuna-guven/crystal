@@ -19,6 +19,8 @@
 //! block is gray with its fences hidden (their rows stay, empty), an
 //! indented one is gray as written. A table is shown as written.
 
+mod layout;
+
 use std::ops::Range;
 
 use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag};
@@ -70,6 +72,10 @@ pub struct Parsed {
     /// quote's `>` or a rule, without a final line break. Every byte not
     /// shown as written lies in one.
     pub elements: Vec<Range<usize>>,
+    /// Each line indented as in the viewer (step LI1; drawn from LI2,
+    /// which removes the `expect`).
+    #[expect(dead_code)]
+    pub layout: layout::Layout,
 }
 
 /// Parses `text` into its runs and elements.
@@ -89,7 +95,9 @@ pub fn parse(text: &str) -> Parsed {
     let mut stack = vec![top];
     // The icon a heading's leading markup becomes.
     let mut icon = None;
+    let mut lines = layout::Builder::new(text);
     for (event, range) in Parser::new_ext(text, OPTIONS).into_offset_iter() {
+        lines.event(&event, &range);
         let frame = stack.last().copied().unwrap_or(top);
         match event {
             Event::Start(tag) => {
@@ -205,6 +213,7 @@ pub fn parse(text: &str) -> Parsed {
     Parsed {
         runs: out.runs,
         elements: out.elements,
+        layout: lines.finish(),
     }
 }
 
