@@ -464,9 +464,10 @@ heading, quote bars, list markers with wrapped rows hanging, heading
 icons, code blocks as a gray box), the viewer's prefix standing in for
 the line's own leading markup, after the viewer's blank 2-column
 gutter, its markers dimmed; a test compares the columns with the
-viewer's. Rows stay the note's lines: blank lines are the note's own,
-fences are the box's top and bottom rows, tables stay as written, and
-rows wrap by character. Drawn as written are only the elements the
+viewer's. A code block's fences, a Setext underline and blank lines
+the viewer drops (a second one in a row, any before the first block or
+after the last) get no row while the cursor is not on them; tables stay
+as written, and rows wrap by character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a fenced code
 block, a rule, a heading's closing `#`s), a line's leading markup while
 the cursor is in it, and whatever the selection touches; a heading

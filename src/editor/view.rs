@@ -176,6 +176,13 @@ struct Live {
     folds: Vec<Fold>,
     /// The links a click follows (step LF3), in order.
     links: Vec<Link>,
+    /// Whole lines not drawn while not edited, as the viewer gives them
+    /// no row (step LV1): fences, Setext underlines, a blank line after
+    /// another, before the first block or after the last. Sorted, each
+    /// from a line's start to the next line's.
+    skips: Vec<Range<usize>>,
+    /// The empty line after a final line break is not drawn either.
+    skip_end: bool,
 }
 
 /// What a mouse event in live mode was for (steps LF2, LF3).
@@ -243,6 +250,71 @@ impl Prefix<'_> {
                 .map(|(s, _)| display_width(s))
                 .sum::<usize>()
     }
+}
+
+/// The lines live mode does not draw (step LV1), as `Live::skips` and
+/// `Live::skip_end` say. One the cursor is on, the selection touches or
+/// a revealed element covers (a code block's fence while the cursor is
+/// in it) is drawn, so the cursor is never hidden.
+fn skipped(
+    layout: &Layout,
+    text: &str,
+    cursor: usize,
+    selection: &Range<usize>,
+    raw: &[Range<usize>],
+) -> (Vec<Range<usize>>, bool) {
+    let lines = &layout.lines;
+    // Line `i`: its start, its end (its line break), the next line's start.
+    let bounds = |i: usize| {
+        let start = lines[i].markup.start;
+        let next = lines.get(i + 1).map_or(text.len(), |l| l.markup.start);
+        let end = if next > start && i + 1 < lines.len() {
+            next - 1
+        } else {
+            next
+        };
+        (start, end, next)
+    };
+    let blank = |i: usize| {
+        let (start, end, _) = bounds(i);
+        lines[i].code.is_none() && text.get(start..end).is_some_and(|l| l.trim().is_empty())
+    };
+    let last_block = (0..lines.len())
+        .rev()
+        .find(|&i| !blank(i) && !lines[i].skip);
+    let mut skips = Vec::new();
+    let mut skip_end = false;
+    let mut seen = false;
+    let mut after_blank = false;
+    for (i, line) in lines.iter().enumerate() {
+        let (start, end, next) = bounds(i);
+        // The cursor on the line, or the selection over any of it.
+        let edited = (start..=end).contains(&cursor)
+            || (!selection.is_empty() && selection.start <= end && start < selection.end);
+        let skip = if line.skip {
+            !overlaps(raw, &(start..end.max(start + 1)))
+        } else if blank(i) {
+            // Only the first blank line between two blocks has a row.
+            let extra = !seen || after_blank || last_block.is_none_or(|last| i > last);
+            if !extra || edited {
+                after_blank = true;
+            }
+            extra
+        } else {
+            seen = true;
+            after_blank = false;
+            false
+        };
+        if skip && !edited {
+            if next > start {
+                skips.push(start..next);
+            } else {
+                // The empty line after a final line break.
+                skip_end = true;
+            }
+        }
+    }
+    (skips, skip_end)
 }
 
 /// Whether `range` overlaps one of the sorted, disjoint `ranges`.
@@ -335,6 +407,7 @@ impl Live {
             true
         });
         let raw = merged(raw);
+        let (skips, skip_end) = skipped(&parsed.layout, text, cursor, selection, &raw);
         // A link drawn as written is being edited: a click there places
         // the cursor.
         let links = parsed
@@ -349,7 +422,33 @@ impl Live {
             layout: parsed.layout,
             folds,
             links,
+            skips,
+            skip_end,
         }
+    }
+
+    /// Where the next row starts after a line break that ends at `at`:
+    /// past any folded section and skipped lines; `None` past the text.
+    fn next_row(&self, mut at: usize, len: usize) -> Option<usize> {
+        let mut skipped = false;
+        loop {
+            if let Some(end) = self.skip(at) {
+                at = end;
+            } else if let Some(range) = self.skips.iter().find(|r| r.start == at) {
+                at = range.end;
+            } else {
+                break;
+            }
+            skipped = true;
+        }
+        let gone = at >= len && (skipped || self.skip_end);
+        (!gone).then_some(at)
+    }
+
+    /// The skipped lines `at` is in, if any.
+    fn skipped_at(&self, at: usize) -> Option<&Range<usize>> {
+        let i = self.skips.partition_point(|r| r.end <= at);
+        self.skips.get(i).filter(|r| r.start <= at)
     }
 
     /// The link drawn at `at`, if any.
@@ -478,12 +577,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
         let at = start + i;
         if matches!(shape(grapheme), Shape::Break) {
             // A folded heading's row is followed by its section's end.
-            let next = at + grapheme.len();
-            let next = match live.skip(next) {
-                Some(end) if end >= text.len() => None,
-                Some(end) => Some(end),
-                None => Some(next),
-            };
+            let next = live.next_row(at + grapheme.len(), text.len());
             return Row {
                 range: start..at,
                 next,
@@ -519,6 +613,10 @@ fn line_start(text: &str, at: usize) -> usize {
 /// The start of the row the cursor at `at` is drawn on.
 fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
     // Inside a folded section: its heading's row.
+    // In skipped lines: the next row drawn (no row holds `at` itself).
+    if let Some(skip) = live.skipped_at(at) {
+        return live.next_row(skip.start, text.len()).unwrap_or(skip.start);
+    }
     let mut start = live
         .folded_heading(at)
         .unwrap_or_else(|| line_start(text, at));
@@ -965,7 +1063,14 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
         need -= last.len();
         // `line - 1` is the `\n` ending the line above (also inside `\r\n`).
         line = line_start(text, line - 1);
-        // A folded section's lines are its heading's row.
+        // Skipped lines have no row; a folded section's lines are its
+        // heading's.
+        while let Some(skip) = live.skipped_at(line) {
+            if skip.start == 0 {
+                return first;
+            }
+            line = line_start(text, skip.start - 1);
+        }
         if let Some(heading) = live.folded_heading(line) {
             line = heading;
         }
@@ -1912,7 +2017,8 @@ mod tests {
         /// character.
         #[test]
         fn live_mode_always_draws_the_cursor(
-            text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}){0,60}",
+            // Fences, blank-line runs and underlines too (step LV1).
+            text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}|```\n|\n\n|==\n){0,60}",
             width in 3u16..30,
             height in 3u16..8,
             moves in prop::collection::vec(0u8..5, 0..12),
@@ -2092,7 +2198,7 @@ mod tests {
 
     /// The viewer's layout in live mode (step LI2): a quote's bar on its
     /// wrapped rows too, a bullet, a code block as a gray box as wide as
-    /// its widest line plus a column each side (its fences gray rows), and
+    /// its widest line plus a column each side (its fences without a row), and
     /// a click on a prefix landing on the row's first character.
     #[test]
     fn live_lines_are_laid_out_as_in_the_viewer() {
@@ -2106,23 +2212,23 @@ mod tests {
         // 15 columns of text and the cursor's.
         let grid = drawn(&mut ed, &mut view, 16, 12);
         assert_eq!(
-            rows(&grid)[1..10],
+            rows(&grid)[1..9],
             [
                 "│ quote that wr",
                 "│ aps here",
                 "• item",
                 "",
-                "",
                 " code",
                 " longer",
-                "",
-                "end"
+                "end",
+                ""
             ]
         );
         assert_eq!(style_at(&grid, 0, 2), crate::md::render::QUOTE_BAR);
         assert!(style_at(&grid, 0, 3).mods.contains(Mods::DIM), "• dimmed");
-        // The box: columns 0 to 7 of the fences' and code's rows.
-        for y in 5..=8 {
+        // The box: columns 0 to 7 of the code's rows; its fences have no
+        // row while the cursor is not in the block (step LV1).
+        for y in 5..=6 {
             for x in 0..8 {
                 let bg = style_at(&grid, x, y).bg;
                 assert_eq!(bg, crate::md::render::CODE.bg, "({x}, {y})");
@@ -2376,5 +2482,44 @@ mod tests {
             view.mouse(ed.text(), MouseEvent::Press, 5, 1),
             Click::Editor
         );
+    }
+
+    /// Rows as in the viewer (step LV1): blank lines before the first
+    /// block, after another blank line or after the last block, a Setext
+    /// underline and a code block's fences get no row while not edited;
+    /// the fences come back while the cursor is in the block, a blank
+    /// line while the cursor is on it.
+    #[test]
+    fn live_skips_lines_the_viewer_has_no_row_for() {
+        let mut clip = Clipboard::default();
+        let (h1, _) = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1);
+        let text = "\n\nA\n\n\n\nB\n\nTitle\n=====\n\n```\ncode\n```\nend\n\n";
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.find("end").unwrap());
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 30, 12);
+        assert_eq!(
+            rows(&grid)[1..10],
+            [
+                "  A".to_owned(),
+                String::new(),
+                "  B".into(),
+                String::new(),
+                format!("  {h1}Title"),
+                String::new(),
+                "     code".into(),
+                "    end".into(),
+                String::new()
+            ]
+        );
+        // Up into the code block: its fences show.
+        ed.key(Key::Up, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 12);
+        let fences = rows(&grid).iter().filter(|r| r.trim() == "```").count();
+        assert_eq!(fences, 2);
+        // On the third blank line between A and B: it shows.
+        ed.jump_to(text.find("A").unwrap() + 3);
+        let grid = drawn(&mut ed, &mut view, 30, 12);
+        assert_eq!(rows(&grid)[1..5], ["  A", "", "", "  B"]);
     }
 }

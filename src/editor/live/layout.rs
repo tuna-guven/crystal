@@ -48,6 +48,9 @@ pub struct Line {
     pub rest: Range<u32>,
     /// The section's indent, kept when the markup is shown as written.
     pub section: u16,
+    /// A fence or a Setext heading's underline: the viewer gives it no
+    /// row, so live mode draws none while it is not edited (step LV1).
+    pub skip: bool,
     /// In a code block: its widest line, in columns, for the gray box.
     pub code: Option<u16>,
 }
@@ -102,6 +105,9 @@ pub struct Builder<'a> {
     /// Inside a fenced code block or a heading: a line without content
     /// (a fence, an underline) is hidden whole.
     hide_bare: bool,
+    /// Inside a heading: whether its text's line is laid out (a bare line
+    /// after it is a Setext underline).
+    heading: Option<bool>,
     /// The last prefix interned, to share it with the next line.
     last: Range<u32>,
     /// A prefix being built, kept to spare an allocation per line.
@@ -119,6 +125,7 @@ impl<'a> Builder<'a> {
             section: 0,
             code: None,
             hide_bare: false,
+            heading: None,
             last: 0..0,
             scratch: Vec::new(),
         }
@@ -185,6 +192,7 @@ impl<'a> Builder<'a> {
                     self.layout.headings.push((line, *level as u8));
                 }
                 self.hide_bare = true;
+                self.heading = Some(false);
                 self.containers.push(Container::Item {
                     marker: Some(heading_mark(*level)),
                     number: at,
@@ -202,6 +210,7 @@ impl<'a> Builder<'a> {
                 self.containers.pop();
             }
             TagEnd::Heading(level) => {
+                self.heading = None;
                 self.containers.pop();
                 self.hide_bare = false;
                 if self.containers.is_empty() {
@@ -279,7 +288,8 @@ impl<'a> Builder<'a> {
                     .trim_start_matches(|c| c == ' ' || c == '\t' || (quoted && c == '>'))
                     .len()
         };
-        self.push(start, start + markup, false);
+        let skip = self.hide_bare && (self.code.is_some() || self.heading == Some(true));
+        self.push(start, start + markup, false, skip);
     }
 
     /// Lays out the next line, whose content starts at `content`.
@@ -301,12 +311,15 @@ impl<'a> Builder<'a> {
                     u16::try_from(display_width(&self.text[*number..content])).unwrap_or(u16::MAX);
             }
         }
-        self.push(start, markup_end, true);
+        self.push(start, markup_end, true, false);
     }
 
     /// Adds the line starting at `start` with markup up to `markup_end`;
     /// `content` marks its item markers as shown.
-    fn push(&mut self, start: usize, markup_end: usize, content: bool) {
+    fn push(&mut self, start: usize, markup_end: usize, content: bool, skip: bool) {
+        if self.heading.is_some() {
+            self.heading = Some(true);
+        }
         self.prefix(content);
         let first = self.intern();
         self.prefix(false);
@@ -319,6 +332,7 @@ impl<'a> Builder<'a> {
             first,
             rest,
             section: self.section,
+            skip,
             code: None,
         });
         self.next = self.next_end + 1;
@@ -497,6 +511,9 @@ mod tests {
         );
         let layout = layout(text);
         let boxes: Vec<_> = layout.lines.iter().map(|l| l.code).collect();
+        // The fences have no row in the viewer (step LV1).
+        let skips: Vec<_> = layout.lines.iter().map(|l| l.skip).collect();
+        assert_eq!(skips, [false, false, true, false, false, true, false]);
         let w = Some(11);
         assert_eq!(boxes, [None, None, w, w, w, w, None]);
         // An indented block: its four spaces are markup.
