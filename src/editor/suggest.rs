@@ -56,15 +56,33 @@ pub struct BlocksFor {
     len: usize,
 }
 
-/// Shown when a block without an id is chosen, until roadmap steps J5
-/// and J6 give it one.
-const NO_ID: &str = "That paragraph has no ^id to link to yet.";
 /// No id could be drawn: the random source failed, or 8 were taken.
 const NO_NEW_ID: &str = "No new ^id could be made; nothing was changed.";
 /// `add_id` refused: the id would change how the note parses.
-const ID_REFUSED: &str = "An ^id there would change the note's Markdown; nothing was changed.";
+pub const ID_REFUSED: &str = "An ^id there would change the note's Markdown; nothing was changed.";
 /// The id and the link do not fit in a note.
-const ID_FULL: &str = "The note is at its size limit (8 MiB); nothing was changed.";
+pub const ID_FULL: &str = "The note is at its size limit (8 MiB); nothing was changed.";
+
+/// A new id for a block of another note, asked of the session
+/// (`EditorAction::LinkBlock`, decision 0075): it saves the id into that
+/// note, then calls `Editor::link_block`. Positions and the random id
+/// only, no note text.
+pub struct BlockRequest {
+    pub note: usize,
+    /// The block's text, a range of that note's saved body.
+    pub block: Range<usize>,
+    id: [u8; ID_LEN],
+    /// The text after `#^` in the edited text's link.
+    typed: Range<usize>,
+}
+
+impl BlockRequest {
+    /// The new id: ASCII from `ID_ALPHABET`, so never empty in practice;
+    /// `add_id` refuses an empty one.
+    pub fn id(&self) -> &str {
+        std::str::from_utf8(&self.id).unwrap_or("")
+    }
+}
 
 /// The characters of a new block id (decision 0075).
 const ID_ALPHABET: &[u8; 36] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -163,6 +181,7 @@ impl Editor {
     /// A key the list takes ends a typing run, clears the notice and
     /// disarms Ctrl+Q, like any key that is not typing.
     pub fn key_in(&mut self, key: Key, clipboard: &mut Clipboard, notes: &Notes) -> EditorAction {
+        self.block_request = None;
         let list_key = matches!(key, Key::Up | Key::Down | Key::Enter | Key::Tab | Key::Esc);
         if list_key && let Some(list) = &mut self.suggestions {
             // Cleared first: choosing can leave a notice.
@@ -175,7 +194,7 @@ impl Editor {
             self.quit_armed = false;
             self.last_press = None;
             self.buffer.commit();
-            return EditorAction::Stay;
+            return self.requested();
         }
         let typing = matches!(key, Key::Char(_) | Key::Backspace | Key::Delete);
         // Typing or deleting backwards inside a link cannot change the
@@ -210,13 +229,14 @@ impl Editor {
         entry: Option<usize>,
         now: Instant,
         notes: &Notes,
-    ) {
+    ) -> EditorAction {
+        self.block_request = None;
         let on_list = entry
             .zip(self.suggestions.as_mut())
             .filter(|(i, list)| *i < list.entries.len());
         let Some((entry, list)) = on_list else {
             self.mouse(event, at, now);
-            return;
+            return EditorAction::Stay;
         };
         // Cleared first: choosing can leave a notice.
         self.notice = None;
@@ -235,6 +255,21 @@ impl Editor {
         self.last_press = None;
         self.pressed = false;
         self.buffer.commit();
+        self.requested()
+    }
+
+    /// `LinkBlock` when choosing left a `BlockRequest` for the session.
+    fn requested(&self) -> EditorAction {
+        if self.block_request.is_some() {
+            EditorAction::LinkBlock
+        } else {
+            EditorAction::Stay
+        }
+    }
+
+    /// The request a `LinkBlock` action stands for, taken once.
+    pub fn take_block_request(&mut self) -> Option<BlockRequest> {
+        self.block_request.take()
     }
 
     /// The open list, for the view.
@@ -491,12 +526,11 @@ impl Editor {
                     .zip(block.id.clone())
                     .and_then(|(body, range)| body.get(range));
                 let Some(found) = found else {
-                    // In the edited text it gets a new id with the link;
-                    // in another note, roadmap step J6.
-                    if note.is_none() {
-                        self.link_new_id(block, typed);
-                    } else {
-                        self.notice = Some(NO_ID);
+                    // It gets a new id with the link: in the edited text
+                    // here, in another note saved there first.
+                    match note {
+                        None => self.link_new_id(block, typed),
+                        Some(note) => self.request_new_id(note, block, typed, notes),
                     }
                     return;
                 };
@@ -582,6 +616,81 @@ impl Editor {
             Err(_) => {
                 self.buffer.undo();
                 self.notice = Some(ID_REFUSED);
+            }
+        }
+    }
+
+    /// A block of another note without an id was chosen: a new id, not
+    /// taken in that note, is kept for the session as a `BlockRequest`.
+    /// Nothing is kept, with a notice, when the block takes no id, none
+    /// can be made, or the note or the link would not fit.
+    fn request_new_id(&mut self, note: usize, block: &Block, typed: Range<usize>, notes: &Notes) {
+        if note >= notes.len() {
+            return;
+        }
+        if block.end().is_none() {
+            self.notice = Some(ID_REFUSED);
+            return;
+        }
+        let body = notes.note(note).body.as_str();
+        let taken = |id: &str| {
+            body.lines()
+                .any(|line| block_id(line).is_some_and(|(_, found)| found == id))
+        };
+        let Some(id) = new_id(self.random, taken) else {
+            self.notice = Some(NO_NEW_ID);
+            return;
+        };
+        let text = self.text();
+        let close = !text
+            .get(typed.end..)
+            .is_some_and(|rest| rest.starts_with("]]"));
+        let link_added = ID_LEN + if close { 2 } else { 0 };
+        if body.len() + ID_LEN + 2 > MAX_BODY_BYTES
+            || text.len() + link_added > MAX_BODY_BYTES + typed.len()
+        {
+            self.notice = Some(ID_FULL);
+            return;
+        }
+        self.block_request = Some(BlockRequest {
+            note,
+            block: block.text.clone(),
+            id,
+            typed,
+        });
+    }
+
+    /// After the session saved `request`'s id into its note: the link is
+    /// written with it, in one undo step, the cursor after its `]]`.
+    /// False, nothing written, when the cursor is no longer in that link
+    /// as it was.
+    pub fn link_block(&mut self, request: &BlockRequest) -> bool {
+        let typed = request.typed.clone();
+        let same = target(self.text(), self.cursor)
+            .and_then(|q| q.fragment)
+            .is_some_and(|fragment| fragment == (Part::Block, typed.clone()));
+        let id = request.id();
+        if !same || id.is_empty() {
+            return false;
+        }
+        let close = !self
+            .text()
+            .get(typed.end..)
+            .is_some_and(|rest| rest.starts_with("]]"));
+        self.buffer.commit();
+        let written = self.link_text_at(typed.clone(), id, close);
+        self.buffer.commit();
+        match written {
+            Ok(()) => {
+                self.dirty = true;
+                self.collapse(typed.start + id.len() + 2);
+                true
+            }
+            // The buffer refused (the size limit): a half-written link
+            // is undone.
+            Err(_) => {
+                self.buffer.undo();
+                false
             }
         }
     }
@@ -1369,15 +1478,89 @@ mod tests {
     }
 
     #[test]
-    fn a_block_without_id_is_not_linked_yet() {
+    fn a_block_without_id_in_another_note_is_asked_of_the_session() {
         let n = with_blocks();
-        let (mut ed, mut clip) = at_end("");
+        let (mut ed, mut clip) = with_ids("");
         send(&mut ed, &mut clip, &n, chars("[[plan#^no"));
         assert_eq!(rows_of(&ed, &n), ["No id here"]);
-        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        // Enter asks; nothing is written before the session saved.
+        assert_eq!(
+            ed.key_in(Key::Enter, &mut clip, &n),
+            EditorAction::LinkBlock
+        );
         assert_eq!(ed.text(), "[[plan#^no]]");
         assert!(ed.suggestions().is_none());
-        assert_eq!(ed.notice(), Some(NO_ID));
+        assert_eq!(ed.notice(), None);
+        let request = ed.take_block_request().unwrap();
+        assert!(ed.take_block_request().is_none(), "taken once");
+        let body = n.note(0).body.as_str();
+        assert_eq!(
+            (request.note, &body[request.block.clone()]),
+            (0, "No id here")
+        );
+        assert_eq!(request.id(), "abcdef");
+        // Saved there: the link, one undo step, the cursor after `]]`.
+        assert!(ed.link_block(&request));
+        assert_eq!(ed.text(), "[[plan#^abcdef]]");
+        assert_eq!(ed.cursor, ed.text().len());
+        assert!(ed.is_dirty());
+        ed.key_in(Key::Ctrl('z'), &mut clip, &n);
+        assert_eq!(ed.text(), "[[plan#^no]]");
+        // Not written when the cursor left the link, or the link changed.
+        send(&mut ed, &mut clip, &n, [Key::Left]);
+        assert!(!ed.link_block(&request));
+        send(
+            &mut ed,
+            &mut clip,
+            &n,
+            [Key::End, Key::Left, Key::Left, Key::Backspace],
+        );
+        assert!(!ed.link_block(&request));
+        assert_eq!(ed.text(), "[[plan#^n]]");
+        // Any later key drops a request not taken; a click asks too.
+        let (mut ed, mut clip) = with_ids("");
+        send(&mut ed, &mut clip, &n, chars("[[plan#^no"));
+        send(&mut ed, &mut clip, &n, [Key::Enter, Key::Left]);
+        assert!(ed.take_block_request().is_none());
+        let (mut ed, mut clip) = with_ids("");
+        send(&mut ed, &mut clip, &n, chars("[[plan#^no"));
+        let action = ed.mouse_in(MouseEvent::Press, None, Some(0), Instant::now(), &n);
+        assert_eq!(action, EditorAction::LinkBlock);
+        assert!(ed.take_block_request().is_some());
+        // An id taken in that note is drawn again; none, a notice.
+        let taken = notes(vec![note(1, "", "plan", "x ^abcdef\n\nNo id here\n")]);
+        let (mut ed, mut clip) = with_ids("");
+        ed.random = counting;
+        NEXT.set(0);
+        send(
+            &mut ed,
+            &mut clip,
+            &taken,
+            chars("[[plan#^no").into_iter().chain([Key::Enter]),
+        );
+        assert_ne!(ed.take_block_request().unwrap().id(), "abcdef");
+        let (mut ed, mut clip) = with_ids("");
+        ed.random = failing;
+        send(
+            &mut ed,
+            &mut clip,
+            &n,
+            chars("[[plan#^no").into_iter().chain([Key::Enter]),
+        );
+        assert!(ed.take_block_request().is_none());
+        assert_eq!(ed.notice(), Some(NO_NEW_ID));
+        // That note full: a notice, no request.
+        let full = format!("No id here\n{}", "x".repeat(MAX_BODY_BYTES - 11 - 7));
+        let full = notes(vec![note(1, "", "plan", &full)]);
+        let (mut ed, mut clip) = with_ids("");
+        send(
+            &mut ed,
+            &mut clip,
+            &full,
+            chars("[[plan#^no").into_iter().chain([Key::Enter]),
+        );
+        assert!(ed.take_block_request().is_none());
+        assert_eq!(ed.notice(), Some(ID_FULL));
         // No blocks in a text note, or for a missing note.
         for typed in ["[[todo.txt#^", "[[nope#^"] {
             let (mut ed, mut clip) = at_end("");
@@ -1686,9 +1869,24 @@ mod tests {
             send(&mut ed, &mut clip, &n, [Key::Enter]);
             let text = ed.text().to_owned();
             if !has_id && !own {
-                // Another note: roadmap step J6.
+                // Another note: asked of the session, nothing written
+                // yet; once it saved the id there, the link resolves.
                 prop_assert_eq!(&text, &before);
-                prop_assert_eq!(ed.notice(), Some(NO_ID));
+                let Some(request) = ed.take_block_request() else {
+                    prop_assert_eq!(ed.notice(), Some(ID_REFUSED));
+                    return Ok(());
+                };
+                let block = blocks(&body).into_iter().find(|b| b.text == request.block).unwrap();
+                let Some(saved) = add_id(&body, &block, request.id()) else {
+                    // The session refuses it too: no link.
+                    return Ok(());
+                };
+                prop_assert!(ed.link_block(&request));
+                let text = ed.text();
+                let link = &text[text.rfind("[[").unwrap() + 2..text.len() - 2];
+                let n = notes(vec![note(1, "", "t", &saved)]);
+                let resolved = n.resolve(0, link).map(|(to, f)| (to, f.is_some()));
+                prop_assert_eq!(resolved, Ok((0, true)), "{:?}", link);
                 return Ok(());
             }
             if !has_id && ed.notice() == Some(ID_REFUSED) {

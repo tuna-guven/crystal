@@ -970,9 +970,11 @@ block is still there without an id in that note's saved text, puts the
 id into a copy of it and saves it through `Session::save` with
 `Change::Body`, exactly as Ctrl+S saves a note (the whole vault through
 the atomic writer, refused when `vault.age` changed on disk since
-unlock); only when that save succeeded does the editor write the link.
-A refused or failed save writes no link and reports like a failed
-Ctrl+S; the demo notes are never saved, so no link is written there.
+unlock), after `md::blocks::add_id` parsed the result again and found
+the same blocks; only when that save succeeded (or was made with a
+warning, as Ctrl+S counts it) does the editor write the link, and only
+while its cursor is still in that link. A refused or failed save writes
+no link and reports like a failed Ctrl+S; the demo notes are never saved, so no link is written there.
 `Session::save`, the codec and the atomic writer are unchanged: this
 is the only place where Crystal changes a note the user did not open,
 and only by adding an id the user chose. The list holds note indexes and

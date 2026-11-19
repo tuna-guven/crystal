@@ -106,6 +106,12 @@ pub fn pty_dialog(cmd: &str, home: &Path, steps: &[(&str, &[u8])]) -> (bool, Str
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }
+        if *keys == SYNC_DIARY {
+            let dir = home.join(".local/share/crystal/diary");
+            std::fs::copy(dir.join("vault.age"), dir.join("synced")).unwrap();
+            std::fs::rename(dir.join("synced"), dir.join("vault.age")).unwrap();
+            continue;
+        }
         stdin.write_all(keys).unwrap();
         stdin.flush().unwrap();
     }
@@ -126,6 +132,11 @@ pub const RM_CONFIRM: &str = "Type the vault's name to confirm: ";
 /// As the keys of a dialog step: type nothing, wait one second. For
 /// timing tests such as auto-lock; the output is still collected.
 pub const PAUSE_ONE_SECOND: &[u8] = b"\0pause one second\0";
+
+/// As the keys of a dialog step: type nothing, replace the `diary`
+/// vault's `vault.age` with a copy of itself, as a sync tool would (same
+/// bytes, a new file): Crystal's next save must be refused.
+pub const SYNC_DIARY: &[u8] = b"\0sync diary\0";
 
 pub const PASS: &str = "correct-horse-battery";
 

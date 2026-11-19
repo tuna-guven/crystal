@@ -1436,6 +1436,93 @@ fn link_suggestions_complete_links_by_key_and_click() {
     assert!(viewed.contains("garden and plan"), "{viewed:?}");
 }
 
+/// Creates the Markdown note `name` holding `body`, one session.
+fn create_note(home: &Path, name: &str, body: &str) {
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, format!("edit {name}\r").into_bytes()));
+    steps.push(("Create", b"y\r".to_vec()));
+    steps.push(("Markdown", b"\r".to_vec()));
+    steps.push(("Ctrl+S save", format!("{body}\x13\x11").into_bytes()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// A block without an id in another note (roadmap J6, decision 0075):
+/// choosing it saves a new `^id` into that note first, then writes the
+/// link. With vault.age replaced on disk before the choice, that save is
+/// refused and nothing is written; otherwise, unlocked again, `links`
+/// finds the link's id in the other note. (The frame skips cells the
+/// shell under it drew the same, so the screen is not read back.)
+#[test]
+fn a_block_in_another_note_gets_its_id_saved_first() {
+    let (home, vault) = home_with_vault("editor_block_id");
+    create_note(&home, "plan", "First para");
+    // `[[plan#^`: the list shows `First para`. Synced, then Enter.
+    let typed = |sync: bool| {
+        let mut steps = pass_step(PASS);
+        steps.push((SHELL_READY, b"edit today\r".to_vec()));
+        steps.push(("Create", b"y\r".to_vec()));
+        steps.push(("Markdown", b"\r".to_vec()));
+        steps.push(("Ctrl+S save", b"see [[plan#^".to_vec()));
+        if sync {
+            steps.push(("First", SYNC_DIARY.to_vec()));
+            steps.push(("", b"\r".to_vec()));
+        } else {
+            steps.push(("First", b"\r".to_vec()));
+        }
+        steps
+    };
+    let before = std::fs::read(vault.join("vault.age")).unwrap();
+    let mut steps = typed(true);
+    // Not saved, so the new note is discarded: Ctrl+Q twice.
+    steps.push(("changed", b"\x11\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    assert!(output.contains("changed on disk"), "the shell says why");
+    assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before);
+
+    let mut steps = typed(false);
+    steps.push(("Linked", b"\x13".to_vec()));
+    steps.push(("Saved.", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+    // Unlocked again: `today`'s `[[plan#^id]]` finds that id in `plan`,
+    // so both saves are on disk (an id missing there is a broken link).
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"links\r".to_vec()));
+    steps.push(("No broken links.", b"quit\r".to_vec()));
+    let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
+    assert!(ok, "{output}");
+}
+
+/// Choosing a block without an id in another demo note saves nothing:
+/// vault.age stays byte for byte the same.
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "uses the debug-only --demo-notes-for-test"
+)]
+fn demo_notes_get_no_new_block_id() {
+    let (home, vault) = home_with_vault("editor_demo_block");
+    let before = std::fs::read(vault.join("vault.age")).unwrap();
+    let mut steps = pass_step(PASS);
+    steps.push((SHELL_READY, b"edit guide\r".to_vec()));
+    steps.push(("Ctrl+S save", b"[[welcome#^secret".to_vec()));
+    steps.push(("secret-demo", b"\r".to_vec()));
+    steps.push(("Not linked", b"\x11\x11".to_vec()));
+    steps.push((SHELL_READY, b"quit\r".to_vec()));
+    let (ok, output) = dialog(
+        &format!("'{BIN}' unlock --demo-notes-for-test diary"),
+        &home,
+        &steps,
+    );
+    assert!(ok, "{output}");
+    assert_eq!(std::fs::read(vault.join("vault.age")).unwrap(), before);
+}
+
 /// A session with the debug-only demo notes never saves: vault.age stays
 /// byte for byte the same.
 #[test]

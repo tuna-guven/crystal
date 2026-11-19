@@ -17,8 +17,10 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::commands::{self, Open};
+use crate::editor::suggest::{ID_FULL, ID_REFUSED};
 use crate::editor::view::View;
 use crate::editor::{Editor, EditorAction};
+use crate::md::blocks::{add_id, blocks};
 use crate::md::render::{Kind, kind_of, shown};
 use crate::model::{NoteText, lines};
 use crate::notes::Notes;
@@ -30,6 +32,7 @@ use crate::term::{Event, Idle, Signals, TerminalGuard, WAKE_CHECK};
 use crate::ui::clipboard::Clipboard;
 use crate::ui::grid::Style;
 use crate::ui::screen::Screen;
+use crate::vault::codec::MAX_BODY_BYTES;
 
 const COPIED: &str = "Copied inside Crystal; it never leaves it.";
 
@@ -438,15 +441,16 @@ fn run_loop(
                             // stops at its edge (decision 0073). The list
                             // of link suggestions, drawn over the text,
                             // comes first.
-                            if let Key::Mouse { event, column, row } = key {
+                            let action = if let Key::Mouse { event, column, row } = key {
                                 let clamp = event != MouseEvent::Press;
                                 let at = e.view.position_at(e.editor.text(), column, row, clamp);
                                 let entry = e.view.suggestion_at(column, row);
                                 let now = std::time::Instant::now();
-                                e.editor.mouse_in(event, at, entry, now, session.notes());
-                                continue;
-                            }
-                            match e.editor.key_in(key, clipboard, session.notes()) {
+                                e.editor.mouse_in(event, at, entry, now, session.notes())
+                            } else {
+                                e.editor.key_in(key, clipboard, session.notes())
+                            };
+                            match action {
                                 EditorAction::Stay => {}
                                 EditorAction::Close => mode = Mode::Shell,
                                 EditorAction::View => match e.target {
@@ -456,6 +460,7 @@ fn run_loop(
                                         .tell("A new note is shown rendered once Ctrl+S saved it."),
                                 },
                                 EditorAction::Save => save(session, e, shell, demo),
+                                EditorAction::LinkBlock => link_block(session, e, shell, demo),
                             }
                         }
                     }
@@ -552,17 +557,72 @@ fn save(session: &mut Session, e: &mut Editing, shell: &mut Shell, demo: bool) {
     }
     match result {
         Ok(()) => e.editor.tell("Saved."),
-        Err(err) => {
-            shell.print(&err.to_string(), ERROR_STYLE);
-            e.editor.tell(match err {
-                SaveError::Changed => {
-                    "Not saved: vault.age changed on disk (synced?). Your edits are only \
-                     here and are lost when Crystal closes."
-                }
-                _ if saved => "Saved, with a warning: see the shell after Ctrl+Q.",
-                _ => "Not saved: see the shell after Ctrl+Q for why.",
-            });
+        Err(err) => failed(&err, saved, e, shell),
+    }
+}
+
+/// A save that did not go as planned: the full error, never note text,
+/// to the shell for after Ctrl+Q, and a short notice in the editor.
+fn failed(err: &SaveError, saved: bool, e: &mut Editing, shell: &mut Shell) {
+    shell.print(&err.to_string(), ERROR_STYLE);
+    e.editor.tell(match err {
+        SaveError::Changed => {
+            "Not saved: vault.age changed on disk (synced?). Your edits are only \
+             here and are lost when Crystal closes."
         }
+        _ if saved => "Saved, with a warning: see the shell after Ctrl+Q.",
+        _ => "Not saved: see the shell after Ctrl+Q for why.",
+    });
+}
+
+/// A block of another note without an id was chosen in the link
+/// suggestions (decision 0075): the new id goes into that note first,
+/// through the same save as Ctrl+S, and only once it is saved does the
+/// editor write the link. The block must still be in the saved text,
+/// still without an id, and `add_id` must accept the result. The
+/// editor's own text is not saved.
+fn link_block(session: &mut Session, e: &mut Editing, shell: &mut Shell, demo: bool) {
+    let Some(request) = e.editor.take_block_request() else {
+        return;
+    };
+    if demo {
+        e.editor
+            .tell("Not linked: demo notes (--demo-notes-for-test) are never saved.");
+        return;
+    }
+    let notes = session.notes();
+    // The editor never asks for its own note; refused all the same, as
+    // saving it here would drop the editor's unsaved text.
+    let own = matches!(e.target, Target::Note(note) if note == request.note);
+    let markdown = |note: usize| kind_of(notes.note(note).title.as_str()) == Kind::Markdown;
+    let with_id = (!own && request.note < notes.len() && markdown(request.note))
+        .then(|| notes.note(request.note).body.as_str())
+        .and_then(|body| {
+            let block = blocks(body)
+                .into_iter()
+                .find(|block| block.text == request.block)?;
+            add_id(body, &block, request.id())
+        });
+    let Some(with_id) = with_id else {
+        e.editor.tell(ID_REFUSED);
+        return;
+    };
+    if with_id.len() > MAX_BODY_BYTES {
+        e.editor.tell(ID_FULL);
+        return;
+    }
+    let result = session.save(Change::Body {
+        note: request.note,
+        text: NoteText::from_zeroizing(with_id),
+    });
+    let saved = result.as_ref().map_or_else(SaveError::is_saved, |()| true);
+    let linked = saved && e.editor.link_block(&request);
+    match result {
+        Ok(()) if linked => e.editor.tell("Linked; the new ^id is saved in that note."),
+        Ok(()) => e
+            .editor
+            .tell("The new ^id is saved in that note; the link changed, so it was not written."),
+        Err(err) => failed(&err, saved, e, shell),
     }
 }
 

@@ -858,7 +858,8 @@ mod tests {
     /// heading, a tag and a link), saved; the shell's completion names,
     /// `search CANARY` typed into the shell (line, history, output); the
     /// pager's rendering; the editor, typed into (its link suggestions
-    /// open on the canary's note, drawn and taken), and Crystal's clipboard
+    /// open on the canary's note, its headings and its blocks, drawn and
+    /// taken, a new block id saved into that note), and Crystal's clipboard
     /// filled from it. Then what `lock` does (decision 0048), step by step
     /// as `app::run` and `crystal::run` (src/lib.rs) do it: the editor, pager and grid
     /// dropped, the clipboard wiped, the shell dropped, the session ended
@@ -949,6 +950,35 @@ mod tests {
             view.draw(&mut grid, &mut editor, "plan");
             view.draw_suggestions(&mut grid, &editor, session.notes());
             editor.key_in(Key::Enter, &mut clipboard, session.notes());
+            // `[[CANARY#^Text` lists the canary note's blocks (the editor
+            // is not set to that note, so it is another); its paragraph
+            // holds the canary and has no id. Enter asks for a new id,
+            // saved into that note as app::link_block does: `add_id`'s
+            // copy, the save, the link.
+            for c in " [[".chars().chain(canary.chars()).chain("#^Text".chars()) {
+                editor.key_in(Key::Char(c), &mut clipboard, session.notes());
+            }
+            assert!(editor.suggestions().is_some(), "the block list is open");
+            view.draw(&mut grid, &mut editor, "plan");
+            view.draw_suggestions(&mut grid, &editor, session.notes());
+            let action = editor.key_in(Key::Enter, &mut clipboard, session.notes());
+            assert_eq!(action, crate::editor::EditorAction::LinkBlock);
+            let request = editor.take_block_request().unwrap();
+            let with_id = {
+                let body = session.notes().note(request.note).body.as_str();
+                let block = crate::md::blocks::blocks(body)
+                    .into_iter()
+                    .find(|block| block.text == request.block)
+                    .unwrap();
+                crate::md::blocks::add_id(body, &block, request.id()).unwrap()
+            };
+            session
+                .save(Change::Body {
+                    note: request.note,
+                    text: NoteText::from_zeroizing(with_id),
+                })
+                .unwrap();
+            assert!(editor.link_block(&request), "the link is written");
             editor.key_in(Key::Ctrl('a'), &mut clipboard, session.notes());
             editor.key_in(Key::Ctrl('c'), &mut clipboard, session.notes());
             view.draw(&mut grid, &mut editor, "plan");

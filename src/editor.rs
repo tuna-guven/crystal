@@ -46,6 +46,10 @@ pub enum EditorAction {
     Close,
     /// Ctrl+E: show the current text in the viewer.
     View,
+    /// A block of another note without an id was chosen: the session
+    /// saves a new id into it, then writes the link
+    /// (`Editor::take_block_request`, decision 0075).
+    LinkBlock,
 }
 
 /// Lines one step of the mouse wheel moves the cursor (decision 0073).
@@ -107,6 +111,8 @@ pub struct Editor {
     blocks_for: Option<suggest::BlocksFor>,
     /// Where new block ids' randomness comes from (`suggest::new_id`).
     random: suggest::Random,
+    /// What `EditorAction::LinkBlock` asks of the session.
+    block_request: Option<suggest::BlockRequest>,
     /// The note shown, if saved, and whether it is Markdown (`set_note`).
     own: Option<usize>,
     markdown: bool,
@@ -131,6 +137,7 @@ impl Editor {
             blocks: Vec::new(),
             blocks_for: None,
             random: crate::crypto::fill_random,
+            block_request: None,
             own: None,
             markdown: true,
         })
