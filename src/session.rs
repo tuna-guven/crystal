@@ -930,10 +930,22 @@ mod tests {
             let mut clipboard = Clipboard::default();
             let mut editor = Editor::new(&body).unwrap();
             let mut view = View::default();
+            // On a new first line, so `# Plan …` stays a heading.
+            editor.key_in(Key::Enter, &mut clipboard, session.notes());
+            editor.key_in(Key::Up, &mut clipboard, session.notes());
             for c in "[[".chars().chain(canary.chars()) {
                 editor.key_in(Key::Char(c), &mut clipboard, session.notes());
             }
             assert!(editor.suggestions().is_some(), "the list is open");
+            view.draw(&mut grid, &mut editor, "plan");
+            view.draw_suggestions(&mut grid, &editor, session.notes());
+            editor.key_in(Key::Enter, &mut clipboard, session.notes());
+            // `[[#` scans the text's own headings (the canary is in its
+            // heading) into the list, which Enter takes.
+            for c in " [[#".chars() {
+                editor.key_in(Key::Char(c), &mut clipboard, session.notes());
+            }
+            assert!(editor.suggestions().is_some(), "the heading list is open");
             view.draw(&mut grid, &mut editor, "plan");
             view.draw_suggestions(&mut grid, &editor, session.notes());
             editor.key_in(Key::Enter, &mut clipboard, session.notes());

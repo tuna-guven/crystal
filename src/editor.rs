@@ -95,6 +95,15 @@ pub struct Editor {
     last_press: Option<(Instant, usize, u8)>,
     /// The open list of link suggestions (`suggest`), if any.
     suggestions: Option<suggest::List>,
+    /// The headings of the text, scanned for a list of them (`[[#`);
+    /// empty otherwise.
+    own_headings: Vec<zeroize::Zeroizing<String>>,
+    /// Where the link starts whose list `own_headings` were scanned for:
+    /// typing on in that link reuses them (`suggest`).
+    own_headings_at: Option<usize>,
+    /// The note shown, if saved, and whether it is Markdown (`set_note`).
+    own: Option<usize>,
+    markdown: bool,
 }
 
 impl Editor {
@@ -111,6 +120,10 @@ impl Editor {
             pressed: false,
             last_press: None,
             suggestions: None,
+            own_headings: Vec::new(),
+            own_headings_at: None,
+            own: None,
+            markdown: true,
         })
     }
 
@@ -154,6 +167,8 @@ impl Editor {
     /// disarms Ctrl+Q; it closes the list of link suggestions.
     pub fn mouse(&mut self, event: MouseEvent, at: Option<usize>, now: Instant) {
         self.suggestions = None;
+        self.own_headings = Vec::new();
+        self.own_headings_at = None;
         self.notice = None;
         self.quit_armed = false;
         self.buffer.commit();
@@ -1040,8 +1055,10 @@ mod tests {
 
     fn any_key() -> impl Strategy<Value = Key> {
         prop_oneof![
-            prop::sample::select(&['a', 'p', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']'][..])
-                .prop_map(Key::Char),
+            prop::sample::select(
+                &['a', 'p', 'é', ' ', '😀', '\u{301}', '(', ')', '[', ']', '#'][..]
+            )
+            .prop_map(Key::Char),
             prop::sample::select(&['a', 'c', 'x', 'v', 'z', 'y', 'q', 's', 'e'][..])
                 .prop_map(Key::Ctrl),
             prop::sample::select(
@@ -1089,7 +1106,9 @@ mod tests {
                     .zip(1u8..)
                     .map(|(name, id)| {
                         let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
-                        crate::notes::tests::note(id, folder, title, "")
+                        // Headings to list after `[[pa#`, one that cannot
+                        // be linked (`]`).
+                        crate::notes::tests::note(id, folder, title, "# pa\n## a p\n# x]y\n")
                     })
                     .collect(),
             );
@@ -1103,12 +1122,13 @@ mod tests {
                     prop_assert_eq!(ed.text(), before.as_str());
                 }
                 if let Some(list) = ed.suggestions() {
-                    prop_assert!(!list.notes.is_empty());
-                    prop_assert!(list.highlight < list.notes.len());
+                    prop_assert!(!list.entries.is_empty());
+                    prop_assert!(list.highlight < list.entries.len());
                     prop_assert!(list.top <= list.highlight);
                     prop_assert!(list.highlight < list.top + suggest::ROWS);
-                    prop_assert!(list.notes.iter().all(|&i| i < notes.len()));
-                    prop_assert!(suggest::query(ed.text(), ed.cursor()).is_some());
+                    // Every entry has its text: a note or a heading.
+                    prop_assert!((0..list.entries.len()).all(|i| ed.suggestion_label(i, &notes).is_some()));
+                    prop_assert!(suggest::target(ed.text(), ed.cursor()).is_some());
                 }
                 let len = ed.text().len();
                 prop_assert!(ed.cursor() <= len && ed.text().is_char_boundary(ed.cursor()));

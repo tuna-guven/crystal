@@ -17,9 +17,10 @@ use std::ops::Range;
 use std::time::Instant;
 
 use super::{Editor, EditorAction};
-use crate::notes::{Found, Notes, cmp_ci};
+use crate::notes::{Found, Notes, cmp_ci, headings_in};
 use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::clipboard::Clipboard;
+use zeroize::Zeroizing;
 
 /// Rows the list shows at once; the rest scroll.
 pub const ROWS: usize = 8;
@@ -27,12 +28,23 @@ pub const ROWS: usize = 8;
 /// the others.
 pub const MAX_MATCHES: usize = 100;
 
+/// What the open list's entries index into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The vault's notes (`Notes`).
+    Notes,
+    /// The headings of a saved note (`Notes::headings`), or with `None`
+    /// those of the note being edited, scanned from its text.
+    Headings(Option<usize>),
+}
+
 /// The open list. No Debug, like the editor that holds it.
 pub struct List {
-    /// The matching notes, as indexes into `Notes`, best first; never
-    /// empty.
-    pub notes: Vec<usize>,
-    /// The highlighted row, an index into `notes`.
+    /// What `entries` index into.
+    pub source: Source,
+    /// The matches, best first, as indexes into `source`; never empty.
+    pub entries: Vec<usize>,
+    /// The highlighted row, an index into `entries`.
     pub highlight: usize,
     /// The first row shown; the highlight is always within `ROWS` of it.
     pub top: usize,
@@ -42,7 +54,7 @@ impl List {
     /// Moves the highlight one row, wrapping at either end, and scrolls
     /// just enough to keep it shown.
     fn step(&mut self, down: bool) {
-        let len = self.notes.len();
+        let len = self.entries.len();
         if len == 0 {
             return;
         }
@@ -59,7 +71,20 @@ impl List {
     }
 }
 
+/// Characters a heading must not hold to be linked as written: they end
+/// or split a link (decision 0075).
+const LINK_CHARS: &[char] = &['[', ']', '|', '#', '^'];
+
 impl Editor {
+    /// Which note this editor shows (`None` for one not saved yet) and
+    /// whether it is Markdown: `[[#` lists its headings from the text,
+    /// and a plain-text note has none. The session sets it on opening
+    /// and after the first save.
+    pub fn set_note(&mut self, own: Option<usize>, markdown: bool) {
+        self.own = own;
+        self.markdown = markdown;
+    }
+
     /// `key` with link suggestions over `notes` (see the module comment).
     /// A key the list takes ends a typing run, clears the notice and
     /// disarms Ctrl+Q, like any key that is not typing.
@@ -69,7 +94,7 @@ impl Editor {
             match key {
                 Key::Up | Key::Down => list.step(key == Key::Down),
                 Key::Enter | Key::Tab => self.accept(notes),
-                _ => self.suggestions = None,
+                _ => self.close_list(),
             }
             self.notice = None;
             self.quit_armed = false;
@@ -78,19 +103,31 @@ impl Editor {
             return EditorAction::Stay;
         }
         let typing = matches!(key, Key::Char(_) | Key::Backspace | Key::Delete);
+        // Typing or deleting backwards inside a link cannot change the
+        // headings elsewhere: the ones scanned for it are kept (the scan
+        // of an 8 MiB note took 185 ms a key). Delete can join the next
+        // line, so it scans again, like any other key.
+        let keeps_headings = matches!(key, Key::Char(_) | Key::Backspace);
         let action = self.key(key, clipboard);
-        self.suggestions = None;
+        if keeps_headings {
+            self.suggestions = None;
+        } else {
+            self.close_list();
+        }
         if typing {
             self.refresh(notes);
+        }
+        if self.suggestions.is_none() {
+            self.close_list();
         }
         action
     }
 
     /// `mouse` with link suggestions: `entry` is the list entry under the
     /// pointer (`View::suggestion_at`), if any. A press on an entry links
-    /// that note, the wheel there moves the highlight; like a key, they
-    /// end a typing run, clear the notice and disarm Ctrl+Q. Any other
-    /// event goes to `mouse`, which closes the list.
+    /// it, the wheel there moves the highlight; like a key, they end a
+    /// typing run, clear the notice and disarm Ctrl+Q. Any other event
+    /// goes to `mouse`, which closes the list.
     pub fn mouse_in(
         &mut self,
         event: MouseEvent,
@@ -101,7 +138,7 @@ impl Editor {
     ) {
         let on_list = entry
             .zip(self.suggestions.as_mut())
-            .filter(|(i, list)| *i < list.notes.len());
+            .filter(|(i, list)| *i < list.entries.len());
         let Some((entry, list)) = on_list else {
             self.mouse(event, at, now);
             return;
@@ -129,41 +166,146 @@ impl Editor {
         self.suggestions.as_ref()
     }
 
+    /// The text of the open list's entry at `row` (an index into
+    /// `entries`), for the view: a dimmed part and the rest. A note is its
+    /// folder and title, a heading `# ` and its text. None past the list or
+    /// for an index its source does not have.
+    pub fn suggestion_label<'a>(
+        &'a self,
+        row: usize,
+        notes: &'a Notes,
+    ) -> Option<(&'a str, &'a str)> {
+        let list = self.suggestions.as_ref()?;
+        let &entry = list.entries.get(row)?;
+        match list.source {
+            Source::Notes => {
+                let name = (entry < notes.len()).then(|| notes.name(entry))?;
+                Some(match name.rfind('/') {
+                    Some(at) => name.split_at(at + 1),
+                    None => ("", name),
+                })
+            }
+            Source::Headings(note) => Some(("# ", self.heading(note, entry, notes)?)),
+        }
+    }
+
+    /// Heading `entry` of `note` (saved) or of the editor's text (`None`).
+    fn heading<'a>(
+        &'a self,
+        note: Option<usize>,
+        entry: usize,
+        notes: &'a Notes,
+    ) -> Option<&'a str> {
+        let all = match note {
+            Some(note) if note < notes.len() => notes.headings(note),
+            Some(_) => return None,
+            None => &self.own_headings,
+        };
+        all.get(entry).map(|h| h.as_str())
+    }
+
+    /// Closes the list and drops the headings scanned for it.
+    fn close_list(&mut self) {
+        self.suggestions = None;
+        self.own_headings = Vec::new();
+        self.own_headings_at = None;
+    }
+
     /// Opens the list for the cursor's place: only with nothing selected,
-    /// in a link's name, and with at least one note matching.
+    /// in a link's name or after its `#`, and with at least one match.
     fn refresh(&mut self, notes: &Notes) {
         if self.selection().is_some() {
             return;
         }
-        let Some(range) = query(self.text(), self.cursor) else {
+        let Some(q) = target(self.text(), self.cursor) else {
             return;
         };
-        let found = matches(&self.text()[range], notes);
-        if !found.is_empty() {
+        let (source, found) = match q.fragment {
+            None => (Source::Notes, matches(&self.text()[q.name], notes)),
+            Some((Part::Heading, typed)) => {
+                let Some(note) = self.heading_note(&self.text()[q.name.clone()], notes) else {
+                    return;
+                };
+                // Scanned once per link (`key_in` keeps them while typing
+                // in it); a plain-text note has none.
+                if note.is_none() && self.own_headings_at != Some(q.name.start) {
+                    self.own_headings = if self.markdown {
+                        headings_in(self.text())
+                    } else {
+                        Vec::new()
+                    };
+                    self.own_headings_at = Some(q.name.start);
+                }
+                let all = match note {
+                    Some(note) => notes.headings(note),
+                    None => &self.own_headings,
+                };
+                let found = heading_matches(&self.text()[typed], all);
+                (Source::Headings(note), found)
+            }
+            // Blocks: roadmap step J4.
+            Some((Part::Block, _)) => return,
+        };
+        if found.is_empty() {
+            self.close_list();
+        } else {
             self.suggestions = Some(List {
-                notes: found,
+                source,
+                entries: found,
                 highlight: 0,
                 top: 0,
             });
         }
     }
 
-    /// Enter or Tab: the query becomes the highlighted note's link text
-    /// and the cursor goes past the `]]` after it, added if missing. One
-    /// undo step (the caller commits before; this commits after).
+    /// Whose headings `[[name#` lists: `Some(None)` for the note being
+    /// edited (an empty name, or its own), `Some(Some(note))` for the one
+    /// other note `name` finds, `None` when it finds none or several.
+    fn heading_note(&self, name: &str, notes: &Notes) -> Option<Option<usize>> {
+        if name.is_empty() {
+            return Some(None);
+        }
+        match notes.find(name) {
+            Found::One(note) if Some(note) == self.own => Some(None),
+            Found::One(note) => Some(Some(note)),
+            _ => None,
+        }
+    }
+
+    /// Enter, Tab or a click: the typed name, or the text after `#`,
+    /// becomes the highlighted entry's link text, and the cursor goes past
+    /// the `]]` after it, added if missing. One undo step (the caller
+    /// commits before; this commits after).
     fn accept(&mut self, notes: &Notes) {
         let list = self.suggestions.take();
-        let (Some(list), Some(range)) = (list, query(self.text(), self.cursor)) else {
+        let own_headings = std::mem::take(&mut self.own_headings);
+        self.own_headings_at = None;
+        let (Some(list), Some(q)) = (list, target(self.text(), self.cursor)) else {
             return;
         };
-        // The list was made from these notes; the check keeps a stale
-        // index from panicking.
-        let Some(&note) = list.notes.get(list.highlight).filter(|&&i| i < notes.len()) else {
+        // The list was made from these notes and this text; the checks
+        // keep a stale index from panicking.
+        let Some(&entry) = list.entries.get(list.highlight) else {
             return;
+        };
+        let (range, link) = match (list.source, q.fragment) {
+            (Source::Notes, None) if entry < notes.len() => (q.name, link_text(notes, entry)),
+            (Source::Headings(note), Some((Part::Heading, typed))) => {
+                let heading = match note {
+                    Some(note) if note < notes.len() => notes.headings(note).get(entry),
+                    Some(_) => None,
+                    None => own_headings.get(entry),
+                };
+                let Some(heading) = heading else {
+                    return;
+                };
+                (typed, heading.as_str())
+            }
+            _ => return,
         };
         self.buffer.commit();
         self.anchor = Some(range.start);
-        if self.replace_selection(link_text(notes, note)) {
+        if self.replace_selection(link) {
             if self.text()[self.cursor..].starts_with("]]") {
                 // `collapse` snaps: a `]` can carry an accent.
                 self.collapse(self.cursor + 2);
@@ -173,6 +315,26 @@ impl Editor {
         }
         self.buffer.commit();
     }
+}
+
+/// The headings among `all` that hold every word of `query`, ignoring
+/// case, as indexes: those starting with the whole query first, then in
+/// the note's order; at most `MAX_MATCHES`. Headings that cannot be
+/// linked as written (`LINK_CHARS`, or empty) are left out.
+pub fn heading_matches(query: &str, all: &[Zeroizing<String>]) -> Vec<usize> {
+    let whole = query.trim();
+    let mut found: Vec<usize> = (0..all.len())
+        .filter(|&i| {
+            let h = all[i].as_str();
+            !h.trim().is_empty()
+                && !h.contains(LINK_CHARS)
+                && query.split_whitespace().all(|word| contains_ci(h, word))
+        })
+        .collect();
+    // Stable: the note's order within each group.
+    found.sort_by_key(|&i| !starts_ci(&all[i], whole));
+    found.truncate(MAX_MATCHES);
+    found
 }
 
 /// Characters that end the name part of a link: `]` closes it, `|`
@@ -229,14 +391,6 @@ pub fn target(text: &str, cursor: usize) -> Option<Query> {
         name,
         fragment: Some((part, from..cursor)),
     })
-}
-
-/// A note name the cursor is typing, with no fragment after it: the
-/// query for the list of notes (W1). None anywhere else.
-pub fn query(text: &str, cursor: usize) -> Option<Range<usize>> {
-    target(text, cursor)
-        .filter(|q| q.fragment.is_none())
-        .map(|q| q.name)
 }
 
 /// The notes whose full name holds every word of `query`, ignoring case,
@@ -302,6 +456,14 @@ mod tests {
     use crate::notes::tests::{note, notes};
     use proptest::prelude::*;
 
+    /// A note name the cursor is typing, with no fragment after it (the
+    /// W1 query).
+    fn query(text: &str, cursor: usize) -> Option<Range<usize>> {
+        target(text, cursor)
+            .filter(|q| q.fragment.is_none())
+            .map(|q| q.name)
+    }
+
     /// The query as text, for short asserts.
     fn q(text: &str, cursor: usize) -> Option<&str> {
         query(text, cursor).map(|r| &text[r])
@@ -363,7 +525,7 @@ mod tests {
         );
         // No fragment: as before.
         assert_eq!(t("[[pla"), Some(("pla", None)));
-        // `query` is only the name with no fragment.
+        // The W1 query is only the name with no fragment.
         assert_eq!(q("[[plan#x", 8), None);
         assert_eq!(q("[[plan", 6), Some("plan"));
     }
@@ -519,7 +681,7 @@ mod tests {
     /// The names the open list shows, in order; empty when closed.
     fn listed(ed: &Editor, n: &Notes) -> Vec<String> {
         ed.suggestions().map_or_else(Vec::new, |list| {
-            list.notes.iter().map(|&i| n.name(i).to_owned()).collect()
+            list.entries.iter().map(|&i| n.name(i).to_owned()).collect()
         })
     }
 
@@ -732,6 +894,144 @@ mod tests {
         assert_eq!(ed.text(), "[[pla]]");
     }
 
+    /// The open list's rows as the view shows them (dimmed part + rest).
+    fn rows_of(ed: &Editor, n: &Notes) -> Vec<String> {
+        ed.suggestions().map_or_else(Vec::new, |list| {
+            (0..list.entries.len())
+                .map(|i| {
+                    let (dim, rest) = ed.suggestion_label(i, n).unwrap();
+                    format!("{dim}{rest}")
+                })
+                .collect()
+        })
+    }
+
+    /// Notes with headings: `plan` (and `work/plan`), a text note, two
+    /// `dup`s in folders.
+    fn with_headings() -> Notes {
+        notes(vec![
+            note(
+                1,
+                "",
+                "plan",
+                "# Checks\n\n## Release checks\n\n## Sign `key`\n\n# Bad ]] one\n\n# a|b\n\n## Checklist\n",
+            ),
+            note(2, "work", "other", "# Other heading\n"),
+            note(3, "", "todo.txt", "# not a heading\n"),
+            note(4, "a", "dup", "# A\n"),
+            note(5, "b", "dup", "# B\n"),
+        ])
+    }
+
+    #[test]
+    fn hash_lists_the_notes_headings() {
+        let n = with_headings();
+        let (mut ed, mut clip) = at_end("see ");
+        send(&mut ed, &mut clip, &n, chars("[[plan#"));
+        // In the note's order; the ones with `]` or `|` left out; inline
+        // code as the index reads it.
+        assert_eq!(
+            rows_of(&ed, &n),
+            ["# Checks", "# Release checks", "# Sign key", "# Checklist"]
+        );
+        assert!(matches!(
+            ed.suggestions().unwrap().source,
+            Source::Headings(Some(0))
+        ));
+        // Filtered by words; starting with the text first.
+        send(&mut ed, &mut clip, &n, chars("check"));
+        assert_eq!(
+            rows_of(&ed, &n),
+            ["# Checks", "# Checklist", "# Release checks"]
+        );
+        send(&mut ed, &mut clip, &n, [Key::Down, Key::Down, Key::Enter]);
+        assert_eq!(ed.text(), "see [[plan#Release checks]]");
+        assert_eq!(ed.cursor(), ed.text().len());
+        assert!(n.resolve(1, "plan#Release checks").is_ok());
+    }
+
+    #[test]
+    fn no_headings_without_one_markdown_note() {
+        let n = with_headings();
+        // Missing, ambiguous, a text note, no match.
+        for typed in ["[[nope#", "[[dup#", "[[todo.txt#", "[[todo#", "[[plan#zzz"] {
+            let (mut ed, mut clip) = at_end("");
+            send(&mut ed, &mut clip, &n, chars(typed));
+            assert!(ed.suggestions().is_none(), "{typed}");
+        }
+        // A folder disambiguates.
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[a/dup#"));
+        assert_eq!(rows_of(&ed, &n), ["# A"]);
+        send(&mut ed, &mut clip, &n, [Key::Tab]);
+        assert_eq!(ed.text(), "[[a/dup#A]]");
+    }
+
+    #[test]
+    fn hash_alone_lists_the_edited_texts_headings() {
+        let n = with_headings();
+        // Unsaved text, headings typed just now.
+        let (mut ed, mut clip) = at_end("# Intro\n\n## Next step\n\n");
+        send(&mut ed, &mut clip, &n, chars("[[#"));
+        assert_eq!(rows_of(&ed, &n), ["# Intro", "# Next step"]);
+        assert!(matches!(
+            ed.suggestions().unwrap().source,
+            Source::Headings(None)
+        ));
+        send(&mut ed, &mut clip, &n, chars("ne"));
+        send(&mut ed, &mut clip, &n, [Key::Enter]);
+        assert!(ed.text().ends_with("[[#Next step]]"));
+        // Its own name means its own text too, not the saved one.
+        let (mut ed, mut clip) = at_end("# Fresh\n\n");
+        ed.set_note(Some(0), true);
+        send(&mut ed, &mut clip, &n, chars("[[plan#"));
+        assert_eq!(rows_of(&ed, &n), ["# Fresh"]);
+        // A plain-text note has none.
+        let (mut ed, mut clip) = at_end("# Not one\n\n");
+        ed.set_note(None, false);
+        send(&mut ed, &mut clip, &n, chars("[[#"));
+        assert!(ed.suggestions().is_none());
+        // Closing the list drops the scanned headings.
+        let (mut ed, mut clip) = at_end("# Intro\n\n");
+        send(&mut ed, &mut clip, &n, chars("[[#"));
+        send(&mut ed, &mut clip, &n, [Key::Esc]);
+        assert!(ed.own_headings.is_empty());
+    }
+
+    #[test]
+    fn own_headings_are_scanned_once_per_link() {
+        let n = with_headings();
+        let (mut ed, mut clip) = at_end("# Intro\n\n");
+        send(&mut ed, &mut clip, &n, chars("[[#"));
+        let at = ed.own_headings_at;
+        assert!(at.is_some());
+        // Typing and Backspace in the link keep them.
+        send(&mut ed, &mut clip, &n, chars("In"));
+        send(&mut ed, &mut clip, &n, [Key::Backspace]);
+        assert_eq!(ed.own_headings_at, at);
+        assert_eq!(rows_of(&ed, &n), ["# Intro"]);
+        // Any other key drops them; a list after it scans again.
+        send(&mut ed, &mut clip, &n, [Key::Delete]);
+        assert!(ed.own_headings_at.is_some(), "Delete scans again");
+        send(&mut ed, &mut clip, &n, [Key::Left]);
+        assert!(ed.own_headings.is_empty());
+        assert_eq!(ed.own_headings_at, None);
+        // A note list never keeps them.
+        send(&mut ed, &mut clip, &n, [Key::End]);
+        send(&mut ed, &mut clip, &n, chars(" [[p"));
+        assert!(ed.own_headings.is_empty());
+    }
+
+    #[test]
+    fn a_click_links_a_heading() {
+        let n = with_headings();
+        let (mut ed, mut clip) = at_end("");
+        send(&mut ed, &mut clip, &n, chars("[[plan#"));
+        click(&mut ed, &n, MouseEvent::Press, Some(0), Some(3));
+        assert_eq!(ed.text(), "[[plan#Checklist]]");
+        assert!(ed.suggestions().is_none());
+    }
+
     #[test]
     fn list_keys_disarm_quit_and_clear_the_notice() {
         let n = sample();
@@ -796,6 +1096,46 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// Any headings: every heading the list offers, chosen with Enter,
+        /// writes a link that resolves to that note, in another note
+        /// (`[[t#`) and in the note being edited (`[[#`).
+        #[test]
+        fn heading_links_resolve(
+            headings in prop::collection::vec("[a-cé \\[\\]|#^`*]{1,8}", 1..6),
+            levels in prop::collection::vec(1usize..4, 6),
+            pick in any::<prop::sample::Index>(),
+            own in any::<bool>(),
+        ) {
+            let body: String = headings
+                .iter()
+                .zip(&levels)
+                .map(|(h, &level)| format!("{} {h}\n\n", "#".repeat(level)))
+                .collect();
+            let (start, typed) = if own { (body.as_str(), "[[#") } else { ("", "[[t#") };
+            let n = notes(vec![note(1, "", "t", &body)]);
+            let (mut ed, mut clip) = at_end(start);
+            ed.set_note(own.then_some(0), true);
+            send(&mut ed, &mut clip, &n, chars(typed));
+            let Some(list) = ed.suggestions() else {
+                // Every heading held a link character, or none parsed.
+                return Ok(());
+            };
+            let downs = pick.index(list.entries.len());
+            send(&mut ed, &mut clip, &n, (0..downs).map(|_| Key::Down));
+            send(&mut ed, &mut clip, &n, [Key::Enter]);
+            let text = ed.text().to_owned();
+            prop_assert!(text.ends_with("]]"), "{:?}", text);
+            let link = &text[text.rfind("[[").unwrap() + 2..text.len() - 2];
+            // Resolved as the saved vault would: the note holding the
+            // final text when it is the edited one.
+            let resolved = if own {
+                notes(vec![note(1, "", "t", &text)]).resolve(0, link).map(|(to, f)| (to, f.is_some()))
+            } else {
+                n.resolve(0, link).map(|(to, f)| (to, f.is_some()))
+            };
+            prop_assert_eq!(resolved, Ok((0, true)), "{:?}", link);
         }
 
         /// Whatever the titles and folders, the text `link_text` gives

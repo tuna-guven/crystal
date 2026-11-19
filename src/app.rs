@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 use crate::commands::{self, Open};
 use crate::editor::view::View;
 use crate::editor::{Editor, EditorAction};
-use crate::md::render::{Kind, shown};
+use crate::md::render::{Kind, kind_of, shown};
 use crate::model::{NoteText, lines};
 use crate::notes::Notes;
 use crate::pager::{Pager, PagerAction};
@@ -490,13 +490,20 @@ fn save_before_lock(
 
 /// Opens the editor on `target`: a saved note's text, or an empty one.
 fn edit(notes: &Notes, target: Target, shell: &mut Shell) -> Mode {
-    let body = match &target {
-        Target::Note(note) => notes.note(*note).body.as_str(),
-        Target::New { .. } => "",
+    let (body, own, title) = match &target {
+        Target::Note(note) => {
+            let note_ref = notes.note(*note);
+            (note_ref.body.as_str(), Some(*note), note_ref.title.as_str())
+        }
+        Target::New { title, .. } => ("", None, title.as_str()),
     };
     match Editor::new(body) {
-        Ok(editor) => Mode::Edit(Box::new(Editing {
-            editor,
+        Ok(mut editor) => Mode::Edit(Box::new(Editing {
+            // For link suggestions into its own headings (decision 0075).
+            editor: {
+                editor.set_note(own, kind_of(title) == Kind::Markdown);
+                editor
+            },
             view: View::default(),
             target,
             preview: None,
@@ -535,8 +542,11 @@ fn save(session: &mut Session, e: &mut Editing, shell: &mut Shell, demo: bool) {
     if saved {
         e.editor.saved();
         if matches!(e.target, Target::New { .. }) {
-            // A new note is pushed last.
-            e.target = Target::Note(session.notes().len() - 1);
+            // A new note is pushed last; its type does not change.
+            let note = session.notes().len() - 1;
+            e.target = Target::Note(note);
+            let markdown = kind_of(session.notes().note(note).title.as_str()) == Kind::Markdown;
+            e.editor.set_note(Some(note), markdown);
         }
         shell.set_names(names(session.notes()));
     }

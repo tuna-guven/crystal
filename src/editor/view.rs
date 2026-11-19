@@ -299,8 +299,8 @@ impl View {
         // Rows below the cursor's row and above it, inside the text area.
         let below = area.bottom().saturating_sub(cursor_y + 1);
         let above = cursor_y.saturating_sub(area.y);
-        let wanted =
-            u16::try_from(list.notes.len().saturating_sub(list.top).min(ROWS)).unwrap_or(u16::MAX);
+        let wanted = u16::try_from(list.entries.len().saturating_sub(list.top).min(ROWS))
+            .unwrap_or(u16::MAX);
         let (rows, y) = if below >= wanted || below >= above {
             (wanted.min(below), cursor_y + 1)
         } else {
@@ -314,16 +314,20 @@ impl View {
         let first = list
             .top
             .max((list.highlight + 1).saturating_sub(usize::from(rows)));
-        let shown = list
-            .notes
-            .iter()
-            .enumerate()
-            .skip(first)
+        // Each row's text from the editor: a dimmed part (a folder, `# `)
+        // and the rest. An entry without one stays a blank row, so rows
+        // and `suggestion_at` agree.
+        let shown = (first..list.entries.len())
             .take(usize::from(rows))
-            .filter(|&(_, &note)| note < notes.len());
+            .map(|index| {
+                (
+                    index,
+                    editor.suggestion_label(index, notes).unwrap_or(("", "")),
+                )
+            });
         let longest = shown
             .clone()
-            .map(|(_, &note)| display_width(notes.name(note)))
+            .map(|(_, (dim, rest))| display_width(dim) + display_width(rest))
             .max()
             .unwrap_or(0);
         let width = u16::try_from(longest.saturating_add(2))
@@ -335,7 +339,7 @@ impl View {
         }
         let x = cursor_x.min(screen.right() - width);
         let mut drawn = 0;
-        for (row, (index, &note)) in (y..).zip(shown) {
+        for (row, (index, (folder, title))) in (y..).zip(shown) {
             drawn += 1;
             let (plain, folder_style) = if index == list.highlight {
                 (LIST_HIGHLIGHT, LIST_HIGHLIGHT_FOLDER)
@@ -343,15 +347,10 @@ impl View {
                 (LIST, LIST_FOLDER)
             };
             grid.fill(Rect::new(x, row, width, 1), plain);
-            let name = notes.name(note);
             let room = width - 2;
-            let fits = display_width(name) <= usize::from(room);
+            let fits = display_width(folder) + display_width(title) <= usize::from(room);
             // A name too long keeps its last column for `…`.
             let mut left = if fits { room } else { room - 1 };
-            let (folder, title) = match name.rfind('/') {
-                Some(at) => name.split_at(at + 1),
-                None => ("", name),
-            };
             let mut column = x + 1;
             for (part, style) in [(folder, folder_style), (title, plain)] {
                 let used = grid.put_str(column, row, part, style, left);
@@ -862,6 +861,16 @@ mod tests {
     /// with the cursor at its end that has typed `typed` through
     /// `key_in`, so the suggestion list is open.
     fn listing(names: &[&str], text: &str, typed: &str) -> (Editor, crate::notes::Notes) {
+        listing_with(names, "", text, typed)
+    }
+
+    /// `listing` with `first_body` as the first note's text.
+    fn listing_with(
+        names: &[&str],
+        first_body: &str,
+        text: &str,
+        typed: &str,
+    ) -> (Editor, crate::notes::Notes) {
         use crate::notes::tests::{note, notes};
         let n = notes(
             names
@@ -869,7 +878,7 @@ mod tests {
                 .zip(1u8..)
                 .map(|(name, id)| {
                     let (folder, title) = name.rsplit_once('/').unwrap_or(("", name));
-                    note(id, folder, title, "")
+                    note(id, folder, title, if id == 1 { first_body } else { "" })
                 })
                 .collect(),
         );
@@ -1034,10 +1043,11 @@ mod tests {
     }
 
     proptest! {
-        /// Any screen size, names (wide, combining, emoji) and highlight:
-        /// the list stays off the title and key lines, never covers the
-        /// cursor, shows the highlight when drawn, and no cell holds a
-        /// control character.
+        /// Any screen size, names (wide, combining, emoji) and highlight,
+        /// for a list of notes or of the first note's headings (the names
+        /// again, as `# NAME` lines): the list stays off the title and key
+        /// lines, never covers the cursor, shows the highlight when drawn,
+        /// and no cell holds a control character.
         #[test]
         fn suggestion_list_stays_in_bounds(
             width in 1u16..50,
@@ -1045,10 +1055,13 @@ mod tests {
             names in prop::collection::btree_set("[a-c日é😀]{1,3}(\u{301})?[a-z]{0,20}", 1..15),
             lines in 0usize..12,
             downs in 0usize..20,
+            headings in any::<bool>(),
         ) {
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let text = "x\n".repeat(lines);
-            let (mut ed, n) = listing(&names, &text, "[[");
+            let body: String = names.iter().map(|name| format!("# {name}\n")).collect();
+            let typed = if headings { format!("[[{}#", names[0]) } else { "[[".to_owned() };
+            let (mut ed, n) = listing_with(&names, &body, &text, &typed);
             let mut clip = Clipboard::default();
             for _ in 0..downs {
                 ed.key_in(Key::Down, &mut clip, &n);
@@ -1061,6 +1074,10 @@ mod tests {
             let mut highlighted = false;
             let mut drawn_any = false;
             let list = ed.suggestions().unwrap();
+            prop_assert_eq!(
+                list.source == crate::editor::suggest::Source::Notes,
+                !headings
+            );
             for y in 0..height {
                 for x in 0..width {
                     let cell = grid.cell(x, y).unwrap();
@@ -1072,7 +1089,7 @@ mod tests {
                     prop_assert_eq!(gray, entry.is_some());
                     if let Some(entry) = entry {
                         drawn_any = true;
-                        prop_assert!(entry < list.notes.len());
+                        prop_assert!(entry < list.entries.len());
                         prop_assert!(y > 0 && y + 1 < height, "list on row {y}");
                         let reversed = cell.style().mods.contains(Mods::REVERSED);
                         prop_assert_eq!(reversed, entry == list.highlight);

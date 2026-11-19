@@ -976,8 +976,12 @@ Ctrl+S; the demo notes are never saved, so no link is written there.
 `Session::save`, the codec and the atomic writer are unchanged: this
 is the only place where Crystal changes a note the user did not open,
 and only by adding an id the user chose. The list holds note indexes and
-byte ranges, never copies of their text, and draws headings and
-paragraphs of other notes through the grid, as `view` would show them.
+byte ranges, never copies of their text, except the headings of the note
+being edited: they are scanned from the editor's text into zeroizing
+strings, as the note index keeps every saved note's, once per link (an
+8 MiB note took 185 ms) and dropped when the list closes. Headings and
+paragraphs of other notes are drawn through the grid, as `view` would
+show them.
 Accepted at the user's request, for no security benefit. Rejected:
 vault-wide `[[##` and `[[^^`; rewriting headings with link characters;
 keeping the new id unsaved until Ctrl+S (it needs a save of two notes

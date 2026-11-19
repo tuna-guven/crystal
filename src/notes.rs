@@ -414,6 +414,18 @@ impl Notes {
     pub fn links(&self, index: usize) -> &[Zeroizing<String>] {
         &self.links[index]
     }
+
+    /// The headings of a note, in order, as links match them: for the
+    /// editor's link suggestions (decision 0075).
+    pub fn headings(&self, index: usize) -> &[Zeroizing<String>] {
+        &self.headings[index]
+    }
+}
+
+/// The headings of a Markdown note's text, as the index reads them, for
+/// the note being edited (decision 0075); zeroizing, like the index.
+pub fn headings_in(body: &str) -> Vec<Zeroizing<String>> {
+    scan(body).headings
 }
 
 /// `folder/title`, built once at its final size.
