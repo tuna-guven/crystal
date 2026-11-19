@@ -32,7 +32,7 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
-## Steps LR1 and LI1 to LI3 (live editing: reveal by word, viewer indentation)
+## Steps LR1 and LI1 to LI3 (live editing: reveal by word, viewer indentation; done)
 
 Asked for by the user (2026-11-19) after trying `edit --live`, with a
 complexity warning: (LR) only the element the cursor is in or beside is
@@ -50,14 +50,15 @@ editor shows the note's lines: blank lines stay as written (the viewer
 adds and merges blank rows), a code block's fence lines stay as gray
 rows at the box's top and bottom, tables stay as written (indented),
 and rows wrap by character, not by word. No security benefit; about
-330 lines of code and 250 of tests. Same rules as LE1 to LE7.
+330 lines of code and 250 of tests (with LE1 to LE7: about 1 000
+and 700). Same rules as LE1 to LE7.
 
 | Step | What | Check |
 | --- | --- | --- |
 | LR1 (done) | Reveal by word: `live::parse` also returns each element's range (inline tags, inline code, headings, fenced code blocks, list markers, quote `>`s, rules); the view draws as written only the elements the cursor touches (start to end, both ends included) or the selection overlaps, in place of whole lines. About 60 lines | Unit tests: typing a space after `**b**` styles it; the cursor on a heading line shows `#`; a selection reveals what it touches; a property test that every hidden or replaced byte lies in an element (so the cursor is never on something hidden) |
 | LI1 (done) | Line layout in `live.rs` (`live/layout.rs`): for each line, its leading markup, the viewer's prefix for its first row and for wrapped rows (section indent, quote bars, list markers or their width, heading icons), and a code line's gray padding, from the same container rules as `md::render`. Not drawn yet. About 150 lines | Unit tests: prefixes for sections, nested lists, quotes in lists, headings in quotes, code in a list |
 | LI2 (done) | The view draws the layout: a row's width less its prefix, prefix and padding drawn, leading markup hidden unless revealed (then the section indent and the markup as written), a click on a prefix to the row's start. About 120 lines | Unit tests on the drawn grid; the cursor property test with nested containers |
-| LI3 | Same as the viewer: a test renders sample notes in both and compares each text line's start column; decision 0045 and the setup guide updated; fmt, clippy, test, deny, audit, mdbook | The comparison test; review of the diff (format strings, unchecked graphemes, `unsafe`, syscalls, dependencies: expected none) |
+| LI3 (done) | Same as the viewer: a test renders sample notes in both and compares each text line's start column; decision 0045 and the setup guide updated; fmt, clippy, test, deny, audit, mdbook | The comparison test; review of the diff (format strings, unchecked graphemes, `unsafe`, syscalls, dependencies: expected none) |
 
 ## Steps LE1 to LE7 (live editing, experimental; done)
 

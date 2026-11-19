@@ -456,19 +456,26 @@ the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
-preview (no security benefit; about 400 lines of code, comments
-included, and 400 of tests), draws a Markdown note with its markup
-hidden and its text styled as in the viewer, without line numbers;
-only the elements the cursor is in or beside (an inline tag, inline
-code, a heading's line, a fenced code block, a list marker, a quote's
-`>`, a rule) and those the selection touches are drawn as written. The text, keys, undo and Crystal's
-clipboard are the plain editor's, so copying and saving keep the
-Markdown as written. Every grapheme drawn is the note's own, through
-the same checks as below, or a fixed marker (an icon, `•`, `│`, a
-rule); text the parser decodes is never drawn. The whole note is parsed
-on every frame (about 62 ms for 1 MiB in a release build), so a note over
-1 MiB is drawn as written. `--live` never creates a note, and a text
-note opens as usual.
+preview (no security benefit; about 1 000 lines of code, comments
+included, and 700 of tests), draws a Markdown note with its markup
+hidden and its text styled as in the viewer, without line numbers.
+Each line is indented as the viewer indents it (sections under their
+heading, quote bars, list markers with wrapped rows hanging, heading
+icons, code blocks as a gray box), the viewer's prefix standing in for
+the line's own leading markup; a test compares the columns with the
+viewer's. Rows stay the note's lines: blank lines are the note's own,
+fences are the box's top and bottom rows, tables stay as written, and
+rows wrap by character. Drawn as written are only the elements the
+cursor is in or beside (an inline tag, inline code, a heading's line,
+a fenced code block, a rule), a line's leading markup while the cursor
+is in it, and whatever the selection touches. The text, keys, undo and
+Crystal's clipboard are the plain editor's, so copying and saving keep
+the Markdown as written. Every grapheme drawn is the note's own,
+through the same checks as below, or a fixed string (an icon, `•`,
+`│`, spaces, a rule); text the parser decodes is never drawn. The whole
+note is parsed on every frame (about 62 ms for 1 MiB in a release
+build), so a note over 1 MiB is drawn as written. `--live` never
+creates a note, and a text note opens as usual.
 A Helix-style modal editor was
 written in part and removed: far more code on hostile text. Ctrl+Z is a
 key, so keyboard suspend is gone (an outside `SIGTSTP` still works,

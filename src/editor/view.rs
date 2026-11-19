@@ -1848,4 +1848,53 @@ mod tests {
         let grid = drawn(&mut ed, &mut view, 16, 12);
         assert_eq!(rows(&grid)[3], "- item");
     }
+
+    /// Where `word` starts on `grid`: its first cell, if drawn.
+    fn find(grid: &Grid, word: &str) -> Option<(u16, u16)> {
+        for y in 0..grid.height() {
+            let mut row = String::new();
+            let mut xs = Vec::new();
+            for x in 0..grid.width() {
+                let symbol = grid.cell(x, y).unwrap().symbol();
+                xs.extend(std::iter::repeat_n(x, symbol.len()));
+                row.push_str(symbol);
+            }
+            if let Some(i) = row.find(word) {
+                return Some((xs[i], y));
+            }
+        }
+        None
+    }
+
+    /// Same as the viewer (step LI3): every line of a note with headings,
+    /// nested lists, a lazy line, quotes, a list in a quote, numbers and a
+    /// code block starts its text in the column the viewer draws it in.
+    /// Rows may differ (the editor keeps the note's own blank lines).
+    #[test]
+    fn live_lines_start_where_the_viewer_draws_them() {
+        let text = "# Alpha\nbravo text\n## Charlie\ndelta para\n\n- echo item\n  - \
+                    foxtrot nested\n    golf lazy\n\n> hotel quote\n> - india listed\n\n\
+                    1. juliet first\n2. kilo second\n\n```\nlima code\n```\n\nmike end";
+        let words = [
+            "Alpha", "bravo", "Charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            "juliet", "kilo", "lima", "mike",
+        ];
+        let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 60);
+        let mut viewer = Grid::new(60, 40);
+        page.draw(&mut viewer, Rect::new(0, 0, 60, 40), 0);
+        // Live, the cursor at the end of the last line, plain text.
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new(text).unwrap();
+        for _ in 0..30 {
+            ed.key(Key::Down, &mut clip);
+        }
+        ed.key(Key::End, &mut clip);
+        let live = drawn(&mut ed, &mut View::live(), 61, 40);
+        for word in words {
+            let seen = find(&viewer, word).map(|(x, _)| x);
+            let shown = find(&live, word).map(|(x, _)| x);
+            assert!(seen.is_some(), "{word} not in the viewer");
+            assert_eq!(shown, seen, "{word}");
+        }
+    }
 }
