@@ -3,11 +3,11 @@
 # 0073, 0045 and 0076, docs/development/testing.md): what CI cannot do is
 # click in Ptyxis. CI already checks, through the binary, that clicks,
 # drags, double and triple clicks edit the right text, that a click in the
-# viewer follows a link or folds a heading, and that reports are off in
-# the shell and at prompts (tests/vault.rs,
+# viewer or the live editor follows a link or folds a heading, and that
+# reports are off in the shell and at prompts (tests/vault.rs,
 # mouse_clicks_and_drags_in_the_editor_only,
-# viewer_clicks_follow_links_and_fold); this checks by hand what the
-# terminal itself does.
+# viewer_clicks_follow_links_and_fold, live_editor_follows_links); this
+# checks by hand what the terminal itself does.
 #
 # Usage: scripts/check-mouse.sh VAULT
 # Runs the debug build with its in-memory demo notes (never saved) on an
@@ -62,7 +62,14 @@ In the editor:
      Ctrl+click it, nothing opens. Ctrl+click it: Ptyxis opens it
      (decision 0054; checked 2026-11-19). Shift+drag
      over a line: Ptyxis selects it. q: the shell.
-  7. In the shell, where 6a ended. A click and a drag type
+ 6b. Live mode (decision 0045): type  edit --live welcome . Move the
+     mouse over  Welcome : the bold orange  v  shows in the gutter;
+     click it: the section folds ( … ),  > . Click it again: open.
+     Fold it once more and press Down: the section opens, the cursor
+     inside. Click  guide#Keys : the guide opens live at  Keys .
+     Ctrl+Q, then  edit --live links : Ctrl+click  good : Ptyxis
+     opens it; a plain click only says to Ctrl+click. Ctrl+Q.
+  7. In the shell, where 6b ended. A click and a drag type
      nothing at the prompt; the wheel steps through the command history
      (Ptyxis sends it as Up and Down, as before the mouse work).
 

@@ -456,8 +456,8 @@ the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
-preview (no security benefit; about 1 000 lines of code, comments
-included, and 700 of tests), draws a Markdown note with its markup
+preview (no security benefit; about 1 500 lines of code, comments
+included, and 1 000 of tests, folding and link clicks included), draws a Markdown note with its markup
 hidden and its text styled as in the viewer, without line numbers.
 Each line is indented as the viewer indents it (sections under their
 heading, quote bars, list markers with wrapped rows hanging, heading
@@ -471,7 +471,10 @@ cursor is in or beside (an inline tag, inline code, a fenced code
 block, a rule, a heading's closing `#`s), a line's leading markup while
 the cursor is in it, and whatever the selection touches; a heading
 keeps its icon and color while the cursor is in its text, so typing in
-it stays in its style. The text, keys, undo and
+it stays in its style. What is not being edited works as in the
+viewer, by mouse ([0076](#0076)): a section folds by its heading's
+marker, a fold moving with every edit and opening when the cursor or
+the selection enters it; a click follows a link. The text, keys, undo and
 Crystal's clipboard are the plain editor's, so copying and saving keep
 the Markdown as written. Every grapheme drawn is the note's own,
 through the same checks as below, or a fixed string (an icon, `•`,
