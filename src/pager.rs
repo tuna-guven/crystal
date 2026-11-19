@@ -413,16 +413,15 @@ impl Pager {
     }
 
     /// A mouse report (decision 0076), at a cell counted from 0: moving
-    /// over a heading's marker makes it bold, a press on it folds or
-    /// unfolds its section, a press on a `[[link]]` follows it as Enter
+    /// over a heading's row shows its marker, a press on the row folds or
+    /// unfolds its section (a link in it excepted), a press on a `[[link]]` follows it as Enter
     /// does (on a web link it says to Ctrl+click), the wheel scrolls
     /// `WHEEL_ROWS`. Anything else does nothing. A press, like a key,
     /// clears the notice.
     fn mouse(&mut self, event: MouseEvent, column: u16, row: u16, notes: &Notes) -> PagerAction {
-        // On a heading's marker: its section.
-        let marker = (column < GUTTER)
-            .then(|| row.checked_sub(self.top_row))
-            .flatten()
+        // On a heading's row (its marker or its text): its section.
+        let heading = row
+            .checked_sub(self.top_row)
             .and_then(|at| self.drawn.get(usize::from(at)))
             .and_then(|&line| {
                 let page = self.page.as_ref()?;
@@ -430,7 +429,7 @@ impl Pager {
             })
             .filter(|_| self.backlinks.is_none());
         match event {
-            MouseEvent::Move => self.hover = marker.map(|_| row),
+            MouseEvent::Move => self.hover = heading.map(|_| row),
             MouseEvent::Press => {
                 self.notice = None;
                 let link = self
@@ -439,13 +438,14 @@ impl Pager {
                     .find(|c| c.y == row && c.x <= column && column - c.x < c.columns)
                     .map(|c| c.target)
                     .filter(|_| self.backlinks.is_none());
-                match (marker, link) {
-                    (Some(i), _) => self.toggle(i),
-                    (None, Some(LinkTarget::Note(link))) => {
+                // A link in a heading takes the click on its own cells.
+                match (link, heading) {
+                    (Some(LinkTarget::Note(link)), _) => {
                         self.selected = Some(link);
                         self.follow(notes);
                     }
-                    (None, Some(LinkTarget::Web)) => self.notice = Some(WEB_LINK),
+                    (Some(LinkTarget::Web), _) => self.notice = Some(WEB_LINK),
+                    (None, Some(i)) => self.toggle(i),
                     (None, None) => {}
                 }
             }
@@ -898,19 +898,22 @@ mod tests {
         assert_eq!(gutter(&mut p, &mut grid)[4], ">");
         p.key(at(MouseEvent::Press, 0, 5), &n);
         assert_eq!(gutter(&mut p, &mut grid)[4], "v");
-        for (column, row) in [(4, 5), (0, 3), (0, 11), (0, 0)] {
+        for (column, row) in [(4, 4), (0, 3), (0, 11), (0, 0)] {
             p.key(at(MouseEvent::Move, column, row), &n);
             assert_eq!(p.hover, None, "{column},{row}");
         }
         assert!(gutter(&mut p, &mut grid).iter().all(|s| s == " "));
-        // The blank column beside it counts as the marker too.
-        p.key(at(MouseEvent::Move, 1, 9), &n);
-        assert_eq!(p.hover, Some(9));
+        // Anywhere on the heading's row shows it: its text, the end.
+        for column in [1, 6, 39] {
+            p.key(at(MouseEvent::Move, column, 9), &n);
+            assert_eq!(p.hover, Some(9), "{column}");
+        }
+        assert_eq!(gutter(&mut p, &mut grid)[8], "v");
     }
 
-    /// A press on a heading's marker folds its section, another unfolds
-    /// it; presses anywhere else, drags and releases change nothing. The
-    /// wheel scrolls three rows.
+    /// A press on a heading's row, its marker or its text, folds its
+    /// section, another unfolds it; presses on other rows, drags and
+    /// releases change nothing. The wheel scrolls three rows.
     #[test]
     fn a_click_on_a_marker_folds_and_the_wheel_scrolls() {
         let n = outline();
@@ -919,10 +922,15 @@ mod tests {
         p.key(at(MouseEvent::Press, 0, 5), &n);
         let shown = rows(&mut p, &n, 40, 12);
         assert_eq!(shown[5..7], ["    ○ B …", "    ○ C"]);
+        // On its text: unfolds; past its end: folds again.
+        p.key(at(MouseEvent::Press, 6, 5), &n);
+        assert!(p.folded.is_empty());
+        p.key(at(MouseEvent::Press, 30, 5), &n);
+        assert_eq!(p.folded.len(), 1);
         p.key(at(MouseEvent::Press, 0, 5), &n);
         assert!(p.folded.is_empty());
         for event in [MouseEvent::Press, MouseEvent::Drag, MouseEvent::Release] {
-            for (column, row) in [(4, 5), (0, 3), (0, 0), (0, 11), (39, 1)] {
+            for (column, row) in [(4, 2), (0, 3), (0, 0), (0, 11), (39, 4)] {
                 p.key(at(event, column, row), &n);
             }
         }
@@ -982,6 +990,18 @@ mod tests {
         p.key(at(MouseEvent::Press, 4, 3), &n);
         assert_eq!(p.notice, Some("no note with that name"));
         assert_eq!(p.note, 0);
+        // A link in a heading: on the link it follows, elsewhere on the
+        // row the section folds.
+        let n = notes(vec![
+            note(1, "", "h", "# To [[b]]\n\ntext"),
+            note(2, "", "b", "B"),
+        ]);
+        let mut p = Pager::open(0);
+        assert_eq!(rows(&mut p, &n, 40, 8)[1], "  ◉ To b");
+        p.key(at(MouseEvent::Press, 3, 1), &n);
+        assert_eq!(p.folded.len(), 1);
+        p.key(at(MouseEvent::Press, 7, 1), &n);
+        assert_eq!(rows(&mut p, &n, 40, 8)[0], " b");
     }
 
     /// With folds, paging and the ends count shown lines only, and the

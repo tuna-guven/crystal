@@ -52,9 +52,10 @@ In the editor:
      Ctrl+Shift+C copies it, line numbers included. A plain click does
      not clear it; Shift+click does.
   6. Ctrl+E: the preview (decision 0076). No marker left of the
-     headings. Move the mouse left of  Welcome : a bold orange  v  shows
-     there; away: it goes. Click it: the section folds ( … ) and the
-     marker becomes  > ; again: it unfolds,  v . The wheel scrolls.
+     headings. Move the mouse over  Welcome : a bold orange  v  shows
+     left of it; away: it goes. Click the heading: the section folds
+     ( … ) and the marker becomes  > ; again: it unfolds,  v .
+     Shift+drag over a line: Ptyxis selects it. The wheel scrolls.
      Click  guide#Keys : the guide opens at  Keys ; Backspace: back.
      Ctrl+E again: back in the editor, clicks work again.
  6a. Ctrl+Q twice, then  view links : click  good : a notice says to
