@@ -23,6 +23,9 @@ use crate::ui::clipboard::Clipboard;
 
 /// Rows the list shows at once; the rest scroll.
 pub const ROWS: usize = 8;
+/// The most notes the list holds: the best matches; typing more finds
+/// the others.
+pub const MAX_MATCHES: usize = 100;
 
 /// The open list. No Debug, like the editor that holds it.
 pub struct List {
@@ -190,7 +193,8 @@ pub fn query(text: &str, cursor: usize) -> Option<Range<usize>> {
 
 /// The notes whose full name holds every word of `query`, ignoring case,
 /// as indexes: those whose title starts with the whole query first, then
-/// by name (`cmp_ci`, as `ls` sorts). A blank query matches every note.
+/// by name (`cmp_ci`, as `ls` sorts), at most `MAX_MATCHES` of them. A
+/// blank query matches every note.
 pub fn matches(query: &str, notes: &Notes) -> Vec<usize> {
     let whole = query.trim();
     let mut found: Vec<usize> = (0..notes.len())
@@ -201,12 +205,19 @@ pub fn matches(query: &str, notes: &Notes) -> Vec<usize> {
         .collect();
     // `true` sorts after `false`: put "starts with" first by comparing
     // the negation.
-    found.sort_by(|&a, &b| {
+    let order = |&a: &usize, &b: &usize| {
         let late = |i: usize| !starts_ci(notes.note(i).title.as_str(), whole);
         late(a)
             .cmp(&late(b))
             .then_with(|| cmp_ci(notes.name(a), notes.name(b)))
-    });
+    };
+    // Only the best `MAX_MATCHES` are kept, found without sorting the rest:
+    // in a vault of 100 000 notes, sorting every match cost 170 ms a key.
+    if found.len() > MAX_MATCHES {
+        found.select_nth_unstable_by(MAX_MATCHES - 1, order);
+        found.truncate(MAX_MATCHES);
+    }
+    found.sort_by(order);
     found
 }
 
@@ -328,6 +339,52 @@ mod tests {
     fn titles_starting_with_the_query_come_first() {
         assert_eq!(found("plan"), ["plan", "work/plan", "home/Garden plan"]);
         assert_eq!(found("Gar"), ["home/Garden plan"]);
+    }
+
+    #[test]
+    fn only_the_best_matches_are_kept() {
+        // Notes made in a scrambled order (37 is prime to 300), so the
+        // cut must find the best ones, not the first ones.
+        let list: Vec<_> = (0..300u16)
+            .map(|i| {
+                let k = i * 37 % 300;
+                let folder = if k % 2 == 0 { "" } else { "x" };
+                note(
+                    u8::try_from(i % 250).unwrap(),
+                    folder,
+                    &format!("n{k:03}"),
+                    "",
+                )
+            })
+            .collect();
+        let mut list = list;
+        for (i, n) in list.iter_mut().enumerate() {
+            let mut id = [0; 16];
+            id[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+            n.id = crate::model::NoteId::from_bytes(id);
+        }
+        let n = notes(list);
+        let names = |query: &str| -> Vec<String> {
+            matches(query, &n)
+                .into_iter()
+                .map(|i| n.name(i).to_owned())
+                .collect()
+        };
+        // Blank: by name, top-level `n000`... before `x/...`.
+        let all = names("");
+        assert_eq!(all.len(), MAX_MATCHES);
+        let expected: Vec<String> = (0..MAX_MATCHES).map(|k| format!("n{:03}", 2 * k)).collect();
+        assert_eq!(all, expected);
+        // `n1`: the 100 titles starting with it (n100 to n199), by full
+        // name: the 50 top-level ones, then the 50 in `x/`.
+        let ones = names("n1");
+        assert_eq!(ones.len(), MAX_MATCHES);
+        assert_eq!(ones[0], "n100");
+        assert_eq!(ones[49], "n198");
+        assert_eq!(ones[50], "x/n101");
+        assert_eq!(ones[MAX_MATCHES - 1], "x/n199");
+        // Fewer than the cap: all of them.
+        assert_eq!(names("n29").len(), 10);
     }
 
     #[test]
