@@ -48,7 +48,7 @@ Commands:
   edit NAME     the note in the editor: Ctrl+S saves, Ctrl+E shows it
                 rendered, Ctrl+Q closes. A missing NAME (FOLDER/NAME in
                 a folder) is created after you type y, as Markdown or
-                text; it exists once Ctrl+S saves it
+                text; it exists once Ctrl+S saves it. --live NAME: styled
   mv OLD NEW    rename or move a note; [[links]] to it follow
   rm NAME       delete a note for good, after you type y
   links         every [[link]] that leads nowhere

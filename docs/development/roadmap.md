@@ -29,8 +29,10 @@ rendered, Ctrl+Q closes), creating a missing note after asking for its
 type (Markdown or text), shown dimmed after every name. In the editor the
 mouse places the cursor, selects (drag, double and triple click) and
 scrolls; after `[[` it suggests notes to link, filtered as you type.
+`edit --live` (an experiment) shows the Markdown styled on every line
+but the cursor's, as in Obsidian's live preview.
 
-## Steps LE1 to LE7 (live editing, experimental)
+## Steps LE1 to LE7 (live editing, experimental; done)
 
 Asked for by the user (2026-11-19) after a complexity warning, as an
 experiment: `edit --live NAME` opens a Markdown note in the editor with
@@ -73,7 +75,7 @@ clippy, tests, deny and audit green.
 | LE4 (done) | Blocks: list markers as `•`, task boxes dimmed `[ ]`/`[x]` as in the viewer, quote bars `│`, code blocks gray with fences hidden, rules `─`. About 100 lines | Unit tests per block |
 | LE5 (done) | Mouse and clipboard: clicks and drags on styled lines land on the grapheme under them; Ctrl+C copies the Markdown as written, Ctrl+V pastes it unchanged. Measured in a release build: a live frame costs 4.6 ms for 0.1 MiB, 43 ms for 1 MiB, 370 ms for 8 MiB (as written: 0.2, 1.1, 8 ms), and a cache would help only moving, not typing, so instead of one (the user's choice) a note over 1 MiB (`LIVE_MAX`) is drawn as written, `live` leaves the title, and opening one says so. About 15 lines | Unit tests: a click on a styled word or a heading's icon; copy and paste in live mode; the size limit |
 | LE6 (done) | Through the binary: `edit --live` shows a styled note (title `live`, a line away from the cursor without its markup), Ctrl+S saves the Markdown as written (the plain editor shows it again), `edit --live` of a missing note refuses | The binary test `live_edit_styles_and_saves_the_markdown`; checked once that it fails when `--live` opens the plain view |
-| LE7 | Acceptance: decision 0045 updated in place, setup guide (`edit --live`), help text, status line; fmt, clippy, test, deny, audit, mdbook | Review of the LE1 to LE6 diff for note text in format strings, unchecked graphemes drawn, `unsafe`, syscalls or dependencies (expected: none) |
+| LE7 (done) | Acceptance: decision 0045 updated in place, setup guide (`edit --live`), help text, status line; fmt, clippy, test, deny, audit, mdbook | Review of the LE1 to LE6 diff for note text in format strings, unchecked graphemes drawn, `unsafe`, syscalls or dependencies (expected: none) |
 
 ## Steps Q0 to Q5 (the mouse in the viewer; done)
 

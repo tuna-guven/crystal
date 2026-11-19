@@ -455,6 +455,18 @@ comments included, and 790 of tests). After a `#` or `^` in the link
 the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
+`edit --live NAME`, an experiment asked for to match Obsidian's live
+preview (no security benefit; about 400 lines of code, comments
+included, and 400 of tests), draws a Markdown note with its markup
+hidden and its text styled as in the viewer on every line but those
+the cursor and the selection are on. The text, keys, undo and Crystal's
+clipboard are the plain editor's, so copying and saving keep the
+Markdown as written. Every grapheme drawn is the note's own, through
+the same checks as below, or a fixed marker (an icon, `•`, `│`, a
+rule); text the parser decodes is never drawn. The whole note is parsed
+on every frame (43 ms for 1 MiB in a release build), so a note over
+1 MiB is drawn as written. `--live` never creates a note, and a text
+note opens as usual.
 A Helix-style modal editor was
 written in part and removed: far more code on hostile text. Ctrl+Z is a
 key, so keyboard suspend is gone (an outside `SIGTSTP` still works,
