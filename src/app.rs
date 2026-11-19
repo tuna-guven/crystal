@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 
 use crate::commands::{self, Open};
 use crate::editor::suggest::{ID_FULL, ID_REFUSED};
-use crate::editor::view::View;
+use crate::editor::view::{LIVE_MAX, View};
 use crate::editor::{Editor, EditorAction};
 use crate::md::blocks::{add_id, blocks};
 use crate::md::render::{Kind, kind_of, shown};
@@ -548,6 +548,9 @@ fn edit(notes: &Notes, target: Target, live: bool, shell: &mut Shell) -> Mode {
             // For link suggestions into its own headings (decision 0075).
             editor: {
                 editor.set_note(own, markdown);
+                if live && markdown && body.len() > LIVE_MAX {
+                    editor.tell("Too large for live mode: shown as written.");
+                }
                 editor
             },
             view: if live && markdown {

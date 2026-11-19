@@ -6,7 +6,8 @@
 //! cursor and the selection are on is drawn as `live::runs` says, its
 //! markup hidden (zero columns) or replaced by a fixed string, its text
 //! styled; every grapheme shown still goes through the checks below. The
-//! runs are made again on every frame. It wraps by grapheme: a
+//! runs are made again on every frame, so a note over `LIVE_MAX` is drawn
+//! as written. It wraps by grapheme: a
 //! row ends where the next grapheme would not fit, or at a line break.
 //! One column on the right stays free for the cursor at a row's end. A tab
 //! advances to the next multiple of 4 columns. A control or BiDi character,
@@ -84,6 +85,10 @@ const HEADING_HINTS: &str =
 const BLOCK_HINTS: &str = "Blocks · Up/Down, wheel: choose · Enter, Tab, click: link (an ^id \
                            is added if missing) · Esc close";
 const TAB_STOP: usize = 4;
+/// Live mode draws a note only up to this size: the whole note is parsed
+/// on every frame, about 43 ms for 1 MiB in a release build (370 ms for
+/// 8 MiB). A larger note is drawn as written.
+pub const LIVE_MAX: usize = 1 << 20;
 /// Line numbers are shown only if this many columns stay for the text, as
 /// in the viewer.
 const MIN_TEXT: u16 = 20;
@@ -301,8 +306,9 @@ impl View {
         self.cursor = None;
         self.list = None;
 
+        let live = self.live && editor.text().len() <= LIVE_MAX;
         // `[+]` and `live` stay visible however long the name.
-        let unsaved = match (self.live, editor.is_dirty()) {
+        let unsaved = match (live, editor.is_dirty()) {
             (true, true) => "live [+]",
             (true, false) => "live",
             (false, true) => "[+]",
@@ -336,7 +342,8 @@ impl View {
         let area = Rect::new(body.x + gutter, body.y, body.width - gutter, body.height);
         let width = usize::from(area.width - 1);
         self.area = Some(area);
-        if self.live {
+        self.look = Live::default();
+        if live {
             // The lines the cursor and the selection are on stay as written.
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
@@ -1508,5 +1515,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Live mode (step LE5): a click on a styled line lands on the
+    /// grapheme drawn under it, and a heading's icon on the heading's
+    /// start; the clicked line is then drawn as written.
+    #[test]
+    fn live_clicks_land_on_what_is_drawn() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("# Title\n**bold** word\nlast").unwrap();
+        for key in [Key::Down, Key::Down, Key::End] {
+            ed.key(key, &mut clip);
+        }
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 40, 6);
+        assert_eq!(rows(&grid)[2], "2 bold word");
+        let at = |view: &View, x, y| view.position_at(ed.text(), x, y, false);
+        // `w` of word, after the gutter's `2 ` and `bold `.
+        assert_eq!(at(&view, 7, 2), Some(17));
+        // `b` of bold, past the hidden `**`.
+        assert_eq!(at(&view, 2, 2), Some(10));
+        // Both cells of the icon: the heading's start; then `T`.
+        assert_eq!(at(&view, 2, 1), Some(0));
+        assert_eq!(at(&view, 3, 1), Some(0));
+        assert_eq!(at(&view, 4, 1), Some(2));
+        ed.mouse(MouseEvent::Press, Some(17), std::time::Instant::now());
+        assert_eq!(ed.cursor(), 17);
+        let grid = drawn(&mut ed, &mut view, 40, 6);
+        assert_eq!(rows(&grid)[2], "2 **bold** word");
+        assert_eq!(cursor_cell(&grid), Some((11, 2)));
+    }
+
+    /// Crystal's clipboard in live mode (step LE5): copying takes the
+    /// Markdown as written, pasting puts it back unchanged.
+    #[test]
+    fn live_copy_and_paste_keep_the_markdown() {
+        let text = "# Title\n**bold** [[Note|alias]]\n> quote\n";
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new(text).unwrap();
+        let mut view = View::live();
+        drawn(&mut ed, &mut view, 40, 6);
+        for key in [Key::Down, Key::ShiftEnd, Key::Ctrl('c')] {
+            ed.key(key, &mut clip);
+        }
+        assert_eq!(clip.get(), Some("**bold** [[Note|alias]]"));
+        for key in [Key::Ctrl('a'), Key::Ctrl('c')] {
+            ed.key(key, &mut clip);
+        }
+        assert_eq!(clip.get(), Some(text));
+        let mut pasted = Editor::new("").unwrap();
+        drawn(&mut pasted, &mut View::live(), 40, 6);
+        pasted.key(Key::Ctrl('v'), &mut clip);
+        assert_eq!(pasted.text(), text);
+    }
+
+    /// Above `LIVE_MAX` live mode draws as written and the title drops
+    /// `live` (step LE5); at the limit it is still live.
+    #[test]
+    fn live_mode_stops_above_the_size_limit() {
+        let mut clip = Clipboard::default();
+        let mut text = "**b**\n".to_owned();
+        text.push_str(&"x".repeat(LIVE_MAX - text.len()));
+        let mut ed = Editor::new(&text).unwrap();
+        ed.key(Key::Down, &mut clip);
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 40, 4);
+        let shown = rows(&grid);
+        assert!(shown[0].ends_with(" live"));
+        assert_eq!(shown[1], "1 b");
+        ed.key(Key::Char('x'), &mut clip);
+        let grid = drawn(&mut ed, &mut view, 40, 4);
+        let shown = rows(&grid);
+        assert!(shown[0].ends_with(" [+]") && !shown[0].contains("live"));
+        assert_eq!(shown[1], "1 **b**");
     }
 }
