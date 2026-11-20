@@ -506,11 +506,16 @@ editor finds the cells on such a key from the same parse the view
 draws from, only when the cursor's line holds a `|`, so nothing about
 tables is kept in step with edits. Wherever the box could not show the
 cursor, the table is drawn as written with its cells styled: the
-cursor on a pipe, the padding or the `|---|` line (a click can put it
-there), a selection reaching out of the table, a column narrower than
-3, and a cell holding a tab or a character spelled out ([0037](#0037)),
-which is drawn wider than a table measures it. A short row's missing
-cells are no place of it. As in Obsidian, Tab in a short row's last
+cursor on a pipe, the padding or the `|---|` line (only an edit or undo
+can put it there: clicks and drags land in the nearest cell, as keys
+do), a column narrower than 3, and a cell holding a tab or a character
+spelled out ([0037](#0037)), which is drawn wider than a table measures
+it. A selection keeps the table boxed, also one reaching out of it, its
+cells' text highlighted: drawn as written, the table had other rows
+than the box, so a drag over it landed on other text each frame and
+flickered between the two. A short row's missing cells are no place of
+it. Backspace in a body row whose cells are all empty deletes the row,
+as in Obsidian. As in Obsidian, Tab in a short row's last
 cell adds its missing cells (`  |` each) and goes to the first, and Tab
 in the table's last cell adds a row of empty cells after it, in the
 last line's quote or list; an empty cell holds the cursor after its

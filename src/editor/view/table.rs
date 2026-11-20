@@ -9,9 +9,9 @@
 //! boxed line is drawn whole from those ranges (`draw_boxed`), the cursor
 //! and the selection in its cells. The rule that keeps the cursor seen:
 //! a position no cell holds (a hidden pipe, the padding, the `|---|`
-//! line) has no place in the box, so with the cursor there, or a
-//! selection reaching out of the table, the table is drawn as written
-//! (`in_cells`). Which screen row holds the cursor is `Look::holds`'s to
+//! line) has no place in the box, so with the cursor there the table is
+//! drawn as written (`in_cells`); a selection, even one reaching out of
+//! the table, keeps it boxed (step TD3). Which screen row holds the cursor is `Look::holds`'s to
 //! say, for drawing and scrolling alike. A click lands on the grapheme
 //! drawn under it (`click_boxed`). Every grapheme in a cell still goes
 //! through `glyph::put`, so the checks for hidden characters hold in
@@ -83,22 +83,24 @@ impl Boxed {
     }
 }
 
-/// Whether an edited table stays boxed (step TB1): the cursor is in the
-/// text of one of its cells, or the spaces after it (`live::cell_reach`:
-/// a space just typed there), and a selection, if any, stays inside its
-/// lines, from `start` to `end`. Anywhere else in it (a hidden pipe, the
-/// padding, the `|---|` line) the cursor would not be drawn, and a
-/// selection reaching out of it would show its hidden bytes as nothing,
-/// so the table is drawn as written then, as before step TB1.
+/// Whether an edited table stays boxed (steps TB1, TD3): the cursor is
+/// off its lines (from `start` to `end`; a selection reaching in from
+/// outside), or in the text of one of its cells, or the spaces after it
+/// (`live::cell_reach`: a space just typed there). Anywhere else in it (a
+/// hidden pipe, the padding, the `|---|` line) the cursor would not be
+/// drawn, so the table is drawn as written then. A selection keeps it
+/// boxed (its cells' text highlighted, the hidden pipes and padding it
+/// covers not shown): drawn as written, the table had other rows than the
+/// box, so a drag over it landed on other text each frame and flickered
+/// between the two.
 fn in_cells(table: &Table, text: &str, editing: Editing, start: usize, end: usize) -> bool {
-    let selection = editing.selection;
-    let inside = selection.is_empty() || (start <= selection.start && selection.end <= end);
-    inside
-        && table
+    let cursor = editing.cursor;
+    !(start..=end).contains(&cursor)
+        || table
             .rows
             .iter()
             .flat_map(|(_, cells)| cells)
-            .any(|cell| (cell.start..=cell_reach(text, cell)).contains(&editing.cursor))
+            .any(|cell| (cell.start..=cell_reach(text, cell)).contains(&cursor))
 }
 
 /// Whether every grapheme of the table's cells is drawn as wide as it is
@@ -155,8 +157,8 @@ fn fit(prefix: &[Piece], natural: &[u16], width: usize) -> Option<Vec<u16>> {
 }
 
 /// Step 5, the boxed tables (steps LT2, LW2, LW3, TB1): a table not
-/// folded whose columns fit is boxed, unless the cursor or the selection
-/// is in it in a way the box cannot show (`in_cells`).
+/// folded whose columns fit is boxed, unless the cursor is in it where
+/// the box cannot show it (`in_cells`).
 /// Its border rows go into `drawn` (none in a fold or right after one),
 /// their pieces into the layout's; each of its lines becomes a `Boxed`,
 /// drawn whole from its cells. Returns them, sorted.

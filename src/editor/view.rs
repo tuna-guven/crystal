@@ -1874,12 +1874,41 @@ mod tests {
         }
     }
 
+    /// A mouse drag from a cell down past the table and back (step TD3):
+    /// every frame boxed, the same rows, so the drag lands where the mouse
+    /// is; on the line below, the selection covers the table's last row.
+    #[test]
+    fn dragging_over_a_live_table_keeps_it_boxed() {
+        use crate::shell::keys::MouseEvent;
+        let text = "| a | bb |\n|---|---|\n| c | d |\n\nbelow";
+        let mut ed = Editor::new(text).unwrap();
+        ed.set_live(true);
+        let mut view = View::live();
+        ed.jump_to(text.len());
+        let boxed = rows(&drawn(&mut ed, &mut view, 30, 10));
+        let (ax, ay) = find(&drawn(&mut ed, &mut view, 30, 10), "a │").unwrap();
+        let (bx, by) = find(&drawn(&mut ed, &mut view, 30, 10), "below").unwrap();
+        let now = std::time::Instant::now();
+        let at = view.position_at(text, ax, ay, false);
+        ed.mouse(MouseEvent::Press, at, now);
+        for (x, y) in [(bx + 2, by), (ax, ay + 2), (bx + 2, by), (bx + 3, by)] {
+            let at = view.position_at(ed.text(), x, y, true);
+            ed.mouse(MouseEvent::Drag, at, now);
+            let grid = drawn(&mut ed, &mut view, 30, 10);
+            assert_eq!(rows(&grid)[..6], boxed[..6], "{:#?}", rows(&grid));
+        }
+        assert_eq!(
+            ed.selection(),
+            Some(text.find('a').unwrap()..text.len() - 2)
+        );
+    }
+
     /// Typing inside a boxed table (step TB1): the table stays boxed while
     /// the cursor is in a cell's text, drawn on the cell's character or
     /// right after its text, in an empty cell at its column's start; a
-    /// selection inside the table is reversed in its cells. On a hidden
-    /// pipe, or with a selection reaching out of the table, it is drawn as
-    /// written.
+    /// selection is reversed in its cells, also one reaching out of the
+    /// table, which stays boxed (step TD3: a drag over it flickered). On a
+    /// hidden pipe it is drawn as written.
     #[test]
     fn live_tables_stay_boxed_while_edited() {
         let text = "| a | bb |  |\n|---|---|---|\n| c | d | e |\n\nend";
@@ -1911,13 +1940,17 @@ mod tests {
         let grid = drawn(&mut ed, &mut view, 30, 10);
         assert_eq!(rows(&grid), boxed);
         assert!(style_at(&grid, x, y).mods.contains(Mods::REVERSED));
-        // Reaching out of the table, or the cursor on a hidden pipe: as
-        // written.
+        // Reaching out of the table: still boxed, the cells it covers
+        // reversed.
         ed.key(Key::ShiftDown, &mut clip);
         ed.key(Key::ShiftDown, &mut clip);
         ed.key(Key::ShiftDown, &mut clip);
+        assert!(ed.cursor() > text.find("\n\nend").unwrap());
         let grid = drawn(&mut ed, &mut view, 30, 10);
-        assert!(!rows(&grid).concat().contains('┌'), "{:#?}", rows(&grid));
+        assert_eq!(rows(&grid)[..6], boxed[..6]);
+        let (cx, cy) = find(&grid, "│ c │").unwrap();
+        assert!(style_at(&grid, cx + 2, cy).mods.contains(Mods::REVERSED));
+        // The cursor on a hidden pipe: as written.
         ed.jump_to(0);
         let grid = drawn(&mut ed, &mut view, 30, 10);
         assert!(rows(&grid)[1].contains("| a | bb |"), "{:#?}", rows(&grid));
