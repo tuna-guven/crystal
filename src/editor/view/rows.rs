@@ -6,8 +6,10 @@
 //!   wraps or its line ends (a boxed table's line is one row, whole);
 //! - a drawn row: a row live mode shows that the note has no line for (the
 //!   viewer's blank row, a table's border, a wrapped table row's further
-//!   rows; `Look::drawn`). It holds no cursor position: a click there goes
-//!   to the line below or to the table cell drawn there.
+//!   rows; `Look::drawn`). It holds no cursor position (a click there
+//!   goes to the line below), except a wrapped table row's further row:
+//!   the cursor in a cell is drawn on the row of the cell's text holding
+//!   it (step TB1). Which row holds the cursor is `Look::holds`'s to say.
 //!
 //! Rows are found by walking forward from a known row start, never kept:
 //! a cache would have to follow every edit. Every walk goes through the
@@ -92,8 +94,9 @@ pub struct Row {
     /// Columns left of its text for live mode's prefix (0 when the prefix
     /// would leave no room).
     pub indent: usize,
-    /// A drawn row (steps LV2, LT2, LW1): no text of the note; it holds
-    /// no position.
+    /// A drawn row (steps LV2, LT2, LW1): no range of the note; it holds
+    /// no position, except a wrapped table row's further row, whose cells
+    /// hold the cursor (step TB1, `Look::holds`).
     pub drawn: bool,
 }
 
@@ -164,8 +167,9 @@ pub fn row_at(text: &str, start: RowStart, width: usize, live: &Look) -> Row {
         };
     }
     let start = start.line();
-    // A boxed table's line: one row, whole (step LW2), as the cursor is
-    // never in it, so it never needs wrapping to show the cursor.
+    // A boxed table's line: one row, whole (step LW2); its cells wrap
+    // inside the box, onto drawn rows before the next line (step LW3),
+    // which hold the cursor in a cell (step TB1, `Look::holds`).
     if let Some(boxed) = live.boxed_at(start) {
         let rest = &text[boxed.end..];
         let break_len = if rest.starts_with("\r\n") {
@@ -261,7 +265,7 @@ pub fn row_start(text: &str, at: RowStart, width: usize, live: &Look) -> RowStar
     );
     // The first row of the line holding `at`, or its last.
     rows(text, start, width, live)
-        .find(|(_, row)| row.contains(at) || row.next.is_none())
+        .find(|(start, row)| live.holds(*start, row, at) || row.next.is_none())
         .map_or(start, |(start, _)| start)
 }
 
@@ -280,13 +284,17 @@ pub fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Look
     let mut until = Some(cursor);
     loop {
         let mut last = VecDeque::with_capacity(need);
+        // The cursor on a wrapped table cell's further row (step TB1) is
+        // past its line's own row: those rows go before the next line.
+        let further = until.is_some_and(|at| live.boxed_spot(at).is_some_and(|(_, k, _)| k > 0));
         // A line's rows start with its drawn rows, if it has any.
         for (start, row) in self::rows(text, live.first_row(line), width, live) {
             if last.len() == need {
                 last.pop_front();
             }
             last.push_back(start);
-            if row.ends_line || until.is_some_and(|at| row.contains(at)) {
+            let holds = until.is_some_and(|at| live.holds(start, &row, at));
+            if holds || (row.ends_line && !further) {
                 break;
             }
         }

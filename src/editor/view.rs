@@ -310,7 +310,9 @@ impl View {
             if let Some(&Drawn::Cells { boxed, row }) = self.look.drawn_row(next) {
                 let row_area = Rect::new(area.x, y, area.width, 1);
                 let boxed = &self.look.boxed[boxed];
-                draw_boxed(grid, row_area, text, &self.look, boxed, row);
+                if let Some(x) = draw_boxed(grid, row_area, editor, &self.look, boxed, row) {
+                    self.cursor = Some((x, y));
+                }
                 continue;
             }
             if row.drawn {
@@ -452,15 +454,19 @@ impl View {
         if self.top == RowStart::text(0) {
             self.top = live.first_row(0);
         }
-        if cursor < self.top.line() {
-            self.top = row_start(text, RowStart::text(cursor), width, live);
-            return;
-        }
-        // On screen, or above the text's last row: nothing to do.
-        for (_, row) in self::rows(text, self.top, width, live).take(rows) {
-            if row.contains(cursor) || row.next.is_none() {
+        // On screen, or above the text's last row: nothing to do. The
+        // first row shown may be a wrapped table row's further row, which
+        // goes before the next line, so a cursor before `top`'s line can
+        // still be on screen (step TB1).
+        let above = cursor < self.top.line();
+        for (start, row) in self::rows(text, self.top, width, live).take(rows) {
+            if live.holds(start, &row, cursor) || (!above && row.next.is_none()) {
                 return;
             }
+        }
+        if above {
+            self.top = row_start(text, RowStart::text(cursor), width, live);
+            return;
         }
         // Below the screen: the cursor's row becomes the last one shown.
         self.top = top_for(text, cursor, width, rows, live);
@@ -488,14 +494,27 @@ fn put_grapheme(
     glyph::put(grid, cell, grapheme, column, style, live.at(at).0, link)
 }
 
+/// The style of the grapheme at `at`: the cursor's, the selection's, or
+/// as `live` draws it. The cursor just outside the selection is only
+/// underlined.
+fn drawn_style(editor: &Editor, live: &Look, at: usize) -> Style {
+    let selection = editor.selection().unwrap_or(0..0);
+    match (at == editor.cursor(), selection.contains(&at)) {
+        (true, false) if !selection.is_empty() => CURSOR_BESIDE,
+        (true, _) => CURSOR,
+        (false, true) => SELECTED,
+        (false, false) => live.at(at).1,
+    }
+}
+
 /// Draws one row: its graphemes, the selection, and the cursor (after the
 /// last grapheme when it sits at the line's end), each grapheme as `live`
 /// says. Returns the column the cursor was drawn at, if on this row.
 fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Look) -> Option<u16> {
-    // A boxed table's line: drawn whole, never holding the cursor.
+    // A boxed table's line: its first screen row, drawn whole from its
+    // cells, the cursor in it if there (step TB1).
     if let Some(boxed) = live.boxed_at(row.range.start).filter(|_| !row.drawn) {
-        draw_boxed(grid, area, editor.text(), live, boxed, 0);
-        return None;
+        return draw_boxed(grid, area, editor, live, boxed, 0);
     }
     // Live mode's prefix, then the text right of it.
     let prefix = live.prefix(row.range.start);
@@ -514,13 +533,7 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Look
     let area = Rect::new(area.x + indent, area.y, area.width - indent, area.height);
     let mut cursor = None;
     let text = editor.text();
-    let selection = editor.selection().unwrap_or(0..0);
-    let style_at = |at: usize| match (at == editor.cursor(), selection.contains(&at)) {
-        (true, false) if !selection.is_empty() => CURSOR_BESIDE,
-        (true, _) => CURSOR,
-        (false, true) => SELECTED,
-        (false, false) => live.at(at).1,
-    };
+    let style_at = |at: usize| drawn_style(editor, live, at);
     let mut column = 0;
     for (i, grapheme) in text[row.range.clone()].grapheme_indices(true) {
         let at = row.range.start + i;
@@ -1852,6 +1865,136 @@ mod tests {
             let tail = &rows(&live)[14 - height..14];
             assert_eq!(rows(&grid)[1..=height], *tail, "{height}");
         }
+    }
+
+    /// Typing inside a boxed table (step TB1): the table stays boxed while
+    /// the cursor is in a cell's text, drawn on the cell's character or
+    /// right after its text, in an empty cell at its column's start; a
+    /// selection inside the table is reversed in its cells. On a hidden
+    /// pipe, or with a selection reaching out of the table, it is drawn as
+    /// written.
+    #[test]
+    fn live_tables_stay_boxed_while_edited() {
+        let text = "| a | bb |  |\n|---|---|---|\n| c | d | e |\n\nend";
+        let empty = live::parse(text).layout.tables[0].rows[0].1[2].start;
+        let bb = text.find("bb").unwrap();
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new(text).unwrap();
+        let mut view = View::live();
+        ed.jump_to(text.len());
+        let boxed = rows(&drawn(&mut ed, &mut view, 30, 10));
+        assert!(boxed[1].contains('┌'), "{boxed:#?}");
+        let (x, y) = find(&drawn(&mut ed, &mut view, 30, 10), "bb").unwrap();
+        // On a character, after the text, in the empty cell.
+        for (at, cell) in [
+            (bb + 1, (x + 1, y)),
+            (bb + 2, (x + 2, y)),
+            (empty, (x + 5, y)),
+        ] {
+            ed.jump_to(at);
+            let grid = drawn(&mut ed, &mut view, 30, 10);
+            assert_eq!(rows(&grid), boxed, "{at}");
+            assert_eq!(cursor_cell(&grid), Some(cell), "{at}");
+        }
+        // A click in the empty cell lands in it.
+        assert_eq!(view.position_at(text, x + 5, y, false), Some(empty));
+        // A selection inside a cell: reversed there, still boxed.
+        ed.jump_to(bb);
+        ed.key(Key::ShiftRight, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 10);
+        assert_eq!(rows(&grid), boxed);
+        assert!(style_at(&grid, x, y).mods.contains(Mods::REVERSED));
+        // Reaching out of the table, or the cursor on a hidden pipe: as
+        // written.
+        ed.key(Key::ShiftDown, &mut clip);
+        ed.key(Key::ShiftDown, &mut clip);
+        ed.key(Key::ShiftDown, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 10);
+        assert!(!rows(&grid).concat().contains('┌'), "{:#?}", rows(&grid));
+        ed.jump_to(0);
+        let grid = drawn(&mut ed, &mut view, 30, 10);
+        assert!(rows(&grid)[1].contains("| a | bb |"), "{:#?}", rows(&grid));
+        // A cell drawing wider than measured (a tab, a spelled-out
+        // character; found by the property test): as written, cursor or
+        // not.
+        for cell in ["a\tb", "\u{202e}x"] {
+            let text = format!("| {cell} | b |\n|---|---|\n| c | d |\n\nend");
+            let mut ed = Editor::new(&text).unwrap();
+            ed.jump_to(text.len());
+            let grid = drawn(&mut ed, &mut View::live(), 30, 10);
+            assert!(!rows(&grid).concat().contains('┌'), "{:#?}", rows(&grid));
+        }
+    }
+
+    /// A short row's missing cell is no place in the row (step TB1, found
+    /// by the property test): the parser puts it past the row's line
+    /// break, so the cursor there is on the next line, drawn once, there.
+    #[test]
+    fn live_missing_cells_hold_no_cursor() {
+        let text = "|a|b|\n|-|-|\né(é\r\n\nend";
+        let next = text.find("\r\n").unwrap() + 2;
+        assert_eq!(live::parse(text).layout.tables[0].rows[1].1[1], next..next);
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(next);
+        let grid = drawn(&mut ed, &mut View::live(), 11, 7);
+        let (_, y) = cursor_cell(&grid).expect("drawn once");
+        assert_eq!(rows(&grid)[usize::from(y)], "", "{:#?}", rows(&grid));
+    }
+
+    /// A wrapped cell holds the cursor on each of its rows (step TB1): it is
+    /// drawn where the character is, the table as when not edited, and
+    /// scrolling keeps that row on screen at any height.
+    #[test]
+    fn live_wrapped_cells_hold_the_cursor() {
+        let text = "| Situation | What to do |\n|---|:-:|\n| A check fails | Fix it on \
+                    **main**, commit, and redo section three. Nothing is tagged yet. |\n\
+                    | Hashes differ | Nothing was signed. |\n\nend";
+        let tagged = text.find("tagged").unwrap();
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.len());
+        let reference = rows(&drawn(&mut ed, &mut View::live(), 42, 22));
+        ed.jump_to(tagged);
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 42, 22);
+        assert_eq!(rows(&grid), reference);
+        assert_eq!(cursor_cell(&grid), find(&grid, "tagged"));
+        // Every height: the cursor's row shown, `tagged` on it.
+        for height in 3..14u16 {
+            let grid = drawn(&mut ed, &mut View::live(), 42, height + 2);
+            let (x, y) = cursor_cell(&grid).unwrap_or_else(|| panic!("{height}"));
+            assert_eq!(find(&grid, "tagged"), Some((x, y)), "{height}");
+        }
+        // Moving down a row keeps it shown as well.
+        let mut clip = Clipboard::default();
+        let mut view = View::live();
+        drawn(&mut ed, &mut view, 42, 6);
+        ed.jump_to(text.find("signed").unwrap());
+        let grid = drawn(&mut ed, &mut view, 42, 6);
+        assert_eq!(cursor_cell(&grid), find(&grid, "signed"));
+        ed.key(Key::Left, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 42, 6);
+        assert!(cursor_cell(&grid).is_some());
+    }
+
+    /// Markup revealed in a cell (step TB1) counts at its written width:
+    /// its column widens and every row of the box stays aligned.
+    #[test]
+    fn live_revealed_markup_widens_its_column() {
+        let text = "| **b** | c |\n|---|---|\n| d | e |\n\nend";
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.find('b').unwrap());
+        let grid = drawn(&mut ed, &mut View::live(), 30, 10);
+        let shown = rows(&grid);
+        let table: Vec<&String> = shown
+            .iter()
+            .filter(|row| row.contains(['│', '┌', '├', '└']))
+            .collect();
+        assert!(
+            table.iter().any(|row| row.contains("│ **b** │ c │")),
+            "{shown:#?}"
+        );
+        let widths: Vec<usize> = table.iter().map(|row| row.chars().count()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]), "{shown:#?}");
     }
 
     /// Border rows scroll like rows (step LT2): the cursor's row last on

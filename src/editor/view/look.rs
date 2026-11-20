@@ -8,7 +8,9 @@
 //! The rule all of it serves: the cursor is never hidden. Whatever the
 //! cursor is in or beside, or the selection overlaps, is drawn as written,
 //! so it can be seen and edited; only text away from the cursor is
-//! styled, folded, skipped or boxed. Each step of `Look::new` applies the
+//! styled, folded, skipped or boxed. A boxed table is the one exception
+//! (step TB1): it stays boxed with the cursor in a cell's text, which the
+//! box draws, and is drawn as written with the cursor anywhere else in it. Each step of `Look::new` applies the
 //! rule to one kind of thing.
 //!
 //! Not live, the look is `Look::default()`: everything empty, so every
@@ -199,6 +201,47 @@ fn run_at(runs: &[Run], at: usize) -> Option<(Show, Style)> {
     })
 }
 
+/// `runs` with the bytes of `raw` (sorted, merged) drawn as written
+/// (step TB1): what they measure is what is drawn, so a boxed table's
+/// columns, wrapping and padding count markup revealed in a cell at its
+/// written width. A run split by `raw` keeps its show on its first part;
+/// a fixed string's later parts are hidden, as `run_at` draws them. Runs
+/// `raw` does not touch are kept as they are, so drawing (`Look::at`,
+/// which checks `raw` first) is unchanged.
+fn revealed(runs: Vec<Run>, raw: &[Range<usize>]) -> Vec<Run> {
+    if raw.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    for run in runs {
+        if !overlaps(raw, &run.range) {
+            out.push(run);
+            continue;
+        }
+        let mut at = run.range.start;
+        while at < run.range.end {
+            let i = raw.partition_point(|r| r.end <= at);
+            let (inside, stop) = match raw.get(i) {
+                Some(r) if r.start <= at => (true, r.end.min(run.range.end)),
+                Some(r) => (false, r.start.min(run.range.end)),
+                None => (false, run.range.end),
+            };
+            let show = match run.show {
+                _ if inside => Show::Text,
+                show if at == run.range.start || show == Show::Text => show,
+                _ => Show::Hidden,
+            };
+            out.push(Run {
+                range: at..stop,
+                show,
+                style: run.style,
+            });
+            at = stop;
+        }
+    }
+    out
+}
+
 /// Whether `range` overlaps one of the sorted, disjoint `ranges`.
 fn overlaps(ranges: &[Range<usize>], range: &Range<usize>) -> bool {
     let i = ranges.partition_point(|r| r.end <= range.start);
@@ -223,7 +266,7 @@ fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 #[derive(Clone, Copy)]
 pub struct Editing<'a> {
     pub cursor: usize,
-    selection: &'a Range<usize>,
+    pub selection: &'a Range<usize>,
 }
 
 impl Editing<'_> {
@@ -362,9 +405,10 @@ impl Look {
         };
         let mut drawn = gaps(&parsed.layout, text, &hiding);
         let mut layout = parsed.layout;
+        let runs = revealed(parsed.runs, &raw);
         let boxed = tables(
             &mut layout,
-            &parsed.runs,
+            &runs,
             text,
             editing,
             width,
@@ -379,7 +423,7 @@ impl Look {
             .filter(|link| !overlaps(&raw, &link.range))
             .collect();
         Self {
-            runs: parsed.runs,
+            runs,
             raw,
             hidden,
             layout,

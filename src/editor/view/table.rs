@@ -1,14 +1,18 @@
-//! Boxed tables in live mode (steps LT2, LW2, LW3; their own file since
-//! step RF4): a table the cursor and the selection are not in is drawn as
-//! the viewer draws it, in a `┌─┬─┐` box, its columns fitted to the
-//! screen, its cells wrapped inside them.
+//! Boxed tables in live mode (steps LT2, LW2, LW3, TB1; their own file
+//! since step RF4): a table is drawn as the viewer draws it, in a `┌─┬─┐`
+//! box, its columns fitted to the screen, its cells wrapped inside them,
+//! also while the cursor is in a cell's text, as in Obsidian.
 //!
 //! The box is made again every frame by `tables`, a step of `Look::new`:
 //! its border rows become drawn rows before lines (`Drawn::Pieces`), each
 //! of its lines a `Boxed` holding its cells' ranges per screen row. A
-//! boxed line is drawn whole from those ranges (`draw_boxed`), never
-//! wrapped, and holds no cursor position: the cursor entering the table
-//! unboxes it, so it is drawn as written. A click lands on the grapheme
+//! boxed line is drawn whole from those ranges (`draw_boxed`), the cursor
+//! and the selection in its cells. The rule that keeps the cursor seen:
+//! a position no cell holds (a hidden pipe, the padding, the `|---|`
+//! line) has no place in the box, so with the cursor there, or a
+//! selection reaching out of the table, the table is drawn as written
+//! (`in_cells`). Which screen row holds the cursor is `Look::holds`'s to
+//! say, for drawing and scrolling alike. A click lands on the grapheme
 //! drawn under it (`click_boxed`). Every grapheme in a cell still goes
 //! through `glyph::put`, so the checks for hidden characters hold in
 //! cells too.
@@ -18,9 +22,12 @@ use std::ops::Range;
 use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::glyph::{Shape, shape};
 use super::look::{BORDER, BOTTOM, CONTINUED, Drawn, Editing, Hiding, Look, line_end};
-use super::put_grapheme;
-use crate::editor::live::layout::{Layout, Piece};
+use super::rows::{Row, RowStart};
+use super::{drawn_style, put_grapheme};
+use crate::editor::Editor;
+use crate::editor::live::layout::{Layout, Line, Piece, Table};
 use crate::editor::live::{self, Run, Show};
 use crate::md::render::{DASHES, QUOTE_BAR, fit_columns};
 use crate::ui::grid::{Grid, Style, display_width};
@@ -28,7 +35,8 @@ use crate::ui::layout::Rect;
 use crate::ui::wrap::{Span, wrap_each};
 
 /// A boxed table's line (step LW2): one row drawn whole from its cells
-/// (`draw_boxed`), never wrapped, since the cursor is never in it.
+/// (`draw_boxed`), its own wrapping inside them; the cursor in a cell
+/// is drawn where its cell's text is (step TB1, `Boxed::spot`).
 pub struct Boxed {
     /// The line's start and its end, before its line break.
     pub start: usize,
@@ -45,11 +53,105 @@ pub struct Boxed {
     /// where a cell has no more lines, or a short row lacks it). One row
     /// unless a cell wraps; none for the `|---|` line.
     rows: Vec<Vec<Range<usize>>>,
+    /// Each cell's text, without the spaces around it (`Table::rows`),
+    /// if it is in the line (`in_line`): where the cursor may be; none
+    /// for the `|---|` line.
+    cells: Vec<Option<Range<usize>>>,
+}
+
+impl Boxed {
+    /// Where the cursor at `at` is drawn in this line (step TB1): its
+    /// screen row and its column, if `at` is in a cell's text (from its
+    /// start to its end); on the last of that cell's wrapped rows that
+    /// starts at or before `at` (a space a wrap dropped stays on the row
+    /// before it). `None` on a pipe, padding, or the `|---|` line.
+    pub fn spot(&self, at: usize) -> Option<(usize, usize)> {
+        let c = self.cells.iter().position(|cell| {
+            cell.as_ref()
+                .is_some_and(|cell| (cell.start..=cell.end).contains(&at))
+        })?;
+        // A cell's further rows are never empty; an empty range there is
+        // a shorter cell's filler.
+        let k = (1..self.rows.len())
+            .rev()
+            .find(|&k| {
+                let line = &self.rows[k][c];
+                !line.is_empty() && line.start <= at
+            })
+            .unwrap_or(0);
+        Some((k, c))
+    }
+}
+
+/// The cells of a row on the line starting at `start` that lie in that
+/// line, by column (step TB1): the parser places a short row's missing
+/// cells past the line's break, where they are no place of the row.
+fn in_line(text: &str, start: usize, cells: &[Range<usize>]) -> Vec<Option<Range<usize>>> {
+    let end = line_end(text, start);
+    cells
+        .iter()
+        .map(|cell| (start <= cell.start && cell.end <= end).then(|| cell.clone()))
+        .collect()
+}
+
+/// Whether an edited table stays boxed (step TB1): the cursor is in the
+/// text of one of its cells (`in_line`) and a selection, if any, stays
+/// inside its lines, from `start` to `end`. Anywhere else in it (a hidden
+/// pipe, the padding, the `|---|` line) the cursor would not be drawn, and
+/// a selection reaching out of it would show its hidden bytes as nothing,
+/// so the table is drawn as written then, as before step TB1.
+fn in_cells(
+    table: &Table,
+    lines: &[Line],
+    text: &str,
+    editing: Editing,
+    start: usize,
+    end: usize,
+) -> bool {
+    let selection = editing.selection;
+    let inside = selection.is_empty() || (start <= selection.start && selection.end <= end);
+    inside
+        && table.rows.iter().any(|(line, cells)| {
+            let start = lines.get(*line).map_or(text.len(), |l| l.markup.start);
+            in_line(text, start, cells)
+                .iter()
+                .flatten()
+                .any(|cell| (cell.start..=cell.end).contains(&editing.cursor))
+        })
+}
+
+/// Whether every grapheme of the table's cells is drawn as wide as it is
+/// measured (step TB1): a tab, or a character spelled out as `<U+XXXX>`
+/// (decision 0037, `glyph::Shape`), is drawn wider than `drawn_width` and
+/// `wrap_each` count it, so it would spill over its column and the next
+/// `│` would cover it, and the cursor beside it. Such a table is drawn as
+/// written, where the editor shows those characters as it does anywhere.
+fn measurable(text: &str, table: &Table) -> bool {
+    table.rows.iter().flat_map(|(_, cells)| cells).all(|cell| {
+        text.get(cell.clone()).is_some_and(|cell| {
+            cell.graphemes(true)
+                .all(|grapheme| matches!(shape(grapheme), Shape::Text(..)))
+        })
+    })
+}
+
+/// Each column's widest cell as drawn by `runs`, as `live::parse` measures
+/// `Table::widths`, but with markup revealed in a cell counted at its
+/// written width (`look::revealed`), so the column fits what is drawn.
+fn column_widths(text: &str, runs: &[Run], table: &Table) -> Vec<u16> {
+    let mut widths = vec![0u16; table.aligns.len()];
+    for (_, cells) in &table.rows {
+        for (width, cell) in widths.iter_mut().zip(cells) {
+            let drawn = u16::try_from(live::drawn_width(text, runs, cell));
+            *width = (*width).max(drawn.unwrap_or(u16::MAX));
+        }
+    }
+    widths
 }
 
 /// The columns of a table whose natural widths are `natural`, as the
-/// viewer fits them in the screen's width (the cursor's column too: never
-/// in a boxed table), less the table's `prefix` and `│ ` before each
+/// viewer fits them in the screen's width (the cursor's column too: the
+/// cursor in a boxed table is drawn inside its box), less the table's `prefix` and `│ ` before each
 /// cell, ` ` after it, the closing `│` (step LW3); `None` if they do not
 /// fit, or the table has no columns: it is drawn as written.
 fn fit(prefix: &[Piece], natural: &[u16], width: usize) -> Option<Vec<u16>> {
@@ -71,8 +173,9 @@ fn fit(prefix: &[Piece], natural: &[u16], width: usize) -> Option<Vec<u16>> {
     )
 }
 
-/// Step 5, the boxed tables (steps LT2, LW2, LW3): a table the cursor
-/// and the selection are not in, not folded, whose columns fit, is boxed.
+/// Step 5, the boxed tables (steps LT2, LW2, LW3, TB1): a table not
+/// folded whose columns fit is boxed, unless the cursor or the selection
+/// is in it in a way the box cannot show (`in_cells`).
 /// Its border rows go into `drawn` (none in a fold or right after one),
 /// their pieces into the layout's; each of its lines becomes a `Boxed`,
 /// drawn whole from its cells. Returns them, sorted.
@@ -101,10 +204,21 @@ pub fn tables(
             next
         };
         let edited = editing.on_lines(start, end);
+        // The line after the table, past skipped lines; none in a fold.
+        let at = hiding.past_skipped(next);
+        let after = hiding.open(at).then_some(at);
+        // Edited: the last line's wrapped rows go before the line after
+        // it, so without one (a fold right after) the cursor could be on
+        // a row not drawn.
+        if edited && (!in_cells(table, lines, text, editing, start, end) || after.is_none()) {
+            continue;
+        }
+        if !measurable(text, table) {
+            continue;
+        }
         let prefix = layout.prefix(&first.rest).to_vec();
-        let Some(widths) =
-            fit(&prefix, &table.widths, width).filter(|_| !edited && hiding.open(start))
-        else {
+        let natural = column_widths(text, runs, table);
+        let Some(widths) = fit(&prefix, &natural, width).filter(|_| hiding.open(start)) else {
             continue;
         };
         let widths = &widths;
@@ -115,8 +229,6 @@ pub fn tables(
             let inner = border(&mut layout.pieces, &prefix, widths, ["├─", "─┼─", "─┤"]);
             drawn.push((start_of(row), BORDER, Drawn::Pieces(inner)));
         }
-        let at = hiding.past_skipped(next);
-        let after = hiding.open(at).then_some(at);
         if after.is_some() {
             let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
             drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
@@ -159,6 +271,9 @@ pub fn tables(
                 widths: widths.clone(),
                 aligns: table.aligns.clone(),
                 rows,
+                cells: cells.map_or_else(Vec::new, |(_, cells)| {
+                    in_line(text, line.markup.start, cells)
+                }),
             });
         }
     }
@@ -182,8 +297,14 @@ fn wrapped(
         .enumerate()
         .map(|(c, &width)| {
             let cell = cells.get(c).cloned().unwrap_or(end..end);
+            // An empty cell keeps its place, where the cursor is drawn in
+            // it (step TB1); a missing one, placed past the line, has none.
             if cell.is_empty() {
-                return Vec::new();
+                return if cell.end <= end {
+                    vec![cell]
+                } else {
+                    Vec::new()
+                };
             }
             // The cell's shown parts, each with where it starts.
             let first = runs.partition_point(|run| run.range.end <= cell.start);
@@ -283,10 +404,24 @@ fn pads(boxed: &Boxed, c: usize, drawn: usize) -> (u16, u16) {
 }
 
 /// Draws screen row `row` of a boxed table's line in `area`'s row (steps
-/// LW2, LW3): its prefix, then each cell's text on that row between `│`s, padded by its column's alignment, its text as
-/// `live` draws it (styled, markup hidden); the `|---|` line is its
-/// prefix alone (its `├─┼─┤`).
-pub fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &Boxed, row: usize) {
+/// LW2, LW3): its prefix, then each cell's text on that row between
+/// `│`s, padded by its column's alignment, its text as `live` draws it
+/// (styled, markup hidden), the selection and the cursor as on any row
+/// (step TB1); the `|---|` line is its prefix alone (its `├─┼─┤`).
+/// Returns the column the cursor was drawn at, if on this row.
+pub fn draw_boxed(
+    grid: &mut Grid,
+    area: Rect,
+    editor: &Editor,
+    live: &Look,
+    boxed: &Boxed,
+    row: usize,
+) -> Option<u16> {
+    let text = editor.text();
+    let cursor = editor.cursor();
+    let spot = boxed.spot(cursor);
+    let mut drawn_at = None;
+    let mut after_text = None;
     let y = area.y;
     let mut x = area.x;
     let room = |x: u16| area.right().saturating_sub(x);
@@ -294,9 +429,8 @@ pub fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &
     for (piece, style) in live.layout.prefix(prefix) {
         x += grid.put_str(x, y, piece, *style, room(x));
     }
-    let Some(cells) = boxed.rows.get(row) else {
-        return;
-    };
+    // The `|---|` line has no cells: its prefix is its `├─┼─┤`.
+    let cells = boxed.rows.get(row)?;
     for (c, cell) in cells.iter().enumerate() {
         x += grid.put_str(x, y, if c == 0 { "│ " } else { " │ " }, QUOTE_BAR, room(x));
         let (before, _) = pads(boxed, c, live::drawn_width(text, &live.runs, cell));
@@ -305,8 +439,11 @@ pub fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &
         let mut column = 0;
         for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
             let at = cell.start + i;
-            let style = live.at(at).1;
+            let style = drawn_style(editor, live, at);
             let here = x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
+            if at == cursor {
+                drawn_at = Some(here);
+            }
             column += put_grapheme(
                 grid,
                 (here, y, room(here)),
@@ -318,12 +455,55 @@ pub fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &
                 live,
             );
         }
+        // The cursor after this row's text in its cell (the cell's end,
+        // or a space a wrap dropped): right of the text, at most on the
+        // space after the column (the first of the next ` │`), never on a
+        // `│`; drawn once the separators are, so none covers it.
+        if spot == Some((row, c)) && drawn_at.is_none() {
+            let room_left = usize::from(boxed.widths[c].saturating_sub(before));
+            let column = (column + cursor.saturating_sub(cell.end)).min(room_left);
+            drawn_at = Some(x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX)));
+            after_text = drawn_at;
+        }
         x = start.saturating_add(boxed.widths[c]);
     }
     grid.put_str(x, y, " │", QUOTE_BAR, room(x));
+    if let Some(here) = after_text {
+        let style = drawn_style(editor, live, cursor);
+        grid.put_str(here, y, " ", style, room(here).min(1));
+    }
+    drawn_at
 }
 
 impl Look {
+    /// The boxed line, screen row and column the cursor at `at` is drawn
+    /// at (step TB1), if `at` is in a boxed table's cell.
+    pub fn boxed_spot(&self, at: usize) -> Option<(usize, usize, usize)> {
+        let b = self
+            .boxed
+            .partition_point(|boxed| boxed.start <= at)
+            .checked_sub(1)?;
+        let (k, c) = self.boxed[b].spot(at)?;
+        Some((b, k, c))
+    }
+
+    /// Whether the cursor at `at` is drawn on `row`, which starts at
+    /// `start` (step TB1): in a boxed table's cell, on the screen row of
+    /// the cell's text holding it (the line's own row, or one of its
+    /// wrapped rows, which are drawn rows before the next line);
+    /// elsewhere as `Row::contains` says. Every walk that looks for the
+    /// cursor's row asks this, so drawing and scrolling agree.
+    pub fn holds(&self, start: RowStart, row: &Row, at: usize) -> bool {
+        match self.boxed_spot(at) {
+            Some((b, 0, _)) => !row.drawn && row.range.start == self.boxed[b].start,
+            Some((b, k, _)) => matches!(
+                self.drawn_row(start),
+                Some(&Drawn::Cells { boxed, row }) if boxed == b && row == k
+            ),
+            None => row.contains(at),
+        }
+    }
+
     /// Where a click `x` columns into a boxed table line lands (step LW2):
     /// on the grapheme drawn there in the cell under it, else at that
     /// cell's text's end; on the `|---|` line, its start.

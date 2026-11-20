@@ -12,3 +12,6 @@ cc b1d738f054788482394616b35bf287f72257624a59402cb6af8514d45b14c12e # shrinks to
 cc ef7c93d9173cadafcb3af9cbee6608df6a2fbf81fc6d06c637dc11a511c3f20f # shrinks to text = "日\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}", moves = [0], width = 2, height = 3
 cc 9f68355ff77a22a6f5f5415a04a5bd52228722423771498dc8501e60312b52bf # shrinks to text = "\n日[[\u{202e}\u{202e}_~\r\né]]", width = 3, height = 5, moves = []
 cc 96bb41238ad22182c004385f6c14d25e1493075e833a6908062a98554b31e04c # shrinks to text = "==\n```\n```\n", width = 3, height = 3, moves = [4, 1]
+cc 98a8e3bcd4aeb0f531bd5d5585225a480e73f0aa34638600c8d113ba9091be24 # shrinks to text = "|a|b|\n|-|-|\n", width = 9, height = 3, moves = [0, 2, 0, 1, 2, 2]
+cc 705df6b1f0c8d1f10ad6fcb0cb893b33ddd2a7ccb12d49907b11835cf88d4859 # shrinks to text = "|a|b|\n|-|-|\né(é\r\n\n==\n", width = 11, height = 6, moves = [4, 1, 4, 1]
+cc 05b406fb258fa11971e5ebe555a5064a3674fe4a210fe0498778fb0fc6bc40f0 # shrinks to text = "|a|b|\n|-|-|\né```\n\u{202e}==\n", width = 11, height = 3, moves = [4, 1, 1, 0, 4, 3, 4]
