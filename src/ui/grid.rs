@@ -87,9 +87,11 @@ pub fn hides_something(grapheme: &str) -> bool {
 
 /// Characters that draw nothing (or a blank) yet are not spaces: the
 /// combining grapheme joiner, the Hangul fillers, the zero-width
-/// characters and marks, word joiner and invisible operators, the byte
-/// order mark, the variation selectors (which can carry hidden bytes
-/// inside one emoji), and the tag characters.
+/// characters and marks, the line and paragraph separators and the
+/// interlinear annotation characters (measured one column wide, drawn as
+/// a blank or nothing; review SR5), word joiner and invisible operators,
+/// the byte order mark, the variation selectors (which can carry hidden
+/// bytes inside one emoji), and the tag characters.
 pub fn is_invisible(c: char) -> bool {
     matches!(
         c,
@@ -97,11 +99,14 @@ pub fn is_invisible(c: char) -> bool {
             | '\u{115F}'
             | '\u{1160}'
             | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
             | '\u{2060}'..='\u{2064}'
             | '\u{3164}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
             | '\u{FFA0}'
+            | '\u{FFF9}'..='\u{FFFB}'
             | '\u{E0000}'..='\u{E007F}'
             | '\u{E0100}'..='\u{E01EF}'
     )

@@ -330,7 +330,11 @@ only typing `restore` accepts it and lowers the counter.
 
 *2026-11-08.* `md::safe::sanitize` spells out every control character
 (C0 and C1, including ESC and a lone `\r`) and BiDi control as dimmed
-`<U+XXXX>`: plain ASCII, visible in every font, showing what was hidden. A
+`<U+XXXX>`: plain ASCII, visible in every font, showing what was hidden.
+So is every character of a grapheme that hides an invisible one behind a
+visible one, and of a grapheme of no width (a soft hyphen, a format
+character alone), which the grid would leave out: nothing of a note
+disappears on screen, as in the editor (security review SR5). A
 tab becomes four spaces and `\r\n` becomes `\n`. Its output, `SafeText`
 (zeroizing, sized once, no Debug, Display, Clone or Serialize), is the
 only way note text reaches a widget. The grid and the frame writer draw

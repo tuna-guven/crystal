@@ -12,6 +12,9 @@
 //!   zero-width character or Hangul filler) is spelled out whole, each
 //!   character as `<U+XXXX>`, as the editor does, so text that looks the
 //!   same is the same; emoji keep their joiners and U+FE0F;
+//! - a grapheme of no width (a soft hyphen, a format character alone),
+//!   which the grid would leave out, is spelled out too, so nothing in the
+//!   text disappears from the screen;
 //! - a tab becomes four spaces;
 //! - a line ending stays a line ending: `\n`, and `\r\n` becomes `\n`;
 //!   a lone `\r` is a control character like any other.
@@ -33,7 +36,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroizing;
 
 use crate::model::assert_not_impl;
-use crate::ui::grid::{Mods, Style, hides_something, is_forbidden};
+use crate::ui::grid::{Mods, Style, grapheme_width, hides_something, is_forbidden};
 use crate::ui::wrap::Span;
 
 /// The spaces a tab becomes.
@@ -84,12 +87,16 @@ pub fn sanitize(raw: &str) -> SafeText {
 }
 
 /// Whether `c`, in `grapheme`, is drawn as `<U+XXXX>`: a forbidden
-/// character, or any character of a grapheme that hides one. A line
+/// character, any character of a grapheme that hides one, and any of a
+/// grapheme of no width (a soft hyphen, a Mongolian vowel separator, a
+/// deprecated format character alone), which the grid would leave out, so
+/// `a`, one of them and `b` would look like `ab` (review SR5; the editor's
+/// rule, `editor::view::glyph`). The width is the grid's own. A line
 /// ending and a tab are handled before.
 fn spelled_out(grapheme: &str, c: char) -> bool {
     match grapheme {
         "\n" | "\r\n" | "\t" => false,
-        _ => is_forbidden(c) || hides_something(grapheme),
+        _ => is_forbidden(c) || hides_something(grapheme) || grapheme_width(grapheme) == 0,
     }
 }
 
@@ -217,6 +224,15 @@ mod tests {
             ("x\u{200B}y", "x<U+200B>y"),
             ("a\u{3164}b", "a<U+3164>b"),
             ("😀\u{E0101}", "<U+1F600><U+E0101>"),
+            // No width, so the grid would leave them out (review SR5).
+            ("a\u{AD}b", "a<U+00AD>b"),
+            ("a\u{180E}b", "a<U+180E>b"),
+            ("plan\u{206A}", "plan<U+206A>"),
+            ("\u{301}x", "<U+0301>x"),
+            // One column wide, but drawn blank or as nothing (review SR5).
+            ("a\u{2028}b", "a<U+2028>b"),
+            ("a\u{2029}b", "a<U+2029>b"),
+            ("a\u{FFF9}b", "a<U+FFF9>b"),
         ];
         for (raw, want) in cases {
             assert_eq!(shown(raw), want, "{raw:?}");
@@ -292,8 +308,11 @@ mod tests {
         // only that rare case is rejected.
         #[test]
         fn safe_text_is_untouched(raw in "[^\\p{Cc}\\u{061C}\\u{200E}\\u{200F}\\u{202A}-\\u{202E}\\u{2066}-\\u{2069}]*") {
-            let raw: String = raw.graphemes(true).filter(|g| !hides_something(g)).collect();
-            prop_assume!(!raw.graphemes(true).any(hides_something));
+            // Graphemes that hide something or have no width are spelled
+            // out (review SR5); everything else stays as it is.
+            let spelled = |g: &str| hides_something(g) || grapheme_width(g) == 0;
+            let raw: String = raw.graphemes(true).filter(|g| !spelled(g)).collect();
+            prop_assume!(!raw.graphemes(true).any(spelled));
             prop_assert_eq!(shown(&raw), raw);
         }
 
@@ -309,13 +328,24 @@ mod tests {
             }
         }
 
+        // Nothing of the note disappears on screen (review SR5): every
+        // grapheme the sanitizer gives, but a line break, has a width the
+        // grid draws.
+        #[test]
+        fn every_grapheme_shows(raw in any::<String>()) {
+            let safe = sanitize(&raw);
+            for grapheme in safe.as_str().graphemes(true) {
+                prop_assert!(grapheme == "\n" || grapheme_width(grapheme) > 0, "{:?}", grapheme);
+            }
+        }
+
         // The buffer is sized up front and never grows.
         #[test]
         fn never_grows(raw in any::<String>()) {
             let hidden: usize = raw
                 .graphemes(true)
                 .filter(|&g| g != "\n" && g != "\r\n" && g != "\t")
-                .map(|g| if hides_something(g) {
+                .map(|g| if hides_something(g) || grapheme_width(g) == 0 {
                     g.chars().count()
                 } else {
                     g.chars().filter(|&c| is_forbidden(c)).count()
