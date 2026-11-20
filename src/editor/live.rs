@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::md::blocks::blocks;
 use crate::md::link::clickable;
-use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, eq_ci, heading_mark};
+use crate::md::render::{CODE, LINK, OPTIONS, QUOTE_BAR, eq_ci, heading_mark};
 use crate::notes::Fragment;
 use crate::ui::grid::{Mods, Style, display_width};
 
@@ -40,17 +40,19 @@ pub enum Show {
     Text,
     /// Not at all: zero columns.
     Hidden,
-    /// This fixed string in their place (a rule's line).
-    Fixed(&'static str),
+    /// A rule's line in their place, to the row's end as in the viewer
+    /// (`glyph::put`); one column when rows are measured, so it never
+    /// wraps.
+    Rule,
 }
 
 impl Show {
-    /// The columns a fixed string takes, drawn once at its run's start;
+    /// The columns a rule's line counts, drawn once at its run's start;
     /// `None` for text as written or hidden.
     pub fn columns(self) -> Option<usize> {
         match self {
             Show::Text | Show::Hidden => None,
-            Show::Fixed(fixed) => Some(display_width(fixed)),
+            Show::Rule => Some(1),
         }
     }
 }
@@ -296,7 +298,7 @@ pub fn parse(text: &str) -> Parsed {
                 // The line break after it stays shown.
                 let end = range.start + text[range].trim_end_matches(['\n', '\r']).len();
                 out.element(out.pos..end);
-                out.push(out.pos..end, Show::Fixed(DASHES), QUOTE_BAR);
+                out.push(out.pos..end, Show::Rule, QUOTE_BAR);
             }
             Event::TaskListMarker(_) => {
                 out.gap(range.start, frame);
@@ -480,6 +482,7 @@ impl Runs<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::md::render::DASHES;
     use crate::ui::grid::Color;
     use proptest::prelude::*;
 
@@ -495,7 +498,7 @@ mod tests {
             .map(|run| match run.show {
                 Show::Text => &text[run.range.clone()],
                 Show::Hidden => "",
-                Show::Fixed(s) => s,
+                Show::Rule => DASHES,
             })
             .collect()
     }

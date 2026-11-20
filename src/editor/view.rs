@@ -1393,6 +1393,41 @@ mod tests {
         assert!(style_at(&viewer, x, y).mods.contains(Mods::BOLD));
     }
 
+    /// A rule is drawn as the viewer's, to the text's width, in a quote
+    /// after its bar too, the cursor away from it; as written with the
+    /// cursor on it.
+    #[test]
+    fn live_rules_are_the_viewers() {
+        for width in [24u16, 60] {
+            let text = "a\n\n---\n\n> b\n>\n> ***\n\nc";
+            let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, width);
+            let mut viewer = Grid::new(width, 12);
+            page.draw(&mut viewer, Rect::new(0, 0, width, 12), 0);
+            let mut ed = Editor::new(text).unwrap();
+            ed.jump_to(text.len());
+            let live = drawn(&mut ed, &mut View::live(), width + GUTTER + 1, 14);
+            let shown = rows(&viewer);
+            let rules: Vec<usize> = (0..shown.len())
+                .filter(|&y| shown[y].contains('─'))
+                .collect();
+            assert_eq!(rules.len(), 2, "{shown:?}");
+            for y in rules {
+                let want = &shown[y];
+                let got: String = rows(&live)[y + 1].chars().skip(2).collect();
+                assert_eq!(&got, want, "width {width}, row {y}");
+            }
+        }
+        // The cursor on the rule: as written.
+        let mut ed = Editor::new("a\n\n---\n\nc").unwrap();
+        ed.jump_to(4);
+        let live = drawn(&mut ed, &mut View::live(), 40, 8);
+        assert!(
+            rows(&live).iter().any(|r| r.ends_with("---")),
+            "{:?}",
+            rows(&live)
+        );
+    }
+
     /// Where `word` starts on `grid`: its first cell, if drawn.
     fn find(grid: &Grid, word: &str) -> Option<(u16, u16)> {
         for y in 0..grid.height() {

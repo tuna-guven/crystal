@@ -111,7 +111,15 @@ pub fn put(
 ) -> usize {
     match show {
         Show::Hidden => return 0,
-        Show::Fixed(fixed) => return usize::from(grid.put_str(x, y, fixed, style, room)),
+        // A rule's line to the row's end, as the viewer's: the text's
+        // width, not the column kept for the cursor.
+        Show::Rule => {
+            let columns = room.saturating_sub(1).max(1);
+            for i in 0..columns {
+                grid.put_str(x + i, y, "─", style, 1);
+            }
+            return usize::from(columns);
+        }
         Show::Text => {}
     }
     match shape(grapheme) {
