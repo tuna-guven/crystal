@@ -600,6 +600,7 @@ fn try_forbidden_for_test(
             Ok(openat(CWD, other, read, owner).map(drop)?)
         }
         C::Socket | C::LandlockTcp => std::net::TcpStream::connect(("127.0.0.1", 9)).map(drop),
+        C::LandlockUdp => std::net::UdpSocket::bind(("127.0.0.1", 0)).map(drop),
         C::Socketpair => std::os::unix::net::UnixStream::pair().map(drop),
         C::Thread => std::thread::Builder::new().spawn(|| ()).map(drop),
         C::Memfd => {

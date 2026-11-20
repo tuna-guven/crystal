@@ -83,16 +83,16 @@ signals stay uncaught ([Leakage, Exits that skip
 cleanup](design/leakage.md#exits-that-skip-cleanup)); none of them writes
 plaintext to disk.
 
-## 0010 Landlock ABI 9 required, no fallback {#0010}
+## 0010 Landlock required, no fallback {#0010}
 
 *2026-11-06.* The Landlock ruleset is built with the `landlock` crate in
-hard-requirement mode. Below ABI 9 (whose `RESOLVE_UNIX` blocks pathname
-UNIX sockets such as D-Bus and Wayland), or without Landlock, Crystal
-refuses to start and names the required ABI (the crate does not report the
-running one, and asking the kernel directly would need `unsafe`). There is no
-best-effort mode, which would run a partial sandbox without saying so, no
-override flag, and no raw Landlock syscall (it would need `unsafe`).
-Crystal therefore needs a recent kernel, and CI a runner with ABI 9
+hard-requirement mode. Below the required ABI ([0077](#0077) sets it), or
+without Landlock, Crystal refuses to start and names the required ABI (the
+crate does not report the running one, and asking the kernel directly would
+need `unsafe`). There is no best-effort mode, which would run a partial
+sandbox without saying so, no override flag, and no raw Landlock syscall
+(it would need `unsafe`). Crystal therefore needs a recent kernel, and CI a
+runner with that ABI
 ([Sandboxing, 5.4](design/sandboxing.md#54-fallback-policy)).
 
 ## 0011 Atomic writer: same-directory temp, renameat2, crash sweep {#0011}
@@ -749,7 +749,8 @@ unlocks is decided then, and the sandbox is never weakened for it.
 
 ## 0060 Sandbox crates: `landlock` and `seccompiler`, pinned exactly {#0060}
 
-*2026-11-15.* Landlock is applied through `landlock` =0.4.7 and the
+*2026-11-15.* Landlock is applied through `landlock` (=0.4.8 since
+[0077](#0077)) and the
 seccomp filter is built with `seccompiler` =0.5.0 (no default features,
 so no JSON parser), both pinned exactly like the other crates that
 guard secrets ([Dependencies](design/dependencies.md)). Writing either by
@@ -932,13 +933,14 @@ minisign (another program), and an unsigned hash alone.
 
 ## 0070 CI runs only what needs no Landlock {#0070}
 
-*2026-11-16.* GitHub's `ubuntu-latest` kernel has no Landlock ABI 9, and
-Crystal refuses to start without it ([0010](#0010)); there is no weaker
+*2026-11-16.* GitHub's `ubuntu-latest` kernel lacks the Landlock ABI
+Crystal requires (9 then, 10 since [0077](#0077)), and Crystal refuses
+to start without it ([0010](#0010)); there is no weaker
 mode for CI. So the CI workflow runs fmt, clippy, the unit tests
 (`cargo test --workspace --lib`, debug and release, with
 `RLIMIT_MEMLOCK` at the 2 GiB floor), `cargo deny`, `cargo audit` and the
 static release build; every test that starts the binary (`tests/*.rs`)
-runs locally before every commit, on a kernel with ABI 9 or newer. A
+runs locally before every commit, on a kernel with the required ABI. A
 runner or VM with such a kernel was set aside by the user (roadmap S0).
 The cost: the Phase 4 strace check, which needs ptrace capabilities that
 secureblue's `deny_ptrace` withholds locally, now runs nowhere; it last
@@ -1125,3 +1127,29 @@ in the viewer; Shift+drag selects, as in the editor ([0041](#0041)).
 Accepted at the user's request, for no security benefit: about 250 lines
 of code and 350 of tests. Rejected: Crystal opening web links; a double
 click to follow; keeping the keyboard cursor beside the mouse.
+
+## 0077 Landlock ABI 10 required: UDP denied, denials never quieted {#0077}
+
+*2026-11-20.* Crystal uses `landlock` =0.4.8 and requires Landlock ABI
+10 (Linux 7.2 or newer); below it, or without Landlock, it refuses to
+start as [0010](#0010) says. ABI 9 brought `RESOLVE_UNIX` (pathname UNIX
+sockets such as D-Bus and Wayland) and ABI 6 the scopes; ABI 10 adds the
+UDP rights `BIND_UDP` and `CONNECT_SEND_UDP`. Both are handled with no
+rule, as TCP's are, so the kernel denies every UDP bind, connect and send:
+a second layer behind seccomp, which kills `socket()` itself, should that
+filter ever regress. A connect or send on an unbound UDP socket binds it
+first and needs `BIND_UDP` too, so the `landlock-udp` sandbox check (a
+bind under Landlock alone, `EACCES`; mutation-checked against ABI 9,
+where it was allowed) covers all of UDP. ABI 10's quiet controls
+(`quiet_access`, `quiet_scope`, `Rule::quiet`) are never used: they only
+silence audit records, and every denial must stay logged, since one is
+how an attack shows. The crate's diff from 0.4.7 was read: its new
+`unsafe` is a musl-only fix in `PathFd::new`, which Crystal does not
+call, and test code; it brings no new crate, and the quiet fields reach
+the kernel as zeros. The cost: kernels before 7.2 are refused, accepted
+by the user (secureblue ships the newest kernels). Not taken yet: ABI
+11's `LANDLOCK_RESTRICT_SELF_NO_NEW_PRIVS` (Linux 7.3, bit 4 in the 7.3
+headers), which sets no_new_privs only if the ruleset is enforced; the
+crate has no ABI 11 yet and a raw syscall would need `unsafe`. Its gain
+is small, since `prctl` sets no_new_privs first (seccomp needs it too),
+and it is in the roadmap as future work.

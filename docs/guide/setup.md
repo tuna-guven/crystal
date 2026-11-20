@@ -2,6 +2,9 @@
 
 System settings Crystal needs, and how to develop on a hardened host.
 Crystal checks these at startup and refuses to run if they are missing.
+The first is the kernel: Linux 7.2 or newer with Landlock on (ABI 10;
+secureblue ships it), or Crystal refuses to start and names the ABI it
+needs ([decision 0077](../decisions.md#0077)).
 
 Root commands below use `run0` (systemd, authorized through polkit) instead
 of `sudo`: secureblue ships no SUID `sudo`, which removes a whole class of
@@ -367,7 +370,7 @@ Side effects for development:
   Crystal is non-dumpable, so strace needs `CAP_SYS_PTRACE` to read what
   it writes and `CAP_DAC_READ_SEARCH` to name the files it writes to. It
   passed in CI on 2026-11-14; CI no longer starts the binary, since its
-  kernel has no Landlock ABI 9 ([decision 0070](../decisions.md#0070)).
+  kernel has no Landlock ABI 10 ([decision 0070](../decisions.md#0070)).
 
 Check its state with `getsebool deny_ptrace`.
 

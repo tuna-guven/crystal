@@ -152,9 +152,10 @@ fn seccomp_kills_forbidden_syscalls() {
     }
 }
 
-/// Landlock alone, without seccomp, still stops the network, pathname
-/// UNIX sockets (D-Bus, Wayland), directories, signals to other
-/// processes and exec: each layer holds on its own (sandboxing section 1).
+/// Landlock alone, without seccomp, still stops the network (TCP, and UDP
+/// since ABI 10, decision 0077), pathname UNIX sockets (D-Bus, Wayland),
+/// directories, signals to other processes and exec: each layer holds on
+/// its own (sandboxing section 1).
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
 fn landlock_alone_stops_network_signals_and_exec() {
@@ -167,6 +168,7 @@ fn landlock_alone_stops_network_signals_and_exec() {
     std::os::unix::net::UnixStream::connect(&sock).unwrap();
     for (check, expected) in [
         ("landlock-tcp", EACCES),
+        ("landlock-udp", EACCES),
         ("landlock-unix", EACCES),
         ("landlock-mkdir", EACCES),
         ("landlock-kill-parent", eperm),

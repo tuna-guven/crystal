@@ -2,7 +2,7 @@
 
 Status: Built (Phase 6, 2026-11-16): sections 5 to 9 describe the code. Skipped by the user: CI (roadmap S0) and the SELinux check through the bubblewrap launcher (section 8).
 Scope: Process confinement for the `crystal` binary (offline, age-encrypted Markdown notes TUI)
-Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-16 on kernel 7.3.3 (Landlock ABI 11). The `landlock` crate (0.4.7, the newest release) supports up to ABI 9, which is what Crystal uses (section 5.1).
+Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-16 on kernel 7.3.3 (Landlock ABI 11). The `landlock` crate (0.4.8, the newest release) supports up to ABI 10, which is what Crystal requires (section 5.1, [decision 0077](../decisions.md#0077)); Linux 7.2 or newer.
 
 ## 1. Threat model summary
 
@@ -16,7 +16,7 @@ Target platform: secureblue (Fedora Atomic, SELinux enforcing). Tested 2026-11-1
 | # | Layer | Enforced by | Applies when |
 |---|-------|-------------|--------------|
 | 1 | Process hardening | `crystal` (prctl, rlimit, mlockall) | Always |
-| 2 | Landlock (ABI 9 via the `landlock` crate) | `crystal` | Always; no fallback (5.4) |
+| 2 | Landlock (ABI 10 via the `landlock` crate) | `crystal` | Always; no fallback (5.4) |
 | 3 | seccomp-bpf | `crystal` | Always |
 | 4 | SELinux domain `crystal_t` | Kernel policy module | Installed via policy package |
 | 5 | Bubblewrap | Launcher script | Optional outer wrapper |
@@ -58,11 +58,11 @@ Module: `src/harden/landlock.rs`. Crate: `landlock`.
 
 ### 5.1 Implementation note
 
-The `landlock` crate (0.4.7) exposes ABI up to V9 plus the `TSYNC` restrict flag. Crystal uses the crate only; no raw Landlock syscalls.
+The `landlock` crate (0.4.8) exposes ABI up to V10 plus the `TSYNC` restrict flag. Crystal uses the crate only; no raw Landlock syscalls.
 
 - A raw FFI layer would need `unsafe` in the crystal crate, which CLAUDE.md forbids (`unsafe` only in `crates/zalloc`).
-- What ABI 10 adds is not needed: UDP rights (seccomp already denies `socket()` outright) and the `quiet_*` fields (Crystal wants every denial logged).
-- The `LANDLOCK_RESTRICT_SELF_NO_NEW_PRIVS` flag an earlier draft assumed for ABI 11 does not exist in the kernel headers checked (kernel 7.2.9). Not needed: no_new_privs is set by `prctl` in section 4.
+- ABI 10 brings two things. The UDP rights are used (section 5.2): a second layer behind seccomp, which kills `socket()` outright. The quiet controls (`quiet_access`, `quiet_scope`, `Rule::quiet`) are never used: they only silence audit records, and Crystal wants every denial logged ([decision 0077](../decisions.md#0077)).
+- ABI 11 (Linux 7.3) adds the restrict flag `LANDLOCK_RESTRICT_SELF_NO_NEW_PRIVS` (bit 4 in the 7.3 headers): no_new_privs is set only if the ruleset is enforced. The crate does not support ABI 11 yet; adopt it once it does (roadmap, future work). The gain is small: `prctl` already sets no_new_privs in section 4, and seccomp needs it there anyway.
 - Take every constant from the crate or from `/usr/include/linux/landlock.h`. MUST NOT hardcode values from memory.
 - Revisit when the crate supports a newer ABI.
 
@@ -71,8 +71,8 @@ The `landlock` crate (0.4.7) exposes ABI up to V9 plus the `TSYNC` restrict flag
 Query the ABI first (`LANDLOCK_CREATE_RULESET_VERSION`, done by the crate). Build the ruleset with `CompatLevel::HardRequirement`, so any right the running kernel cannot enforce is an error, never silently dropped.
 
 Handled (denied unless a rule allows it):
-- `handled_access_fs`: every FS right up to ABI 9, including `RESOLVE_UNIX` (blocks connecting to D-Bus, Wayland and other pathname UNIX sockets).
-- `handled_access_net`: `BIND_TCP`, `CONNECT_TCP`. No net rules are added, so all TCP bind and connect is denied. UDP rights are ABI 10 and not available through the crate; seccomp denies `socket()` instead.
+- `handled_access_fs`: every FS right up to ABI 10 (none is new since ABI 9), including `RESOLVE_UNIX` (blocks connecting to D-Bus, Wayland and other pathname UNIX sockets).
+- `handled_access_net`: `BIND_TCP`, `CONNECT_TCP`, `BIND_UDP`, `CONNECT_SEND_UDP` (ABI 10). No net rules are added, so all TCP bind and connect and all UDP bind, connect and send is denied (a connect or send on an unbound UDP socket binds it first, which needs `BIND_UDP`). seccomp also kills `socket()` itself.
 - `scoped`: `ABSTRACT_UNIX_SOCKET`, `SIGNAL`.
 
 Rules (path beneath, from the directory fds opened at startup):
@@ -103,10 +103,10 @@ Notes:
 
 | Running ABI | Behavior |
 |-------------|----------|
-| >= 9 | Full policy as above |
-| < 9, unavailable or disabled | Refuse to start, naming the required ABI (the crate does not report the running one) |
+| >= 10 | Full policy as above |
+| < 10, unavailable or disabled | Refuse to start, naming the required ABI (the crate does not report the running one) |
 
-There is no weaker mode and no flag to allow one: Crystal never runs with a partial sandbox. ABI 9 is required because `RESOLVE_UNIX` arrives there; the scopes need ABI 6. `SandboxReport` records the ABI.
+There is no weaker mode and no flag to allow one: Crystal never runs with a partial sandbox. ABI 10 is required for the UDP rights ([decision 0077](../decisions.md#0077)); `RESOLVE_UNIX` needs ABI 9, the scopes ABI 6. `SandboxReport` records the ABI.
 
 ## 6. seccomp-bpf
 
@@ -212,21 +212,22 @@ Status checks are made by the test process from outside, through `/proc/<pid>/st
 - [x] Writing outside the vault and state dirs fails with `EACCES`, and nothing appears (`writing_outside_the_vault_is_denied`)
 - [x] Another vault in the same `~/.local/share/crystal` is unreachable (`another_vault_is_unreachable`). Mutation-checked: without Landlock all three report `ALLOWED`
 - [x] `socket(AF_INET, ...)` is killed (`seccomp_kills_forbidden_syscalls`), and denied by Landlock alone (`landlock_alone_stops_network_signals_and_exec`, `EACCES`)
+- [x] Binding a UDP socket to `127.0.0.1` (any port) fails under Landlock alone with `EACCES` (`landlock-udp`, ABI 10); a connect or send would bind first and need the same right. Mutation-checked: with the ruleset at ABI 9 the bind was `ALLOWED` and the test failed ([decision 0077](../decisions.md#0077))
 - [x] Connecting to a pathname UNIX socket (a live fixture socket the test itself can connect to) fails under Landlock alone with `EACCES`; with seccomp, `socket` dies first
 - [x] `execve("/usr/bin/true")` is killed, and denied by Landlock alone (`EACCES`)
 - [x] Signalling the parent (the harmless `SIGCONT`, so a failing check hurts nothing) is killed, and denied by Landlock alone (`EPERM`, the signal scope)
 - [x] An `ioctl` outside the five is killed (`FIONBIO` on the terminal); `TIOCSTI` and `TIOCLINUX` have no safe wrapper, so a unit test checks that neither is in the list (`tiocsti_and_tioclinux_are_not_allowed`)
 - [x] Also killed: `socketpair`, a thread, `memfd_create`, `mkdirat` in the vault (`mkdirat` is also denied by Landlock alone)
 
-The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_only_for_test`, debug builds only), to show it holds on its own. Mutation-checked per check: under Landlock alone none of the eight seccomp checks dies, and without any sandbox none of the five Landlock checks is refused as expected (TCP then gives `ECONNREFUSED`, and `exec` really runs `/usr/bin/true`). Under Landlock alone, `socketpair`, a thread, `memfd_create` and the `FIONBIO` ioctl were allowed: for these seccomp is the only layer until the SELinux module (section 7).
+The `landlock-*` checks apply Landlock without seccomp (`harden::enter_landlock_only_for_test`, debug builds only), to show it holds on its own. Mutation-checked per check: under Landlock alone none of the eight seccomp checks dies, and without any sandbox none of the six Landlock checks is refused as expected (TCP then gives `ECONNREFUSED`, and `exec` really runs `/usr/bin/true`). Under Landlock alone, `socketpair`, a thread, `memfd_create` and the `FIONBIO` ioctl were allowed: for these seccomp is the only layer until the SELinux module (section 7).
 - [x] `/proc/<pid>/status` shows `NoNewPrivs: 1`, `Seccomp: 2`, `Seccomp_filters: 1` (`running_sandbox_shows_in_proc_status`)
 - [x] `cat /proc/<crystal pid>/mem` from another shell fails (same test)
 - [x] Save and atomic rename still work inside the sandbox: every saving test in `tests/vault.rs` runs inside it
 - [x] `ps -eZ` shows `crystal_t` (manual check with the module installed, step S9): a full session (`init`, `unlock`, edit and save, `view`, `search`, `lock` and unlock, outside suspend and resume, `check-code` (since removed), `rm`) runs in `crystal_t` in enforcing mode
-- [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 9 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 8 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
+- [x] Without Landlock, Crystal refuses to start before any prompt and names ABI 10 (`refuses_to_start_without_landlock`): the debug-only `--hide-landlock-for-test` installs a one-rule seccomp filter so the crate's ABI query gets `ENOSYS`, as from a kernel built without Landlock, and the real refusal path runs. A kernel with ABI 1 to 9 cannot be faked this way (seccomp returns errors, not a version); it fails the same hard-requirement step in the crate. Mutation-checked: in best-effort mode the status check after enforcing still refuses ("not fully enforced"); without that check too, Crystal reached the passphrase prompt unconfined and the test failed
 - [x] The bubblewrap launcher (section 8) opens a vault in which the other vaults do not exist, without network (manual, step S10)
 - [ ] Through the launcher, `ps -eZ` shows `crystal_t` (skipped by the user; manual, needs the hardened install in `~/.local/bin`, section 7, and the module with the bwrap rule)
-- [ ] CI runs the suite on a kernel with ABI >= 9. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
+- [ ] CI runs the suite on a kernel with ABI >= 10. GitHub's standard runner kernel may be older, and Crystal will not start there; Phase 6 must provide such a kernel (newer runner image or a VM) rather than a weaker mode
 
 ## 10. References
 

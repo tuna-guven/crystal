@@ -122,6 +122,10 @@ pub enum SandboxCheck {
     Exec,
     /// `landlock-tcp`: like `socket`, under Landlock alone.
     LandlockTcp,
+    /// `landlock-udp`: bind a UDP socket to 127.0.0.1, any port, under
+    /// Landlock alone (`BIND_UDP`, ABI 10). A connect or send would
+    /// auto-bind and need the same right, so this closes UDP altogether.
+    LandlockUdp,
     /// `landlock-unix`: connect to the pathname socket `$HOME/sock`, under
     /// Landlock alone (`RESOLVE_UNIX`).
     LandlockUnix,
@@ -136,7 +140,7 @@ pub enum SandboxCheck {
 
 #[cfg(debug_assertions)]
 impl SandboxCheck {
-    const NAMES: [(&'static str, Self); 17] = [
+    const NAMES: [(&'static str, Self); 18] = [
         ("read-outside", Self::ReadOutside),
         ("write-outside", Self::WriteOutside),
         ("other-vault", Self::OtherVault),
@@ -150,6 +154,7 @@ impl SandboxCheck {
         ("kill-parent", Self::KillParent),
         ("exec", Self::Exec),
         ("landlock-tcp", Self::LandlockTcp),
+        ("landlock-udp", Self::LandlockUdp),
         ("landlock-unix", Self::LandlockUnix),
         ("landlock-mkdir", Self::LandlockMkdir),
         ("landlock-kill-parent", Self::LandlockKillParent),
@@ -168,6 +173,7 @@ impl SandboxCheck {
         matches!(
             self,
             Self::LandlockTcp
+                | Self::LandlockUdp
                 | Self::LandlockUnix
                 | Self::LandlockMkdir
                 | Self::LandlockKillParent

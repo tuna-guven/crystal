@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status (2026-11-19)
+## Status (2026-11-20)
 
 | Phase | State |
 | --- | --- |
@@ -12,7 +12,7 @@
 | 4 Editor | Done (E0 to E7): the editor (decision 0045; brackets close as you type since steps B1 to B6, notes suggested after `[[` since steps W1 to W6, their headings and blocks after `#` and `^` since steps J0 to J8), `edit`, `new` (since folded into `edit`, steps N1 to N5), `mv` with link rewriting, `rm`, saving; the mouse since steps X0 to X6 (decisions 0073, 0074), in the viewer too since steps Q0 to Q5 (decision 0076). Both acceptance checks pass: kill -9 during saves, and the strace check in CI (2026-11-14) |
 | P Paste report | Done: a changed paste is reported; pastes stay plain text (decision 0047). Steps P0 to P5 below |
 | 5 Memory hygiene and comfort | Done (M0 to M6): the zeroizing allocator, `lock`, auto-lock after 5 minutes, lock on suspend, the cow lock screen (decision 0048), the shell starting at the top (decision 0049). Acceptance: the canary scan finds no note text and no key text in memory after lock |
-| 6 Sandbox | Done (S1 to S12; decisions 0059 to 0063): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests, run locally; the SELinux domain `crystal_t`; four fuzz targets, an hour clean; the optional bubblewrap launcher. Skipped by the user: CI (S0) and the `crystal_t` check through the launcher |
+| 6 Sandbox | Done (S1 to S12; decisions 0059 to 0063; Landlock ABI 10 since LL1 to LL3, decision 0077): Landlock and seccomp entered before the first passphrase prompt, also for `recover` and `check-code`; the section 9 checks as tests, run locally; the SELinux domain `crystal_t`; four fuzz targets, an hour clean; the optional bubblewrap launcher. Skipped by the user: CI (S0) and the `crystal_t` check through the launcher |
 | 7 | Dropped (decision 0036) |
 | 8 Keys and release | In progress: K0, K1, K4 and R1 to R4 done (decisions 0064 to 0069); both acceptance checks pass (identical hashes, the signature verifies). Next: H0, the hardware-key unlock decision |
 
@@ -31,6 +31,23 @@ mouse places the cursor, selects (drag, double and triple click) and
 scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
+
+## Steps LL1 to LL3 (Landlock ABI 10; done)
+
+Asked by the user (2026-11-20) when `landlock` 0.4.8 brought ABI 10:
+use the crate's new features as far as they help. Decision 0077.
+
+| Step | What | Check |
+| --- | --- | --- |
+| LL1 (done) | `landlock` =0.4.8 (diff from 0.4.7 read: new `unsafe` only in a musl-only `PathFd` fix and tests, no new crate); ABI 10 required, so `BIND_UDP` and `CONNECT_SEND_UDP` are handled with no rule and always denied. Quiet controls never used (every denial logged). About 6 lines | fmt, clippy, test, deny, audit; the refusal test names ABI 10 |
+| LL2 (done) | Sandbox check `landlock-udp`: a UDP bind under Landlock alone gives `EACCES` (a connect or send binds first, so this covers all of UDP). About 10 lines | Mutation-checked: with the ruleset at ABI 9 the bind was `ALLOWED` and the test failed |
+| LL3 (done) | Decision 0077; 0010 cut to the hard requirement, 0060 and 0070 brought up to date; Sandboxing (5.1, 5.2, 5.4, 9), Startup, Dependencies, Syscalls, Testing, the threat model, the setup guide (Linux 7.2 or newer) | `mdbook build` |
+
+Future work, not started:
+
+| What | Why | Gain |
+| --- | --- | --- |
+| Landlock ABI 11 (Linux 7.3): restrict with `LANDLOCK_RESTRICT_SELF_NO_NEW_PRIVS`, once `landlock` supports it (a raw syscall would need `unsafe`) | no_new_privs set by the same call that enforces the ruleset, only if it succeeds; Landlock used to the fullest (user, 2026-11-20) | Small: `prctl` already sets no_new_privs before the sandbox, and seccomp needs it there; `prctl` stays |
 
 ## Steps BL1 to BL2 (live mode: blank lines as written)
 
@@ -846,7 +863,7 @@ Phases, each ending in a commit with passing acceptance tests; security layers (
    - Accept: `strace` shows only ciphertext writes inside the vault; kill -9 during save never corrupts the vault.
 6. **Phase 5: Memory hygiene and comfort.** Zeroizing allocator, auto-lock after 5 minutes and the shell's `lock` command, lock on suspend (decision 0048), the shell starting at the top (decision 0049). No settings and no vault format change. Steps M0 to M6 above.
    - Accept (passed 2026-11-14): the canary scan finds no plaintext after lock.
-7. **Phase 6: Sandbox** (done; steps S0 to S12 above). Landlock (ABI 9, hard requirement) and a seccomp allowlist with argument rules, entered before the first passphrase prompt (decision 0059); the debug-only `--sandbox-check-for-test CHECK` and `tests/sandbox.rs`; the SELinux module (decision 0061); fuzzing in its own workspace (decision 0062). The optional bubblewrap launcher (S10, decision 0063). CI (S0) skipped.
+7. **Phase 6: Sandbox** (done; steps S0 to S12 above). Landlock (ABI 9, hard requirement; ABI 10 since decision 0077) and a seccomp allowlist with argument rules, entered before the first passphrase prompt (decision 0059); the debug-only `--sandbox-check-for-test CHECK` and `tests/sandbox.rs`; the SELinux module (decision 0061); fuzzing in its own workspace (decision 0062). The optional bubblewrap launcher (S10, decision 0063). CI (S0) skipped.
    - Accept: the checks in [Sandboxing](../design/sandboxing.md) section 9 pass, including that `socket`, `execve` and opening `~/.ssh` are killed or denied (passed locally 2026-11-16; CI skipped).
 8. ~~**Phase 7: Backups.**~~ Dropped (decision 0036): backups are left to restic, borg or any file-level tool; Crystal only accepts a restored, older vault after the word `restore` (step L3), and `crystal check-code NAME` checks the recovery code (step L1).
 9. **Phase 8: Keys and release.** age plugin unlock (YubiKey or TPM), optionally a second hardware key, passphrase change, a new recovery code, and key rotation (with an optional stronger scrypt setting, see Storage, Open questions), explicit plaintext export with a warning, reproducible builds, signed releases, per-user install to `~/.local/bin` with the optional immutable flag ([Installation](../guide/installation.md)). Steps K0 to H4 above (proposed): no recovery code any more (K0, user 2026-11-16); `passwd` always makes a new vault key (K1); K4 (stronger scrypt) and K5 (plaintext export) are flagged for dropping; hardware keys are settled in a decision (H0) first.
