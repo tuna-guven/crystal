@@ -24,12 +24,13 @@
 //! Its parts, one job each (steps RF1 to RF8): this file holds the
 //! editor's state and the key and mouse dispatch; `buffer` the text and
 //! its undo log, wiped; `motion` where the cursor and the selection go;
-//! `brackets` the closing pairs; `suggest` the link list (`query` what a
+//! `brackets` the closing pairs; `cells` a table's cells in live mode; `suggest` the link list (`query` what a
 //! typed link matches, `ids` new block ids); `live` live mode's parse and
 //! line layout; `view` the screen.
 
 mod brackets;
 pub mod buffer;
+mod cells;
 pub mod live;
 mod motion;
 pub mod suggest;
@@ -120,6 +121,9 @@ pub struct Editor {
     /// The note shown, if saved, and whether it is Markdown (`set_note`).
     own: Option<usize>,
     markdown: bool,
+    /// Shown in live mode (`set_live`): in a table, keys move through
+    /// its cells (`cells`).
+    live: bool,
 }
 
 impl Editor {
@@ -144,7 +148,15 @@ impl Editor {
             block_request: None,
             own: None,
             markdown: true,
+            live: false,
         })
+    }
+
+    /// Whether the view shows this editor in live mode, where tables are
+    /// boxed and keys move through their cells (steps TB2 to TB5). The
+    /// session sets it on opening.
+    pub fn set_live(&mut self, live: bool) {
+        self.live = live;
     }
 
     /// The text's changes since the last call (offsets only), for the
@@ -306,24 +318,14 @@ impl Editor {
                     }
                 }
             }
-            Key::Left | Key::ShiftLeft => {
-                let at = self.buffer.prev_grapheme(self.cursor);
-                self.move_to(at, key == Key::ShiftLeft);
-            }
-            Key::Right | Key::ShiftRight => {
-                let at = self.buffer.next_grapheme(self.cursor);
-                self.move_to(at, key == Key::ShiftRight);
-            }
+            Key::Left | Key::ShiftLeft => self.horizontal(false, key == Key::ShiftLeft),
+            Key::Right | Key::ShiftRight => self.horizontal(true, key == Key::ShiftRight),
             Key::Up | Key::ShiftUp => self.vertical(false, 1, key == Key::ShiftUp),
             Key::Down | Key::ShiftDown => self.vertical(true, 1, key == Key::ShiftDown),
             Key::PageUp => self.vertical(false, self.page, false),
             Key::PageDown => self.vertical(true, self.page, false),
-            Key::Home | Key::ShiftHome => {
-                self.move_to(self.line_start(self.cursor), key == Key::ShiftHome);
-            }
-            Key::End | Key::ShiftEnd => {
-                self.move_to(self.line_end(self.cursor), key == Key::ShiftEnd);
-            }
+            Key::Home | Key::ShiftHome => self.home_end(false, key == Key::ShiftHome),
+            Key::End | Key::ShiftEnd => self.home_end(true, key == Key::ShiftEnd),
             Key::Ctrl('a') => {
                 self.anchor = Some(0);
                 self.cursor = self.text().len();

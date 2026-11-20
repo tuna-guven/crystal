@@ -70,6 +70,7 @@ The editor's code is split so each file does one job and can be audited alone (s
 | `editor/buffer.rs` | The text and its undo log | Grown by hand, so no copy of note text is left unwiped |
 | `editor/motion.rs` | Where the cursor and the selection go | Always on a grapheme boundary |
 | `editor/brackets.rs` | `()`, `[]`, `{}` closing as you type | Both brackets go in or neither |
+| `editor/cells.rs` | A table's cells around the cursor in live mode, for the keys | Pure, from the view's own parse; the cursor only in cells' text |
 | `editor/suggest.rs` | The link list under `[[`, its keys and mouse | Note indexes and ranges, no copies of names |
 | `editor/suggest/query.rs` | The typed link and what it matches | Pure; at most `MAX_MATCHES` entries |
 | `editor/suggest/ids.rs` | New `^id`s and the request to save one into another note | Unbiased random ids; a refusal changes nothing |

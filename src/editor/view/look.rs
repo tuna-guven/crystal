@@ -179,17 +179,6 @@ fn by_line(mut drawn: Vec<(usize, u8, Drawn)>) -> Vec<(usize, Vec<Drawn>)> {
     out
 }
 
-/// Where the line starting at `start` ends: its line break (`\r\n`'s
-/// `\r`) or the text's end.
-pub fn line_end(text: &str, start: usize) -> usize {
-    let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-    if text[..end].ends_with('\r') {
-        end - 1
-    } else {
-        end
-    }
-}
-
 /// How the run of `runs` (sorted) holding `at` draws it, if one does: a
 /// fixed string or a cell border at its start, nothing on its other
 /// bytes.

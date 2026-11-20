@@ -671,6 +671,7 @@ fn edit(notes: &Notes, target: Target, live: bool, shell: &mut Shell) -> Mode {
             // For link suggestions into its own headings (decision 0075).
             editor: {
                 editor.set_note(own, markdown);
+                editor.set_live(live && markdown);
                 if live && markdown && body.len() > LIVE_MAX {
                     editor.tell("Too large for live mode: shown as written.");
                 }

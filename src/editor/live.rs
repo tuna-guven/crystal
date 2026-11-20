@@ -341,6 +341,17 @@ pub fn parse(text: &str) -> Parsed {
     }
 }
 
+/// Where the line starting at `start` ends: its line break (`\r\n`'s
+/// `\r`) or the text's end.
+pub fn line_end(text: &str, start: usize) -> usize {
+    let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+    if text[..end].ends_with('\r') {
+        end - 1
+    } else {
+        end
+    }
+}
+
 /// The columns `range` takes as `runs` draw it on one line: hidden bytes
 /// none, a fixed string its own width.
 pub fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {

@@ -23,12 +23,12 @@ use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::glyph::{Shape, shape};
-use super::look::{BORDER, BOTTOM, CONTINUED, Drawn, Editing, Hiding, Look, line_end};
+use super::look::{BORDER, BOTTOM, CONTINUED, Drawn, Editing, Hiding, Look};
 use super::rows::{Row, RowStart};
 use super::{drawn_style, put_grapheme};
 use crate::editor::Editor;
 use crate::editor::live::layout::{Layout, Line, Piece, Table};
-use crate::editor::live::{self, Run, Show};
+use crate::editor::live::{self, Run, Show, line_end};
 use crate::md::render::{DASHES, QUOTE_BAR, fit_columns};
 use crate::ui::grid::{Grid, Style, display_width};
 use crate::ui::layout::Rect;

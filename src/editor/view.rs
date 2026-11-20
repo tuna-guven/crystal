@@ -1112,6 +1112,9 @@ mod tests {
         ) {
             let mut clip = Clipboard::default();
             let mut ed = Editor::new(&text).unwrap();
+            // As the session opens a live editor: keys move through
+            // table cells (step TB3).
+            ed.set_live(true);
             for m in moves {
                 let key = match m {
                     0 => Key::Up,
