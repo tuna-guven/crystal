@@ -53,7 +53,7 @@ becomes a directory of single-job modules under `src/editor/view/`:
 | Step | What | Check |
 | --- | --- | --- |
 | RF1 (done) | `view/glyph.rs`: how one grapheme is measured and drawn (shapes, escapes for invisible characters, tab stops, `put_grapheme`) | Tests unchanged; moved code identical |
-| RF2 | `view/rows.rs`: the row walk: `RowStart` (a line's row, or a drawn row before a line and its ordinal), `Row`, `row_at`, `row_start`, `top_for`, a `Rows` iterator used by drawing, scrolling, clicks and `line_row` | Tests unchanged; the cursor and scroll property tests with 5000 cases |
+| RF2 (done) | `view/rows.rs`: the row walk: `RowStart` (a line's row, or a drawn row before a line and its ordinal), `Row`, `row_at`, `row_start`, `top_for`, a `Rows` iterator used by drawing, scrolling, clicks and `line_row` | Tests unchanged; the cursor and scroll property tests with 5000 cases |
 | RF3 | `view/look.rs`: live mode's look of one frame (`Live`, renamed `Look`): what is revealed, hidden, skipped; `Look::new` split into named steps (reveal, folds, skipped lines, blank rows, tables), each a function | Tests unchanged; 5000 cases |
 | RF4 | `view/fold.rs` (folds kept by offset, moved by changes) and `view/table.rs` (boxed tables: fitting, wrapping, borders, drawing, clicks) | Tests unchanged |
 | RF5 | `view/suggestions.rs`: the link suggestion list under the cursor and its mouse mapping; `view.rs` keeps `View` (state, `draw`, scrolling, the mouse) | Tests unchanged |

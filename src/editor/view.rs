@@ -51,15 +51,16 @@
 //! row starts would fix it at the cost of state kept in step with every
 //! edit, and real notes have short lines.
 
-use std::collections::VecDeque;
 use std::ops::Range;
 
 use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod glyph;
+mod rows;
 
-use glyph::{Shape, shape, width_at};
+use glyph::width_at;
+use rows::{Row, RowStart, line_start, row_start, rows, top_for};
 
 use super::Editor;
 use super::buffer::Change;
@@ -171,18 +172,6 @@ fn shift(folds: &mut Vec<usize>, change: Change) {
             false
         }
     });
-}
-
-/// A row start with this bit is a drawn row (`Live::drawn`, steps LV2,
-/// LT2, LW1): the line it goes before in the bits under `ORDINAL`, which
-/// of that line's drawn rows from `ORDINAL` up. Notes (at most 8 MiB)
-/// are far smaller than `ORDINAL`, so no offset has these bits.
-const MARK: usize = 1 << (usize::BITS - 1);
-const ORDINAL: usize = 1 << 40;
-
-/// The line a row start is on, or goes before.
-fn line_of(at: usize) -> usize {
-    if at & MARK == 0 { at } else { at % ORDINAL }
 }
 
 /// A boxed table's line (step LW2): one row drawn whole from its cells
@@ -706,7 +695,7 @@ impl Live {
     /// past any folded section and skipped lines; `None` past the text.
     /// The text's end after a line break is the empty last line, drawn
     /// unless skipped; after a fold reaching it, it is the fold's.
-    fn next_row(&self, mut at: usize, text: &str) -> Option<usize> {
+    fn next_row(&self, mut at: usize, text: &str) -> Option<RowStart> {
         let len = text.len();
         let mut folded = false;
         loop {
@@ -724,16 +713,16 @@ impl Live {
         // The rows before the line first, if it has any; a table's bottom
         // border comes even after the last line.
         let first = self.first_row(at);
-        (!gone || first & MARK != 0).then_some(first)
+        (!gone || first.is_drawn()).then_some(first)
     }
 
     /// The first row of the line at `line`: the first drawn row before
     /// it, or the line itself.
-    fn first_row(&self, line: usize) -> usize {
+    fn first_row(&self, line: usize) -> RowStart {
         if self.before(line).is_empty() {
-            line
+            RowStart::text(line)
         } else {
-            MARK | line
+            RowStart::drawn(line)
         }
     }
 
@@ -746,21 +735,18 @@ impl Live {
     }
 
     /// The drawn row the row start `at` is, if it is one and still there.
-    fn drawn_row(&self, at: usize) -> Option<&Drawn> {
-        if at & MARK == 0 {
-            return None;
-        }
-        self.before(line_of(at)).get((at & !MARK) / ORDINAL)
+    fn drawn_row(&self, at: RowStart) -> Option<&Drawn> {
+        self.before(at.line()).get(at.ordinal()?)
     }
 
     /// The drawn row after the drawn row `at`, before the same line.
-    fn next_drawn(&self, at: usize) -> Option<usize> {
-        let next = at + ORDINAL;
+    fn next_drawn(&self, at: RowStart) -> Option<RowStart> {
+        let next = at.next_drawn();
         self.drawn_row(next).is_some().then_some(next)
     }
 
     /// A drawn row's pieces (a table's border); none for a blank row.
-    fn pieces(&self, at: usize) -> &[Piece] {
+    fn pieces(&self, at: RowStart) -> &[Piece] {
         match self.drawn_row(at) {
             Some(Drawn::Pieces(range)) => self.layout.prefix(range),
             _ => &[],
@@ -899,160 +885,11 @@ impl Live {
     }
 }
 
-/// One screen row of text.
-struct Row {
-    /// The bytes it shows (without its line break).
-    range: Range<usize>,
-    /// Where the next row starts; `None` after the text's last row.
-    next: Option<usize>,
-    /// Ended by a line break or the end of the text, not by wrapping.
-    ends_line: bool,
-    /// Columns left of its text for live mode's prefix (0 when the prefix
-    /// would leave no room).
-    indent: usize,
-    /// A drawn row (steps LV2, LT2, LW1): the viewer's blank row or a
-    /// table's border, no text of the note; it holds no position, a click
-    /// there goes to the line below.
-    drawn: bool,
-}
-
-impl Row {
-    /// Whether the cursor at `at` is drawn on this row. At a wrap the
-    /// position belongs to the next row; at a line break, to this one.
-    fn contains(&self, at: usize) -> bool {
-        // The next row's start, without its mark (steps LV2, LT2). A row
-        // ending the text is followed by no line, at most a table's
-        // bottom border: the text's end is its own.
-        let end = if self.ends_line {
-            match self.next.map(line_of) {
-                Some(next) if next > self.range.end => next,
-                _ => usize::MAX,
-            }
-        } else {
-            self.range.end
-        };
-        self.range.start <= at && at < end
-    }
-}
-
-/// The row starting at `start` (a row start), `width` columns wide. A
-/// grapheme wider than a whole row gets a row of its own.
-fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
-    if start & MARK != 0 {
-        let line = line_of(start).min(text.len());
-        // The next drawn row, else the line, unless past the text.
-        let gone = line >= text.len() && (live.skip_end || !text.ends_with('\n'));
-        let next = live.next_drawn(start);
-        return Row {
-            range: line..line,
-            next: next.or((!gone).then_some(line)),
-            ends_line: false,
-            indent: 0,
-            drawn: true,
-        };
-    }
-    // A boxed table's line: one row, whole (step LW2).
-    if let Some(boxed) = live.boxed_at(start) {
-        let rest = &text[boxed.end..];
-        let break_len = if rest.starts_with("\r\n") {
-            2
-        } else {
-            usize::from(rest.starts_with('\n'))
-        };
-        let next = if break_len > 0 {
-            live.next_row(boxed.end + break_len, text)
-        } else {
-            Some(live.first_row(text.len())).filter(|&first| first & MARK != 0)
-        };
-        return Row {
-            range: start..boxed.end,
-            next,
-            ends_line: true,
-            indent: 0,
-            drawn: false,
-        };
-    }
-    // Live mode's prefix takes its columns first, if text still fits.
-    let indent = live.prefix(start).width();
-    let indent = if indent < width { indent } else { 0 };
-    let width = width - indent;
-    let rest = text.get(start..).unwrap_or("");
-    let mut column = 0;
-    for (i, grapheme) in rest.grapheme_indices(true) {
-        let at = start + i;
-        if matches!(shape(grapheme), Shape::Break) {
-            // A folded heading's row is followed by its section's end.
-            let next = live.next_row(at + grapheme.len(), text);
-            return Row {
-                range: start..at,
-                next,
-                ends_line: true,
-                indent,
-                drawn: false,
-            };
-        }
-        let w = live.width(at, grapheme, column);
-        if column > 0 && column + w > width {
-            return Row {
-                range: start..at,
-                next: Some(at),
-                ends_line: false,
-                indent,
-                drawn: false,
-            };
-        }
-        column += w;
-    }
-    // A boxed table's bottom border may follow the last line.
-    let next = Some(live.first_row(text.len()))
-        .filter(|&first| first & MARK != 0 && !text.ends_with('\n'));
-    Row {
-        range: start..text.len(),
-        next,
-        ends_line: true,
-        indent,
-        drawn: false,
-    }
-}
-
-fn line_start(text: &str, at: usize) -> usize {
-    text.get(..at)
-        .and_then(|head| head.rfind('\n'))
-        .map_or(0, |i| i + 1)
-}
-
-/// The start of the row the cursor at `at` is drawn on.
-fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
-    // A drawn row (a kept scroll position): itself while it is there.
-    if at & MARK != 0 {
-        let line = line_of(at).min(text.len());
-        if live.drawn_row(at).is_some() && text.is_char_boundary(line) {
-            return at;
-        }
-        return row_start(text, line, width, live);
-    }
-    // Inside a folded section: its heading's row.
-    // In skipped lines: the next row drawn (no row holds `at` itself).
-    if let Some(skip) = live.skipped_at(at) {
-        return live.next_row(skip.start, text).unwrap_or(skip.start);
-    }
-    let mut start = live
-        .folded_heading(at)
-        .unwrap_or_else(|| line_start(text, at));
-    loop {
-        let row = row_at(text, start, width, live);
-        match row.next {
-            Some(next) if !row.contains(at) => start = next,
-            _ => return start,
-        }
-    }
-}
-
 /// The editor's scroll position.
 #[derive(Default)]
 pub struct View {
     /// Where the first row shown starts.
-    top: usize,
+    top: RowStart,
     /// Where the last frame drew the text (right of the gutter); `None`
     /// before the first frame or when the screen had no room for it.
     area: Option<Rect>,
@@ -1228,13 +1065,10 @@ impl View {
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
-        let mut number = lines::count(&text[..line_start(text, line_of(self.top))]);
-        let mut start = Some(self.top);
+        let mut number = lines::count(&text[..line_start(text, self.top.line())]);
         self.heading_rows.clear();
-        for y in area.y..area.bottom() {
-            let Some(next) = start else { break };
-            let row = row_at(text, next, width, &self.look);
-            start = row.next;
+        let shown = self::rows(text, self.top, width, &self.look);
+        for (y, (next, row)) in (area.y..area.bottom()).zip(shown) {
             // The viewer's added blank row: nothing to draw; a table's
             // border: its pieces.
             if let Some(&Drawn::Cells { boxed, row }) = self.look.drawn_row(next) {
@@ -1402,19 +1236,16 @@ impl View {
         }
         let y = row.clamp(area.y, area.bottom() - 1);
         let width = usize::from(area.width - 1);
-        let top = if text.is_char_boundary(line_of(self.top)) {
+        let top = if text.is_char_boundary(self.top.line()) {
             row_start(text, self.top, width, &self.look)
         } else {
-            0
+            RowStart::text(0)
         };
-        let mut start = top;
-        for _ in area.y..y {
-            match row_at(text, start, width, &self.look).next {
-                Some(next) => start = next,
-                None => return Some(text.len()),
-            }
-        }
-        let row = row_at(text, start, width, &self.look);
+        // The row `y` is on; past the text's last row, the text's end.
+        let Some((start, row)) = rows(text, top, width, &self.look).nth(usize::from(y - area.y))
+        else {
+            return Some(text.len());
+        };
         // A boxed table's line: the cell under the click (step LW2).
         let x = usize::from(column.saturating_sub(area.x));
         if let Some(boxed) = self.look.boxed_at(row.range.start).filter(|_| !row.drawn) {
@@ -1452,110 +1283,54 @@ impl View {
     pub fn line_row(&self, text: &str, at: usize) -> Option<isize> {
         let area = self.area?;
         let width = usize::from(area.width - 1);
-        if !text.is_char_boundary(line_of(self.top)) || !text.is_char_boundary(at) {
+        if !text.is_char_boundary(self.top.line()) || !text.is_char_boundary(at) {
             return None;
         }
         let line = line_start(text, at);
-        let mut start = Some(self.top);
-        for y in 0..area.height {
-            let row = row_at(text, start?, width, &self.look);
-            if !row.drawn && row.range.start == line {
-                return isize::try_from(y).ok();
-            }
-            start = row.next;
+        let height = usize::from(area.height);
+        // On screen: the row the line starts on.
+        let shown = rows(text, self.top, width, &self.look).take(height);
+        if let Some(y) = shown
+            .map(|(_, row)| row)
+            .position(|row| !row.drawn && row.range.start == line)
+        {
+            return isize::try_from(y).ok();
         }
-        // Above the screen: its rows down to the first one shown.
-        let mut start = line;
-        for above in 1..=isize::try_from(area.height).ok()? {
-            start = row_at(text, start, width, &self.look).next?;
-            if start == self.top {
-                return Some(-above);
-            }
-        }
-        None
+        // Above the screen: how many of its rows come before the first
+        // one shown.
+        rows(text, RowStart::text(line), width, &self.look)
+            .take(height + 1)
+            .position(|(start, _)| start == self.top)
+            .filter(|&above| above > 0)
+            .and_then(|above| isize::try_from(above).ok())
+            .map(|above| -above)
     }
 
     /// Moves `top` so the cursor's row is on screen.
     fn scroll(&mut self, text: &str, cursor: usize, width: usize, rows: usize) {
-        if !text.is_char_boundary(line_of(self.top)) {
-            self.top = 0;
+        if !text.is_char_boundary(self.top.line()) {
+            self.top = RowStart::text(0);
         }
         // An edit or a new width may have moved the row starts. At the
         // text's start, the rows before its first line show (a table's
         // top border).
         let live = &self.look;
         self.top = row_start(text, self.top, width, live);
-        if self.top == 0 {
+        if self.top == RowStart::text(0) {
             self.top = live.first_row(0);
         }
-        if cursor < line_of(self.top) {
-            self.top = row_start(text, cursor, width, live);
+        if cursor < self.top.line() {
+            self.top = row_start(text, RowStart::text(cursor), width, live);
             return;
         }
-        let mut start = self.top;
-        for _ in 0..rows {
-            let row = row_at(text, start, width, live);
-            if row.contains(cursor) {
+        // On screen, or above the text's last row: nothing to do.
+        for (_, row) in self::rows(text, self.top, width, live).take(rows) {
+            if row.contains(cursor) || row.next.is_none() {
                 return;
-            }
-            match row.next {
-                Some(next) => start = next,
-                None => return,
             }
         }
         // Below the screen: the cursor's row becomes the last one shown.
         self.top = top_for(text, cursor, width, rows, live);
-    }
-}
-
-/// The start of the row `rows - 1` rows above the cursor's row, or the
-/// text's first row, so the cursor's row is the last one shown.
-///
-/// Walks each logical line forward once, keeping only the last row starts
-/// it needs: on a line of a million rows, finding the row above by
-/// walking from the line's start again for every screen row took seconds
-/// per key (found by review).
-fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) -> usize {
-    let mut need = rows.max(1);
-    let mut line = line_start(text, cursor);
-    // On the cursor's line, the walk stops at the cursor's row; on the
-    // lines above, at their end.
-    let mut until = Some(cursor);
-    loop {
-        let mut last = VecDeque::with_capacity(need);
-        // A line's rows start with its marked rows, if it has any.
-        let mut start = live.first_row(line);
-        loop {
-            if last.len() == need {
-                last.pop_front();
-            }
-            last.push_back(start);
-            let row = row_at(text, start, width, live);
-            let done = row.ends_line || until.is_some_and(|at| row.contains(at));
-            match row.next {
-                Some(next) if !done => start = next,
-                _ => break,
-            }
-        }
-        let first = last.front().copied().unwrap_or(line);
-        if last.len() == need || line == 0 {
-            return first;
-        }
-        need -= last.len();
-        // `line - 1` is the `\n` ending the line above (also inside `\r\n`).
-        line = line_start(text, line - 1);
-        // Skipped lines have no row; a folded section's lines are its
-        // heading's.
-        while let Some(skip) = live.skipped_at(line) {
-            if skip.start == 0 {
-                return first;
-            }
-            line = line_start(text, skip.start - 1);
-        }
-        if let Some(heading) = live.folded_heading(line) {
-            line = heading;
-        }
-        until = None;
     }
 }
 
@@ -1981,20 +1756,6 @@ mod tests {
         assert_eq!(rows(&grid)[2], "Nothing to undo.");
     }
 
-    /// The scroll's first version, kept as the reference: from the
-    /// cursor's row, step to the row above `rows - 1` times, each found by
-    /// walking its line from the start. Right, but quadratic on long lines.
-    fn top_by_rows(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
-        let mut top = row_start(text, cursor, width, &Live::default());
-        for _ in 1..rows {
-            let Some(c) = text.get(..top).and_then(|head| head.chars().next_back()) else {
-                break;
-            };
-            top = row_start(text, top - c.len_utf8(), width, &Live::default());
-        }
-        top
-    }
-
     /// Found by review: End on a 256 KiB line took 7.7 s in a debug build
     /// (14 s on 8 MiB in release), as every screen row walked the line
     /// again. One walk takes well under a second; the bound leaves room
@@ -2299,24 +2060,6 @@ mod tests {
                 }
             }
             prop_assert_eq!(drawn_any, highlighted);
-        }
-
-        /// The single walk picks the same first row as the reference, on
-        /// any text, cursor, width and height.
-        #[test]
-        fn top_for_matches_the_reference(
-            text in "[ab\t\n\r\u{1b}\u{301}日😀]{0,80}",
-            pick in any::<prop::sample::Index>(),
-            width in 1usize..12,
-            rows in 1usize..8,
-        ) {
-            let mut stops: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
-            stops.push(text.len());
-            let cursor = stops[pick.index(stops.len())];
-            prop_assert_eq!(
-                top_for(&text, cursor, width, rows, &Live::default()),
-                top_by_rows(&text, cursor, width, rows)
-            );
         }
 
         /// Any text, any keys, any screen size: the cursor is drawn once and
