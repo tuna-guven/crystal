@@ -469,7 +469,8 @@ the viewer drops (a second one in a row, any before the first block or
 after the last) get no row while the cursor is not on them, and the
 viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
-rows are the viewer's; tables stay as written, and rows wrap by
+rows are the viewer's; tables keep their pipes as written (cells
+styled), and rows wrap by
 character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,

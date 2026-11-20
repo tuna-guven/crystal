@@ -32,6 +32,30 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps LT1 to LT4 (live editing: boxed tables)
+
+Asked for by the user (2026-11-20) after a complexity warning: a table
+the cursor and the selection are not in looks as in the viewer: a
+`┌─┬─┐` row above it, `│` cells padded and aligned, `├─┼─┤` for the
+`|---|` line and, as the viewer draws it, between every two body rows,
+a `└─┴─┘` row below it; cells styled (bold, links, `code`) with their
+markup hidden. With the cursor or the selection in it, the table is
+drawn as written (indented, cells still styled, the element under the
+cursor as written), so column widths never move while typing. A table
+whose box does not fit the screen is drawn as written too (the viewer
+wraps its cells instead). The border rows are rows the note does not
+have: the viewer's added blank row (`GAP`, step LV2) becomes one of
+three row marks before a line, in this order: a table's bottom border,
+the blank row, a table's top or inner border. No security benefit;
+about 250 lines of code and 180 of tests. Rules as for LV1 to LV3.
+
+| Step | What | Check |
+| --- | --- | --- |
+| LT1 (done) | Parsing: a table is no longer drawn raw (cells styled, their markup elements the cursor reveals); the layout records each table: its lines, alignments, each row's line and cells (trimmed), and each column's width as drawn (from the runs). About 70 lines | Unit tests: cell ranges and widths with hidden markup, a table in a quote and in a list, short rows; the existing property tests |
+| LT2 | Row marks: `GAP` becomes a 2-bit mark (bottom border, blank row, top or inner border); every reader of a row start strips the mark; a table not edited and fitting the screen is boxed, its border rows drawn from fixed pieces (`QUOTE_BAR` dashes), skipped in folds; a click on one goes to the line below. About 100 lines | Unit tests: rows of a boxed table at the text's start and end, after a heading, before a blank line; scrolling over border rows; the cursor entering unboxes |
+| LT3 | Boxed lines: the prefix gains `│ ` and the first cell's padding, the bytes between two cells draw as ` │ ` with both paddings, the rest of the line as padding and ` │`, the `|---|` line as `├─┼─┤`, all fixed strings; a click on padding lands on the cell's nearest character. About 80 lines | Unit tests on the drawn grid: alignment, wide characters, styled cells, a short row; the cursor property test with tables |
+| LT4 | The comparison test gains tables (`live_rows_are_the_viewers`); decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook; the live property tests once with `PROPTEST_CASES=5000` | Review of the diff: every row start reader strips the mark; no note text in strings, no `unsafe`, syscalls or dependencies |
+
 ## Steps LV1 to LV3 (live editing: the viewer's rows; done)
 
 Asked for by the user (2026-11-20) after comparing screenshots, with a

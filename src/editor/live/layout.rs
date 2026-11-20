@@ -17,11 +17,12 @@
 //! Setext heading's underline is hidden whole, any other (a blank line,
 //! a link definition) only its leading spaces and, in a quote, `>`s.
 //! Ordered lists keep their numbers as written: they are the note's text.
+//! Tables are recorded whole (step LT1), for the view to box.
 //! Holds offsets and fixed strings, never note text.
 
 use std::ops::Range;
 
-use pulldown_cmark::{Event, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 
 use crate::md::render::{CODE, QUOTE_BAR, heading_mark};
 use crate::ui::grid::{Mods, Style, display_width};
@@ -66,6 +67,25 @@ pub struct Layout {
     /// The headings that open a section (outside quotes and lists, as in
     /// the viewer): their line's start and level, in order (step LF1).
     pub headings: Vec<(usize, u8)>,
+    /// The tables, in order (step LT1).
+    pub tables: Vec<Table>,
+}
+
+/// A table, for the view to box as the viewer does (step LT1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Table {
+    /// Its lines, as indexes of `Layout::lines`: the header, the `|---|`
+    /// line, the body rows.
+    pub lines: Range<usize>,
+    /// Each column's alignment; there are as many columns.
+    pub aligns: Vec<Alignment>,
+    /// Each row's line (an index of `Layout::lines`) and its cells'
+    /// text, without the spaces around it; a short row gets empty cells
+    /// at its end, as the parser gives them.
+    pub rows: Vec<(usize, Vec<Range<usize>>)>,
+    /// Each column's widest cell as drawn, in columns (`live::parse`
+    /// sets it from the runs: hidden markup takes none).
+    pub widths: Vec<u16>,
 }
 
 impl Layout {
@@ -119,6 +139,8 @@ pub struct Builder<'a> {
     blank_since: bool,
     /// The next line laid out gets `Line::gap`.
     gap_next: bool,
+    /// The table being read.
+    table: Option<Table>,
     /// The last prefix interned, to share it with the next line.
     last: Range<u32>,
     /// A prefix being built, kept to spare an allocation per line.
@@ -137,6 +159,7 @@ impl<'a> Builder<'a> {
             code: None,
             hide_bare: false,
             heading: None,
+            table: None,
             last: 0..0,
             scratch: Vec::new(),
             ended: false,
@@ -165,14 +188,31 @@ impl<'a> Builder<'a> {
                 Tag::Paragraph | Tag::Table(_) | Tag::HtmlBlock => {
                     self.before(range.start);
                     self.block();
-                    if matches!(tag, Tag::Paragraph) {
-                        self.content(range);
+                    match tag {
+                        Tag::Paragraph => self.content(range),
+                        Tag::Table(aligns) => {
+                            let first = self.layout.lines.len();
+                            self.table = Some(Table {
+                                lines: first..first,
+                                aligns: aligns.clone(),
+                                rows: Vec::new(),
+                                widths: Vec::new(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                // A row starts at its line's content: its line is the
+                // last laid out.
+                Tag::TableHead | Tag::TableRow => {
+                    self.content(range);
+                    let line = self.layout.lines.len().saturating_sub(1);
+                    if let Some(table) = &mut self.table {
+                        table.rows.push((line, Vec::new()));
                     }
                 }
                 // These start at their line's content.
-                Tag::TableHead
-                | Tag::TableRow
-                | Tag::Emphasis
+                Tag::Emphasis
                 | Tag::Strong
                 | Tag::Strikethrough
                 | Tag::Link { .. }
@@ -196,7 +236,7 @@ impl<'a> Builder<'a> {
                 }
                 // Lines left before the end belong to the tag.
                 self.upto(range.end);
-                self.close(*tag);
+                self.close(*tag, range);
             }
             Event::Rule => {
                 self.before(range.start);
@@ -257,7 +297,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn close(&mut self, tag: TagEnd) {
+    fn close(&mut self, tag: TagEnd, range: &Range<usize>) {
         match tag {
             TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item => {
                 self.containers.pop();
@@ -268,6 +308,18 @@ impl<'a> Builder<'a> {
                 self.hide_bare = false;
                 if self.containers.is_empty() {
                     self.section = 2 * level as u16;
+                }
+            }
+            TagEnd::TableCell => {
+                let row = self.table.as_mut().and_then(|t| t.rows.last_mut());
+                if let Some((_, cells)) = row {
+                    cells.push(trimmed(self.text, range));
+                }
+            }
+            TagEnd::Table => {
+                if let Some(mut table) = self.table.take() {
+                    table.lines.end = self.layout.lines.len();
+                    self.layout.tables.push(table);
                 }
             }
             TagEnd::CodeBlock => {
@@ -447,6 +499,14 @@ impl<'a> Builder<'a> {
         self.last = start..end;
         start..end
     }
+}
+
+/// `range` without the spaces and tabs around its text (a table cell).
+fn trimmed(text: &str, range: &Range<usize>) -> Range<usize> {
+    let cell = &text[range.clone()];
+    let start = range.start + (cell.len() - cell.trim_start_matches([' ', '\t']).len());
+    let end = range.end - (cell.len() - cell.trim_end_matches([' ', '\t']).len());
+    start..end.max(start)
 }
 
 /// `width` spaces (at most `SPACES`).
@@ -636,6 +696,19 @@ mod tests {
                 let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
                 proptest::prop_assert!(line.markup.end <= end);
                 proptest::prop_assert!(text.is_char_boundary(line.markup.end));
+            }
+            // A table's rows are its lines, each cell inside its row's
+            // line (step LT1).
+            for table in &layout.tables {
+                proptest::prop_assert!(table.lines.end <= layout.lines.len());
+                for (row, cells) in &table.rows {
+                    proptest::prop_assert!(table.lines.contains(row));
+                    let start = layout.lines[*row].markup.start;
+                    let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+                    for cell in cells {
+                        proptest::prop_assert!(start <= cell.start && cell.end <= end);
+                    }
+                }
             }
         }
     }

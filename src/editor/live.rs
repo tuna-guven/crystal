@@ -16,8 +16,9 @@
 //! as written. A line break is never hidden, so lines stay lines.
 //!
 //! Blocks look as in the viewer: a task box `[ ]` or `[x]` is dimmed, a
-//! rule becomes a gray line, a code block's text is gray. A table is
-//! shown as written.
+//! rule becomes a gray line, a code block's text is gray. A table's cells
+//! are styled; its pipes and `|---|` line are shown as written here (the
+//! view boxes a table that is not edited, steps LT1 to LT3).
 
 pub mod layout;
 
@@ -30,7 +31,7 @@ use crate::md::blocks::blocks;
 use crate::md::link::clickable;
 use crate::md::render::{CODE, DASHES, LINK, OPTIONS, QUOTE_BAR, eq_ci, heading_mark};
 use crate::notes::Fragment;
-use crate::ui::grid::{Mods, Style};
+use crate::ui::grid::{Mods, Style, display_width};
 
 /// How a run's bytes are drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +58,6 @@ struct Frame {
     style: Style,
     /// Markup here is hidden.
     hide: bool,
-    /// Everything here is shown as written, unstyled (a table).
-    raw: bool,
 }
 
 /// A task box or a list's number, dimmed as in the viewer.
@@ -156,7 +155,6 @@ pub fn parse(text: &str) -> Parsed {
     let top = Frame {
         style: Style::PLAIN,
         hide: false,
-        raw: false,
     };
     let mut stack = vec![top];
     let mut lines = layout::Builder::new(text);
@@ -179,7 +177,6 @@ pub fn parse(text: &str) -> Parsed {
                     dest_url,
                     ..
                 } = &tag
-                    && !frame.raw
                 {
                     let wiki = matches!(link_type, LinkType::WikiLink { .. });
                     let found = text[range.clone()].find(&**dest_url);
@@ -194,30 +191,25 @@ pub fn parse(text: &str) -> Parsed {
                         });
                     }
                 }
-                if !frame.raw
-                    && matches!(
-                        tag,
-                        Tag::Emphasis
-                            | Tag::Strong
-                            | Tag::Strikethrough
-                            | Tag::Link { .. }
-                            | Tag::Image { .. }
-                    )
-                {
+                if matches!(
+                    tag,
+                    Tag::Emphasis
+                        | Tag::Strong
+                        | Tag::Strikethrough
+                        | Tag::Link { .. }
+                        | Tag::Image { .. }
+                ) {
                     out.element(range.clone());
                 }
                 // A code block: its fences are elements of their own, so
                 // the cursor in its code leaves it styled.
-                if let Tag::CodeBlock(kind) = &tag
-                    && !frame.raw
-                {
+                if let Tag::CodeBlock(kind) = &tag {
                     out.code(range.clone());
                     if matches!(kind, CodeBlockKind::Fenced(_)) {
                         fence = Some((range.start, Vec::new()));
                     }
                 }
                 match tag {
-                    _ if frame.raw => {}
                     Tag::Emphasis => inner.style = add(frame.style, Mods::ITALIC),
                     Tag::Strong => inner.style = add(frame.style, Mods::BOLD),
                     Tag::Strikethrough => inner.style = add(frame.style, Mods::CROSSED_OUT),
@@ -236,25 +228,17 @@ pub fn parse(text: &str) -> Parsed {
                             out.push(range.start..range.start + digits + 1, Show::Text, TASK);
                         }
                     }
-                    Tag::Table(_) => {
-                        inner = Frame {
-                            style: Style::PLAIN,
-                            hide: false,
-                            raw: true,
-                        };
-                    }
                     _ => {}
                 }
-                inner.hide |= !inner.raw
-                    && matches!(
-                        tag,
-                        Tag::Emphasis
-                            | Tag::Strong
-                            | Tag::Strikethrough
-                            | Tag::Link { .. }
-                            | Tag::Image { .. }
-                            | Tag::CodeBlock(CodeBlockKind::Fenced(_))
-                    );
+                inner.hide |= matches!(
+                    tag,
+                    Tag::Emphasis
+                        | Tag::Strong
+                        | Tag::Strikethrough
+                        | Tag::Link { .. }
+                        | Tag::Image { .. }
+                        | Tag::CodeBlock(CodeBlockKind::Fenced(_))
+                );
                 stack.push(inner);
             }
             Event::End(tag) => {
@@ -264,7 +248,7 @@ pub fn parse(text: &str) -> Parsed {
                 // layout's); only closing `#`s or a Setext underline are
                 // hidden here, as an element of their own.
                 let start = out.pos;
-                if matches!(tag, TagEnd::Heading(_)) && !frame.raw {
+                if matches!(tag, TagEnd::Heading(_)) {
                     out.hide(start..range.end);
                     out.element(start..range.end);
                 } else {
@@ -279,7 +263,7 @@ pub fn parse(text: &str) -> Parsed {
                 }
                 stack.pop();
             }
-            Event::Code(_) if !frame.raw => {
+            Event::Code(_) => {
                 out.gap(range.start, frame);
                 out.element(range.clone());
                 out.code(range.clone());
@@ -294,14 +278,14 @@ pub fn parse(text: &str) -> Parsed {
                 }
                 out.hide(end..range.end);
             }
-            Event::Rule if !frame.raw => {
+            Event::Rule => {
                 out.gap(range.start, frame);
                 // The line break after it stays shown.
                 let end = range.start + text[range].trim_end_matches(['\n', '\r']).len();
                 out.element(out.pos..end);
                 out.push(out.pos..end, Show::Fixed(DASHES), QUOTE_BAR);
             }
-            Event::TaskListMarker(_) if !frame.raw => {
+            Event::TaskListMarker(_) => {
                 out.gap(range.start, frame);
                 out.push(range, Show::Text, TASK);
             }
@@ -317,21 +301,50 @@ pub fn parse(text: &str) -> Parsed {
                     }
                 }
                 out.gap(range.start, frame);
-                let style = if frame.raw { Style::PLAIN } else { frame.style };
-                out.push(range, Show::Text, style);
+                out.push(range, Show::Text, frame.style);
             }
         }
     }
     out.push(out.pos..text.len(), Show::Text, Style::PLAIN);
     out.elements.sort_by_key(|range| range.start);
+    // Each table column's widest cell as drawn (step LT1).
+    let mut layout = lines.finish();
+    for table in &mut layout.tables {
+        table.widths = vec![0; table.aligns.len()];
+        for (_, cells) in &table.rows {
+            for (width, cell) in table.widths.iter_mut().zip(cells) {
+                let drawn = u16::try_from(drawn_width(text, &out.runs, cell));
+                *width = (*width).max(drawn.unwrap_or(u16::MAX));
+            }
+        }
+    }
     Parsed {
         runs: out.runs,
         elements: out.elements,
-        layout: lines.finish(),
+        layout,
         links,
         code: out.code,
         fenced,
     }
+}
+
+/// The columns `range` takes as `runs` draw it on one line: hidden bytes
+/// none, a fixed string its own width.
+fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {
+    let first = runs.partition_point(|run| run.range.end <= range.start);
+    runs[first..]
+        .iter()
+        .take_while(|run| run.range.start < range.end)
+        .map(|run| match run.show {
+            Show::Text => {
+                let part = run.range.start.max(range.start)..run.range.end.min(range.end);
+                display_width(&text[part])
+            }
+            Show::Hidden => 0,
+            Show::Fixed(fixed) if run.range.start >= range.start => display_width(fixed),
+            Show::Fixed(_) => 0,
+        })
+        .sum()
 }
 
 fn add(style: Style, mods: Mods) -> Style {
@@ -513,12 +526,12 @@ mod tests {
         // A strong span over two lines keeps its line break.
         assert_eq!(shown("**a\nb**"), "a\nb");
         assert_eq!(shown("**a\r\nb**"), "a\r\nb");
-        // Tables, numbers and blank lines are shown as written.
-        for text in [
-            "| a | **b** |\n|---|---|\n| 1 | 2 |",
-            "1. one\n2. two",
-            "plain\n\n\nblank lines",
-        ] {
+        // Numbers and blank lines are shown as written; a table's pipes
+        // too, its cells styled (step LT1).
+        let table = "| a | **b** |\n|---|---|\n| 1 | 2 |";
+        assert_eq!(shown(table), "| a | b |\n|---|---|\n| 1 | 2 |");
+        assert!(style_of(table, "b").mods.contains(Mods::BOLD));
+        for text in ["1. one\n2. two", "plain\n\n\nblank lines"] {
             assert_eq!(shown(text), text);
         }
     }
@@ -579,6 +592,30 @@ mod tests {
         assert_eq!(fragment_at(body, &Fragment::Block("abc")), Some(28));
         assert_eq!(fragment_at(body, &Fragment::Heading("none")), None);
         assert_eq!(fragment_at(body, &Fragment::Block("zzz")), None);
+    }
+
+    /// A table's cells and column widths as drawn (step LT1): hidden
+    /// markup takes no column, a short row gets empty cells.
+    #[test]
+    fn tables_record_cells_and_widths() {
+        let text = "> | a  | **bold** |\n> |:-|--:|\n> | `日本` |";
+        let parsed = parse(text);
+        let [table] = parsed.layout.tables.as_slice() else {
+            panic!("one table");
+        };
+        assert_eq!(table.lines, 0..3);
+        let cells: Vec<(usize, Vec<&str>)> = table
+            .rows
+            .iter()
+            .map(|(line, cells)| (*line, cells.iter().map(|c| &text[c.clone()]).collect()))
+            .collect();
+        assert_eq!(cells, [(0, vec!["a", "**bold**"]), (2, vec!["`日本`", ""])]);
+        assert_eq!(table.widths, [4, 4]);
+        // In a list, after a paragraph: its own lines.
+        let text = "- x\n\n  | a |\n  |---|\n  | b |\nafter";
+        let table = &parse(text).layout.tables[0];
+        assert_eq!(table.lines, 2..5);
+        assert_eq!(table.widths, [1]);
     }
 
     proptest! {
