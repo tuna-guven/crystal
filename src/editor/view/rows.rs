@@ -196,6 +196,10 @@ pub fn row_at(text: &str, start: RowStart, width: usize, live: &Look) -> Row {
     let width = width - indent;
     let rest = text.get(start..).unwrap_or("");
     let mut column = 0;
+    // Just after the last space or tab shown on this row: a row breaks
+    // there, between words, as the viewer's (`ui::wrap`); only a word
+    // longer than the row breaks inside it.
+    let mut after_space = None;
     for (i, grapheme) in rest.grapheme_indices(true) {
         let at = start + i;
         if matches!(shape(grapheme), Shape::Break) {
@@ -210,16 +214,25 @@ pub fn row_at(text: &str, start: RowStart, width: usize, live: &Look) -> Row {
             };
         }
         let w = live.width(at, grapheme, column);
-        if column > 0 && column + w > width {
+        let space = w > 0 && matches!(grapheme, " " | "\t");
+        // A space one column past the row stays at its end, as in the
+        // viewer: the text area keeps that column for the cursor.
+        let hangs = space && column + w <= width + 1;
+        if column > 0 && column + w > width && !hangs {
+            let cut = if space { None } else { after_space };
+            let cut = cut.unwrap_or(at);
             return Row {
-                range: start..at,
-                next: Some(RowStart::text(at)),
+                range: start..cut,
+                next: Some(RowStart::text(cut)),
                 ends_line: false,
                 indent,
                 drawn: false,
             };
         }
         column += w;
+        if space {
+            after_space = Some(at + grapheme.len());
+        }
     }
     // A boxed table's bottom border may follow the last line.
     let next =
@@ -345,7 +358,7 @@ mod tests {
         /// any text, cursor, width and height.
         #[test]
         fn top_for_matches_the_reference(
-            text in "[ab\t\n\r\u{1b}\u{301}日😀]{0,80}",
+            text in "[ab \t\n\r\u{1b}\u{301}日😀]{0,80}",
             pick in any::<prop::sample::Index>(),
             width in 1usize..12,
             rows in 1usize..8,

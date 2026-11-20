@@ -534,7 +534,10 @@ could lose text: cells it cannot measure, cells past the header's (the
 parser ignores them), anything but pipes and spaces between cells; and
 the padded table is parsed again, every cell's text unchanged and in
 order, or nothing is written. The padded text is built in a
-`Zeroizing` string. Rows wrap by character. Drawn as written are only the elements the
+`Zeroizing` string. Rows wrap between words, as in the viewer: after
+the last space or tab shown on the row, inside a word only if it is
+longer than the row, a space one column past the row staying at its
+end (in the plain editor too). Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,
 its code staying yellow on gray in its box), a line's leading markup while

@@ -1117,9 +1117,10 @@ mod tests {
         // 10 columns of text and the cursor's (too narrow for a gutter).
         let grid = drawn(&mut ed, &mut View::live(), 11, 5);
         assert_eq!(rows(&grid)[1..3], ["aaaa bbbb", "x"]);
-        // As written, the first line needs two rows.
+        // As written, the first line needs two rows, broken between
+        // words as in the viewer.
         let grid = drawn(&mut ed, &mut View::default(), 11, 5);
-        assert_eq!(rows(&grid)[1..4], ["**aaaa** b", "bbb", "x"]);
+        assert_eq!(rows(&grid)[1..4], ["**aaaa**", "bbbb", "x"]);
     }
 
     proptest! {
@@ -1338,8 +1339,8 @@ mod tests {
         assert_eq!(
             rows(&grid)[1..11],
             [
-                "│ quote that wr",
-                "│ aps here",
+                "│ quote that",
+                "│ wraps here",
                 // The viewer's blank rows between blocks (step LV2).
                 "",
                 "• item",
@@ -2183,7 +2184,9 @@ mod tests {
                     Look delta `another` echo.\n\n## Subheading\n\n### Subsub\n\nThis is \
                     foxtrot [Monero](https://getmonero.org)\nI am golf testing:\n- \
                     [[hotel#^3y5wrv]]\n\n| Name | Qty |\n|:--|--:|\n| **india** | 3 |\n\
-                    | juliet | 120 |\n\nmike end";
+                    | juliet | 120 |\n\nmike end\n\nA long line wraps between words as in the \
+                    viewer: november oscar papa quebec romeo sierra tango uniform victor \
+                    whiskey xray yankee zulu.";
         let words = [
             "Heading",
             "one",
@@ -2211,6 +2214,13 @@ mod tests {
             "120",
             "└─",
             "mike",
+            // A paragraph over two rows of 70 columns: no word cut.
+            "november",
+            "sierra",
+            "uniform",
+            "victor",
+            "whiskey",
+            "zulu",
         ];
         let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 70);
         let mut viewer = Grid::new(70, 50);
