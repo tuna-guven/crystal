@@ -275,6 +275,34 @@ impl Editor {
         self.in_cell(at, true)
     }
 
+    /// What a double click (the word) or a triple click (`line`, the
+    /// line) at `at` selects. In a live table, inside the cell the click
+    /// lands in (`clicked`): the word, cut to the cell's text, or the
+    /// cell's whole text, as in Obsidian; never a hidden pipe or the
+    /// padding, which would draw the table as written.
+    pub(super) fn clicked_range(&self, at: usize, line: bool) -> Range<usize> {
+        let inside = self.clicked(at);
+        let cell = self
+            .cells_at(inside)
+            .and_then(|cells| cells.cell_at(inside).cloned());
+        match (cell, line) {
+            (None, false) => self.word_at(at),
+            (None, true) => self.line_at(at),
+            (Some(cell), true) => cell,
+            (Some(cell), false) => {
+                // In the padding after the text: its last word.
+                let at = if inside >= cell.end && cell.start < cell.end {
+                    self.buffer.prev_grapheme(cell.end)
+                } else {
+                    inside
+                };
+                let word = self.word_at(at);
+                let start = word.start.max(cell.start);
+                start..word.end.min(cell.end).max(start)
+            }
+        }
+    }
+
     /// Home and End: the line's start or end; in a table's cell in live
     /// mode, the cell's (step TB3), as the line's own are hidden pipes.
     pub(super) fn home_end(&mut self, end: bool, select: bool) {
@@ -667,6 +695,56 @@ mod tests {
             (ed.selection(), ed.cursor()),
             (Some(at("ab")..at("d ")), at("d "))
         );
+        assert_eq!(ed.text(), text);
+    }
+
+    /// Double and triple clicks in a live table select inside the cell
+    /// the click lands in: the word, or the cell's text; never a pipe or
+    /// the padding, so the table stays boxed. A double click on a border
+    /// row lands on the line below, as a single click does. Outside the
+    /// table, words and lines as before.
+    #[test]
+    fn double_and_triple_clicks_stay_in_cells() {
+        use crate::editor::tests::selected;
+        use crate::shell::keys::MouseEvent;
+        let text = "| ab cd | x   |\n| ----- | --- |\n| e     | f   |\n\nafter";
+        let at = |s: &str| text.find(s).unwrap();
+        let (mut ed, _) = editor(text);
+        ed.set_live(true);
+        let t0 = std::time::Instant::now();
+        let mut t = 0;
+        let mut clicks = |ed: &mut crate::editor::Editor, place: usize, n: u64| {
+            t += 5_000;
+            for i in 0..n {
+                let now = t0 + std::time::Duration::from_millis(t + i);
+                ed.mouse(MouseEvent::Press, Some(place), now);
+            }
+        };
+        let in_cells = |ed: &crate::editor::Editor| {
+            // In the cell's text, not its padding (drawn as written).
+            let cursor = ed.cursor();
+            let cells = ed.cells_at(cursor).unwrap();
+            cells
+                .cell_at(cursor)
+                .is_some_and(|cell| cell.start <= cursor && cursor <= cell.end)
+        };
+        for (place, n, want) in [
+            (at("| e"), 2, "e"),
+            (at("| ---"), 2, "e"),
+            (at("cd"), 2, "cd"),
+            (at("x") + 2, 2, "x"),
+            (at("| x") + 1, 2, "x"),
+            (at("ab"), 3, "ab cd"),
+            (at("| e"), 3, "e"),
+        ] {
+            clicks(&mut ed, place, n);
+            assert_eq!(selected(&ed), want, "{n} clicks at {place}");
+            assert!(in_cells(&ed), "{n} clicks at {place}");
+        }
+        clicks(&mut ed, at("after") + 1, 2);
+        assert_eq!(selected(&ed), "after");
+        clicks(&mut ed, at("after") + 1, 3);
+        assert_eq!(selected(&ed), "after");
         assert_eq!(ed.text(), text);
     }
 

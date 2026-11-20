@@ -244,8 +244,8 @@ impl Editor {
                 self.pressed = count == 1;
                 match count {
                     1 => self.move_to(self.clicked(at), false),
-                    2 => self.select(self.word_at(at)),
-                    _ => self.select(self.line_at(at)),
+                    2 => self.select(self.clicked_range(at, false)),
+                    _ => self.select(self.clicked_range(at, true)),
                 }
             }
             (MouseEvent::Drag, Some(at)) if self.pressed => self.move_to(self.clicked(at), true),

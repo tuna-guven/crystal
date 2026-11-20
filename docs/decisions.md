@@ -1009,7 +1009,10 @@ coordinates): a left click puts the cursor on the clicked character, a
 drag selects from the press to the button's place, a double click
 selects the word (Unicode word boundaries), a triple click the line with
 its line break (presses at the same place under 400 ms apart, timed by
-Crystal on the monotonic clock, since reports carry no click count), and
+Crystal on the monotonic clock, since reports carry no click count); in
+a live table, inside the cell the click lands in, as a single click: the
+word cut to the cell's text, or the cell's text, never a hidden pipe or
+the padding, which would draw the table as written; and
 the wheel moves the cursor three lines. Any other button, a held modifier and a report
 that does not parse are dropped; a report inside a bracketed paste is
 pasted text ([0047](#0047)). Reports carry a button and a cell, never
