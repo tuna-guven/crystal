@@ -53,22 +53,23 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod fold;
 mod glyph;
 mod look;
 mod rows;
+mod table;
 
+use fold::shift;
 use look::{Drawn, Look};
 use rows::{Row, RowStart, line_start, row_start, rows, top_for};
+use table::draw_boxed;
 
 use super::Editor;
-use super::buffer::Change;
-use super::live::layout::Piece;
-use super::live::{self, Run, Show};
+use super::live;
 use super::suggest::{ROWS, Source};
-use crate::md::render::{CODE, DASHES, QUOTE_BAR};
+use crate::md::render::CODE;
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
@@ -76,7 +77,6 @@ use crate::shell::keys::MouseEvent;
 use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
-use crate::ui::wrap::{Span, wrap_each};
 
 /// The title bar: the note's name in bold on the terminal's background.
 const TITLE: Style = Style::PLAIN.mods(Mods::BOLD);
@@ -116,157 +116,8 @@ pub enum Click {
     Editor,
 }
 
-/// A folded section: its heading's line and the lines it hides.
-struct Fold {
-    /// The heading line's start, and where its line break starts.
-    heading: usize,
-    end: usize,
-    /// From the line after the heading to the next heading of its level
-    /// or above, or the text's end.
-    hidden: Range<usize>,
-}
-
-/// The folds kept by heading line start, moved by `change`: one at or
-/// after the change moves with it, one inside what it removed is dropped.
-fn shift(folds: &mut Vec<usize>, change: Change) {
-    folds.retain_mut(|fold| {
-        if *fold < change.at {
-            true
-        } else if *fold >= change.at + change.removed {
-            *fold = *fold - change.removed + change.inserted;
-            true
-        } else {
-            false
-        }
-    });
-}
-
-/// A boxed table's line (step LW2): one row drawn whole from its cells
-/// (`draw_boxed`), never wrapped, since the cursor is never in it.
-struct Boxed {
-    /// The line's start and its end, before its line break.
-    start: usize,
-    end: usize,
-    /// The prefix of its first row: the line's own, then for the `|---|`
-    /// line its `├─┼─┤` (and no cells); of its other rows: the line's.
-    first: Range<u32>,
-    rest: Range<u32>,
-    /// Each column's width and alignment.
-    widths: Vec<u16>,
-    aligns: Vec<Alignment>,
-    /// Each screen row's text in each column (step LW3): its cells
-    /// wrapped into their columns, without the spaces around them (empty
-    /// where a cell has no more lines, or a short row lacks it). One row
-    /// unless a cell wraps; none for the `|---|` line.
-    rows: Vec<Vec<Range<usize>>>,
-}
-
 /// Indents are slices of this.
 const SPACES: &str = "                                                                ";
-
-/// A table row's cells wrapped into their columns `widths` wide (step
-/// LW3), as the viewer wraps them (`wrap_each` over the text as drawn,
-/// trailing spaces dropped): each screen row's text per column, as many
-/// rows as the tallest cell has lines, at least one. `end` is the line's
-/// end, where a missing cell's empty range goes.
-fn wrapped(
-    text: &str,
-    runs: &[Run],
-    cells: &[Range<usize>],
-    widths: &[u16],
-    end: usize,
-) -> Vec<Vec<Range<usize>>> {
-    let columns: Vec<Vec<Range<usize>>> = widths
-        .iter()
-        .enumerate()
-        .map(|(c, &width)| {
-            let cell = cells.get(c).cloned().unwrap_or(end..end);
-            if cell.is_empty() {
-                return Vec::new();
-            }
-            // The cell's shown parts, each with where it starts.
-            let first = runs.partition_point(|run| run.range.end <= cell.start);
-            let (mut starts, mut spans) = (Vec::new(), Vec::new());
-            for run in runs[first..]
-                .iter()
-                .take_while(|run| run.range.start < cell.end)
-            {
-                if run.show == Show::Text {
-                    let part = run.range.start.max(cell.start)..run.range.end.min(cell.end);
-                    starts.push(part.start);
-                    spans.push(Span {
-                        text: &text[part],
-                        style: run.style,
-                    });
-                }
-            }
-            let mut lines = Vec::new();
-            wrap_each(&spans, width, |line| {
-                let (Some(a), Some(b)) = (line.first(), line.last()) else {
-                    lines.push(cell.end..cell.end);
-                    return;
-                };
-                let start = starts[a.span] + a.range.start;
-                let stop = starts[b.span] + b.range.end;
-                lines.push(start..start + text[start..stop].trim_end_matches(' ').len());
-            });
-            lines
-        })
-        .collect();
-    let height = columns.iter().map(Vec::len).max().unwrap_or(0).max(1);
-    (0..height)
-        .map(|k| {
-            columns
-                .iter()
-                .map(|lines| lines.get(k).cloned().unwrap_or(end..end))
-                .collect()
-        })
-        .collect()
-}
-
-/// Adds a table border's pieces to `pieces` (step LT2): `prefix`, then
-/// `left`, each column's dashes with `mid` between them, and `right`, in
-/// the viewer's gray. Returns their range.
-fn border(
-    pieces: &mut Vec<Piece>,
-    prefix: &[Piece],
-    widths: &[u16],
-    ends: [&'static str; 3],
-) -> Range<u32> {
-    let mut row = prefix.to_vec();
-    border_row(&mut row, widths, ends);
-    store(pieces, &row)
-}
-
-/// Adds a border's `left`, each column's dashes with `mid` between them,
-/// and `right` to `row`, in the viewer's gray.
-fn border_row(row: &mut Vec<Piece>, widths: &[u16], [left, mid, right]: [&'static str; 3]) {
-    for (c, &width) in widths.iter().enumerate() {
-        row.push((if c == 0 { left } else { mid }, QUOTE_BAR));
-        repeat(row, DASHES, width, QUOTE_BAR);
-    }
-    row.push((right, QUOTE_BAR));
-}
-
-/// Adds `row` to `pieces`; returns its range.
-fn store(pieces: &mut Vec<Piece>, row: &[Piece]) -> Range<u32> {
-    let start = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
-    pieces.extend_from_slice(row);
-    start..u32::try_from(pieces.len()).unwrap_or(u32::MAX)
-}
-
-/// Adds `count` characters of `fill` (all the same, one column each) to
-/// `row`, in slices of it.
-fn repeat(row: &mut Vec<Piece>, fill: &'static str, count: u16, style: Style) {
-    let most = fill.chars().count().max(1);
-    let size = fill.len() / most;
-    let mut count = usize::from(count);
-    while count > 0 {
-        let n = count.min(most);
-        row.push((&fill[..n * size], style));
-        count -= n;
-    }
-}
 
 /// The editor's scroll position.
 #[derive(Default)]
@@ -736,60 +587,6 @@ fn put_grapheme(
         .filter(|link| link.web)
         .and_then(|link| text.get(link.target.clone()));
     glyph::put(grid, cell, grapheme, column, style, live.at(at).0, link)
-}
-
-/// The padding before and after a cell `drawn` columns wide in column
-/// `c` of `boxed`, by the column's alignment, as the viewer pads it.
-fn pads(boxed: &Boxed, c: usize, drawn: usize) -> (u16, u16) {
-    let width = boxed.widths.get(c).copied().unwrap_or(0);
-    let room = width.saturating_sub(u16::try_from(drawn).unwrap_or(u16::MAX));
-    let before = match boxed.aligns.get(c) {
-        Some(Alignment::Right) => room,
-        Some(Alignment::Center) => room / 2,
-        _ => 0,
-    };
-    (before, room - before)
-}
-
-/// Draws screen row `row` of a boxed table's line in `area`'s row (steps
-/// LW2, LW3): its prefix, then each cell's text on that row between `│`s, padded by its column's alignment, its text as
-/// `live` draws it (styled, markup hidden); the `|---|` line is its
-/// prefix alone (its `├─┼─┤`).
-fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &Boxed, row: usize) {
-    let y = area.y;
-    let mut x = area.x;
-    let room = |x: u16| area.right().saturating_sub(x);
-    let prefix = if row == 0 { &boxed.first } else { &boxed.rest };
-    for (piece, style) in live.layout.prefix(prefix) {
-        x += grid.put_str(x, y, piece, *style, room(x));
-    }
-    let Some(cells) = boxed.rows.get(row) else {
-        return;
-    };
-    for (c, cell) in cells.iter().enumerate() {
-        x += grid.put_str(x, y, if c == 0 { "│ " } else { " │ " }, QUOTE_BAR, room(x));
-        let (before, _) = pads(boxed, c, live::drawn_width(text, &live.runs, cell));
-        let start = x;
-        x = x.saturating_add(before);
-        let mut column = 0;
-        for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
-            let at = cell.start + i;
-            let style = live.at(at).1;
-            let here = x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
-            column += put_grapheme(
-                grid,
-                (here, y, room(here)),
-                text,
-                at,
-                grapheme,
-                column,
-                style,
-                live,
-            );
-        }
-        x = start.saturating_add(boxed.widths[c]);
-    }
-    grid.put_str(x, y, " │", QUOTE_BAR, room(x));
 }
 
 /// Draws one row: its graphemes, the selection, and the cursor (after the
@@ -2031,32 +1828,6 @@ mod tests {
                 String::new()
             ]
         );
-    }
-
-    /// Folds move with each change: kept before it, moved after it,
-    /// dropped inside what it removed.
-    #[test]
-    fn folds_move_with_changes() {
-        let mut folds = vec![10, 20, 30];
-        shift(
-            &mut folds,
-            Change {
-                at: 15,
-                removed: 10,
-                inserted: 2,
-            },
-        );
-        assert_eq!(folds, [10, 22]);
-        // Typed at a heading's start (a line break before it): it moves.
-        shift(
-            &mut folds,
-            Change {
-                at: 10,
-                removed: 0,
-                inserted: 1,
-            },
-        );
-        assert_eq!(folds, [11, 23]);
     }
 
     /// Heading markers (step LF2): over a section heading's row the

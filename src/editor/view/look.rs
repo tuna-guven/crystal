@@ -16,14 +16,13 @@
 
 use std::ops::Range;
 
-use unicode_segmentation::UnicodeSegmentation;
-
+use super::fold::{Fold, folds};
 use super::glyph::width_at;
 use super::rows::RowStart;
-use super::{Boxed, Fold, border, border_row, pads, store, wrapped};
+use super::table::{Boxed, tables};
 use crate::editor::live::layout::{Layout, Piece};
-use crate::editor::live::{self, Link, Parsed, Run, Show};
-use crate::md::render::{CODE, fit_columns};
+use crate::editor::live::{Link, Parsed, Run, Show};
+use crate::md::render::CODE;
 use crate::ui::grid::{Style, display_width};
 
 /// How live mode draws the text (steps LE1 to LE7, LR1, LI2): the runs
@@ -180,7 +179,7 @@ fn by_line(mut drawn: Vec<(usize, u8, Drawn)>) -> Vec<(usize, Vec<Drawn>)> {
 
 /// Where the line starting at `start` ends: its line break (`\r\n`'s
 /// `\r`) or the text's end.
-fn line_end(text: &str, start: usize) -> usize {
+pub fn line_end(text: &str, start: usize) -> usize {
     let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
     if text[..end].ends_with('\r') {
         end - 1
@@ -222,20 +221,20 @@ fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 /// Where the cursor and the selection are: what `Look::new`'s steps
 /// draw as written, so it is never hidden.
 #[derive(Clone, Copy)]
-struct Editing<'a> {
-    cursor: usize,
+pub struct Editing<'a> {
+    pub cursor: usize,
     selection: &'a Range<usize>,
 }
 
 impl Editing<'_> {
     /// Whether the selection overlaps `r`.
-    fn selects(&self, r: &Range<usize>) -> bool {
+    pub fn selects(&self, r: &Range<usize>) -> bool {
         self.selection.start < r.end && r.start < self.selection.end
     }
 
     /// Whether the cursor is on the lines from `start` to `end` (their
     /// last line break), or a selection overlaps them.
-    fn on_lines(&self, start: usize, end: usize) -> bool {
+    pub fn on_lines(&self, start: usize, end: usize) -> bool {
         (start..=end).contains(&self.cursor)
             || (!self.selection.is_empty()
                 && self.selection.start <= end
@@ -246,7 +245,7 @@ impl Editing<'_> {
 /// What hides lines from the row walk: the skipped lines (`skipped`) and
 /// the folded sections (`folds`). A drawn row (a blank row, a border)
 /// goes before the line that is drawn, never into a fold.
-struct Hiding<'a> {
+pub struct Hiding<'a> {
     skips: &'a [Range<usize>],
     folds: &'a [Fold],
 }
@@ -254,7 +253,7 @@ struct Hiding<'a> {
 impl Hiding<'_> {
     /// The first line drawn from `at` on: past any skipped lines (a fence)
     /// starting there.
-    fn past_skipped(&self, mut at: usize) -> usize {
+    pub fn past_skipped(&self, mut at: usize) -> usize {
         while let Some(skip) = self.skips.iter().find(|r| r.start == at) {
             at = skip.end;
         }
@@ -264,7 +263,7 @@ impl Hiding<'_> {
     /// Whether a drawn row may go before `at`: not in a fold, nor right
     /// after one (the viewer's fold hides the blank row before the next
     /// heading too).
-    fn open(&self, at: usize) -> bool {
+    pub fn open(&self, at: usize) -> bool {
         !self
             .folds
             .iter()
@@ -275,10 +274,10 @@ impl Hiding<'_> {
 /// The order of the drawn rows before one line (`by_line`): a wrapped
 /// table row's further rows, a table's bottom border, the viewer's blank
 /// row, a table's top or inner border.
-const CONTINUED: u8 = 0;
-const BOTTOM: u8 = 1;
-const GAP: u8 = 2;
-const BORDER: u8 = 3;
+pub const CONTINUED: u8 = 0;
+pub const BOTTOM: u8 = 1;
+pub const GAP: u8 = 2;
+pub const BORDER: u8 = 3;
 
 /// Step 1, what is drawn as written: the elements the cursor is in or
 /// beside (both ends count, so the cursor just after `**b**` reveals it)
@@ -318,52 +317,6 @@ fn reveal(parsed: &Parsed, editing: Editing) -> (Vec<Range<usize>>, Vec<Range<us
     (merged(raw), hidden)
 }
 
-/// Step 2, the folds: of the headings the view keeps folded (`kept`, by
-/// line start), only one that opens a section and has lines to hide
-/// folds; one the cursor or the selection is in opens, for good (it is
-/// dropped from `kept`), so the cursor is never in a fold.
-fn folds(
-    kept: &mut Vec<usize>,
-    headings: &[(usize, u8)],
-    text: &str,
-    editing: Editing,
-) -> Vec<Fold> {
-    let cursor = editing.cursor;
-    let mut folds = Vec::new();
-    kept.retain(|&start| {
-        let Ok(i) = headings.binary_search_by_key(&start, |&(line, _)| line) else {
-            return false;
-        };
-        let level = headings[i].1;
-        let Some(newline) = text[start..].find('\n').map(|n| start + n) else {
-            return false;
-        };
-        let end = if text[..newline].ends_with('\r') {
-            newline - 1
-        } else {
-            newline
-        };
-        let section_end = headings[i + 1..]
-            .iter()
-            .find(|&&(_, l)| l <= level)
-            .map_or(text.len(), |&(line, _)| line);
-        let hidden = newline + 1..section_end;
-        let entered = hidden.contains(&cursor)
-            || (hidden.end == text.len() && cursor == text.len())
-            || editing.selects(&hidden);
-        if hidden.is_empty() || entered {
-            return false;
-        }
-        folds.push(Fold {
-            heading: start,
-            end,
-            hidden,
-        });
-        true
-    });
-    folds
-}
-
 /// Step 4, the viewer's blank rows between blocks (step LV2): each drawn
 /// row's line, its rank (`GAP`) and the row. A gap before a skipped line
 /// (a fence) goes before the next line drawn; none inside a folded
@@ -379,135 +332,18 @@ fn gaps(layout: &Layout, text: &str, hiding: &Hiding) -> Vec<(usize, u8, Drawn)>
     drawn
 }
 
-/// The columns of a table whose natural widths are `natural`, as the
-/// viewer fits them in the screen's width (the cursor's column too: never
-/// in a boxed table), less the table's `prefix` and `│ ` before each
-/// cell, ` ` after it, the closing `│` (step LW3); `None` if they do not
-/// fit, or the table has no columns: it is drawn as written.
-fn fit(prefix: &[Piece], natural: &[u16], width: usize) -> Option<Vec<u16>> {
-    let screen = width + 1;
-    let screen = match prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>() {
-        w if w >= screen => screen,
-        w => screen - w,
-    };
-    let natural: Vec<usize> = natural.iter().map(|&w| usize::from(w)).collect();
-    let fitted = screen
-        .checked_sub(3 * natural.len() + 1)
-        .and_then(|room| fit_columns(&natural, room));
-    let fitted = fitted.filter(|_| !natural.is_empty())?;
-    Some(
-        fitted
-            .iter()
-            .map(|&w| u16::try_from(w).unwrap_or(u16::MAX))
-            .collect(),
-    )
-}
-
-/// Step 5, the boxed tables (steps LT2, LW2, LW3): a table the cursor
-/// and the selection are not in, not folded, whose columns fit, is boxed.
-/// Its border rows go into `drawn` (none in a fold or right after one),
-/// their pieces into the layout's; each of its lines becomes a `Boxed`,
-/// drawn whole from its cells. Returns them, sorted.
-fn tables(
-    layout: &mut Layout,
-    runs: &[Run],
-    text: &str,
-    editing: Editing,
-    width: usize,
-    hiding: &Hiding,
-    drawn: &mut Vec<(usize, u8, Drawn)>,
-) -> Vec<Boxed> {
-    let mut boxed = Vec::new();
-    for table in &layout.tables {
-        let lines = &layout.lines;
-        let start_of = |i: usize| lines.get(i).map_or(text.len(), |l| l.markup.start);
-        let Some(first) = lines.get(table.lines.start) else {
-            continue;
-        };
-        let start = first.markup.start;
-        // The line after the table, and where the table's last line ends.
-        let next = start_of(table.lines.end);
-        let end = if table.lines.end < lines.len() {
-            next.saturating_sub(1)
-        } else {
-            next
-        };
-        let edited = editing.on_lines(start, end);
-        let prefix = layout.prefix(&first.rest).to_vec();
-        let Some(widths) =
-            fit(&prefix, &table.widths, width).filter(|_| !edited && hiding.open(start))
-        else {
-            continue;
-        };
-        let widths = &widths;
-        let top = border(&mut layout.pieces, &prefix, widths, ["┌─", "─┬─", "─┐"]);
-        drawn.push((start, BORDER, Drawn::Pieces(top)));
-        // Between two body rows, as the viewer draws them.
-        for &(row, _) in table.rows.iter().skip(2) {
-            let inner = border(&mut layout.pieces, &prefix, widths, ["├─", "─┼─", "─┤"]);
-            drawn.push((start_of(row), BORDER, Drawn::Pieces(inner)));
-        }
-        let at = hiding.past_skipped(next);
-        let after = hiding.open(at).then_some(at);
-        if after.is_some() {
-            let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
-            drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
-        }
-        // Its lines (step LW2): the `|---|` line as `├─┼─┤`, a row as
-        // its cells.
-        for i in table.lines.clone() {
-            let line = &lines[i];
-            let cells = table.rows.iter().find(|(row, _)| *row == i);
-            let mut first = layout.prefix(&line.first).to_vec();
-            let end = line_end(text, line.markup.start);
-            let rows = match cells {
-                Some((_, cells)) => wrapped(text, runs, cells, widths, end),
-                None => {
-                    border_row(&mut first, widths, ["├─", "─┼─", "─┤"]);
-                    Vec::new()
-                }
-            };
-            // A row taller than one line: its other rows go before the
-            // next line, ahead of its border (step LW3).
-            let next = if i + 1 < table.lines.end {
-                Some(start_of(i + 1))
-            } else {
-                after
-            };
-            for row in 1..rows.len() {
-                if let Some(next) = next {
-                    let row = Drawn::Cells {
-                        boxed: boxed.len(),
-                        row,
-                    };
-                    drawn.push((next, CONTINUED, row));
-                }
-            }
-            boxed.push(Boxed {
-                start: line.markup.start,
-                end,
-                first: store(&mut layout.pieces, &first),
-                rest: line.rest.clone(),
-                widths: widths.clone(),
-                aligns: table.aligns.clone(),
-                rows,
-            });
-        }
-    }
-    boxed
-}
-
 impl Look {
     /// Live mode's look of `parsed` with the cursor at `cursor` and the
     /// selection `selection`, for a screen `width` columns wide; `kept` is
     /// the view's folds, pruned here.
     ///
-    /// Made in steps, each a function above, in the order each needs the
-    /// ones before: what is drawn as written (`reveal`), the folds
-    /// (`folds`), the lines with no row (`skipped`, which needs what is
-    /// revealed: a code block's fence under the cursor keeps its row), the
-    /// viewer's blank rows (`gaps`) and the boxed tables (`tables`), which
-    /// both need the lines hidden, and last the links a click follows.
+    /// Made in steps, each a function, in the order each needs the ones
+    /// before: what is drawn as written (`reveal`), the folds
+    /// (`fold::folds`), the lines with no row (`skipped`, which needs what
+    /// is revealed: a code block's fence under the cursor keeps its row),
+    /// the viewer's blank rows (`gaps`) and the boxed tables
+    /// (`table::tables`), which both need the lines hidden, and last the
+    /// links a click follows.
     pub fn new(
         parsed: Parsed,
         text: &str,
@@ -702,43 +538,6 @@ impl Look {
     pub fn boxed_at(&self, start: usize) -> Option<&Boxed> {
         let i = self.boxed.binary_search_by_key(&start, |b| b.start).ok()?;
         self.boxed.get(i)
-    }
-
-    /// Where a click `x` columns into a boxed table line lands (step LW2):
-    /// on the grapheme drawn there in the cell under it, else at that
-    /// cell's text's end; on the `|---|` line, its start.
-    pub fn click_boxed(&self, text: &str, boxed: &Boxed, row: usize, x: usize) -> usize {
-        let Some(cells) = boxed.rows.get(row) else {
-            return boxed.start;
-        };
-        let prefix: usize = self
-            .layout
-            .prefix(&boxed.first)
-            .iter()
-            .map(|(s, _)| display_width(s))
-            .sum();
-        let mut left = prefix;
-        for (c, cell) in cells.iter().enumerate() {
-            // `│ ` or ` │ ` before it: 2 columns of the first, 1 of the
-            // others belong to the cell before.
-            let width = usize::from(boxed.widths[c]);
-            let span = width + if c == 0 { 2 } else { 3 };
-            if x < left + span || c + 1 == cells.len() {
-                let (before, _) = pads(boxed, c, live::drawn_width(text, &self.runs, cell));
-                let start = left + span - width + usize::from(before);
-                let mut column = 0;
-                for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
-                    let at = cell.start + i;
-                    column += self.width(at, grapheme, column);
-                    if x < start + column {
-                        return at;
-                    }
-                }
-                return cell.end;
-            }
-            left += span;
-        }
-        boxed.start
     }
 
     /// The columns the grapheme at `at` takes when it starts at `column`.
