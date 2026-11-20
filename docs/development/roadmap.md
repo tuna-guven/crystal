@@ -32,6 +32,35 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps RF1 to RF8 (refactor the editor's code before B)
+
+Asked for by the user (2026-11-20) before option B (editing inside a
+boxed table, as in Obsidian; its own roadmap follows): split the
+editor's code so each file does one job, with comments saying why each
+block exists, so peers can audit it. No behaviour changes: every test
+passes unchanged in every step (tests move with their code), the live
+property tests run with `PROPTEST_CASES=5000`, and each moved function
+is checked to be the same code (only paths and visibility change). New
+code is limited to module headers, why-comments, and two patterns that
+make invariants visible in types: a `RowStart` newtype in place of the
+bit arithmetic on row starts, and one row iterator in place of the five
+hand-written row walks. Later, separately if wanted: `md/render.rs`,
+`term.rs`, `session.rs`, `pager.rs`, `commands.rs`.
+
+`src/editor/view.rs` (about 1 800 lines of code and 1 750 of tests)
+becomes a directory of single-job modules under `src/editor/view/`:
+
+| Step | What | Check |
+| --- | --- | --- |
+| RF1 (done) | `view/glyph.rs`: how one grapheme is measured and drawn (shapes, escapes for invisible characters, tab stops, `put_grapheme`) | Tests unchanged; moved code identical |
+| RF2 | `view/rows.rs`: the row walk: `RowStart` (a line's row, or a drawn row before a line and its ordinal), `Row`, `row_at`, `row_start`, `top_for`, a `Rows` iterator used by drawing, scrolling, clicks and `line_row` | Tests unchanged; the cursor and scroll property tests with 5000 cases |
+| RF3 | `view/look.rs`: live mode's look of one frame (`Live`, renamed `Look`): what is revealed, hidden, skipped; `Look::new` split into named steps (reveal, folds, skipped lines, blank rows, tables), each a function | Tests unchanged; 5000 cases |
+| RF4 | `view/fold.rs` (folds kept by offset, moved by changes) and `view/table.rs` (boxed tables: fitting, wrapping, borders, drawing, clicks) | Tests unchanged |
+| RF5 | `view/suggestions.rs`: the link suggestion list under the cursor and its mouse mapping; `view.rs` keeps `View` (state, `draw`, scrolling, the mouse) | Tests unchanged |
+| RF6 | `editor.rs`: `editor/motion.rs` (cursor moves, words, lines, selection) and `editor/brackets.rs` (closing pairs) apart from the key dispatch | Tests unchanged |
+| RF7 | `editor/suggest.rs`: `suggest/query.rs` (what is typed after `[[`, pure matching), `suggest/ids.rs` (new `^id`s and the block request), the list and its keys staying in `suggest.rs` | Tests unchanged |
+| RF8 | The architecture chapter's module map; every module's header says its one job and its invariants; fmt, clippy, test, deny, audit, mdbook | Review: no logic changed (diff of moved bodies), no new `unsafe`, syscalls or dependencies |
+
 ## Steps LW1 to LW4 (live editing: wide tables as in the viewer; done)
 
 Asked for by the user (2026-11-20) after a complexity warning (option B

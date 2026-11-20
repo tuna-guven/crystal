@@ -57,6 +57,10 @@ use std::ops::Range;
 use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod glyph;
+
+use glyph::{Shape, shape, width_at};
+
 use super::Editor;
 use super::buffer::Change;
 use super::live::layout::{Layout, Piece};
@@ -67,10 +71,7 @@ use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
 use crate::shell::keys::MouseEvent;
-use crate::ui::grid::{
-    Color, Grid, MAX_CELL_BYTES, Mods, Style, display_width, grapheme_width, hides_something,
-    is_forbidden,
-};
+use crate::ui::grid::{Color, Grid, Mods, Style, display_width};
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
 use crate::ui::wrap::{Span, wrap_each};
@@ -94,7 +95,6 @@ const HEADING_HINTS: &str =
     "Headings · Up/Down, wheel: choose · Enter, Tab, click: link · Esc close";
 const BLOCK_HINTS: &str = "Blocks · Up/Down, wheel: choose · Enter, Tab, click: link (an ^id \
                            is added if missing) · Esc close";
-const TAB_STOP: usize = 4;
 /// Live mode draws a note only up to this size: the whole note is parsed
 /// on every frame, about 62 ms for 1 MiB in a release build (before the
 /// line layout, 370 ms for 8 MiB). A larger note is drawn as written.
@@ -102,68 +102,6 @@ pub const LIVE_MAX: usize = 1 << 20;
 /// Line numbers are shown only if this many columns stay for the text, as
 /// in the viewer.
 const MIN_TEXT: u16 = 20;
-/// `<U+`, up to 6 hex digits, `>`.
-const ESCAPE_LEN: usize = 10;
-
-/// How one grapheme is drawn.
-enum Shape<'a> {
-    /// `\n`, or `\r\n` (shown as one line break, as the pager does).
-    Break,
-    Tab,
-    Text(&'a str, usize),
-    /// Spelled out, each character as `<U+XXXX>`.
-    Escape,
-}
-
-fn shape(grapheme: &str) -> Shape<'_> {
-    match grapheme {
-        "\n" | "\r\n" => Shape::Break,
-        "\t" => Shape::Tab,
-        _ => match usize::from(grapheme_width(grapheme)) {
-            // Longer than a grid cell holds, it would be drawn `?`, one
-            // column, while laid out as `width` (found by the long tests).
-            width
-                if width > 0
-                    && grapheme.len() <= MAX_CELL_BYTES
-                    && !grapheme.contains(is_forbidden)
-                    && !hides_something(grapheme) =>
-            {
-                Shape::Text(grapheme, width)
-            }
-            _ => Shape::Escape,
-        },
-    }
-}
-
-/// `c` as `<U+XXXX>` (4 to 6 hex digits), written into `buf`: no
-/// allocation and no format string for note text.
-fn escape(c: char, buf: &mut [u8; ESCAPE_LEN]) -> &str {
-    let code = u32::from(c);
-    let digits = (32 - code.leading_zeros()).div_ceil(4).max(4) as usize;
-    buf[..3].copy_from_slice(b"<U+");
-    for i in 0..digits {
-        let nibble = (code >> (4 * (digits - 1 - i))) & 0xf;
-        buf[3 + i] = b"0123456789ABCDEF"[nibble as usize];
-    }
-    buf[3 + digits] = b'>';
-    std::str::from_utf8(&buf[..digits + 4]).unwrap_or("?")
-}
-
-fn escape_width(grapheme: &str) -> usize {
-    let mut buf = [0; ESCAPE_LEN];
-    grapheme.chars().map(|c| escape(c, &mut buf).len()).sum()
-}
-
-/// The columns `grapheme` takes when it starts at `column`.
-fn width_at(grapheme: &str, column: usize) -> usize {
-    match shape(grapheme) {
-        Shape::Break => 0,
-        Shape::Tab => TAB_STOP - column % TAB_STOP,
-        Shape::Text(_, width) => width,
-        Shape::Escape => escape_width(grapheme),
-    }
-}
-
 /// How live mode draws the text (steps LE1 to LE7, LR1, LI2): the runs
 /// and the line layout of the last frame (`live::parse`), the bytes drawn
 /// as written (sorted, merged) and the lines' leading markup hidden behind
@@ -1621,16 +1559,13 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
     }
 }
 
-/// Draws the grapheme at `at` that starts `column` columns into its row,
-/// at `x, y` with `room` columns left, as `live` says: hidden markup not
-/// at all, a fixed string for its run, a tab as spaces, an invisible
-/// character spelled out dimmed, a web link's cells carrying its address
-/// for the terminal (Ctrl+click), as in the viewer. Returns the columns
-/// it took.
+/// Draws the grapheme at `at`, which starts `column` columns into its
+/// row, as `live` says (`glyph::put`): its show and, on a web link, the
+/// address the terminal opens. Returns the columns it took.
 #[allow(clippy::too_many_arguments)]
 fn put_grapheme(
     grid: &mut Grid,
-    (x, y, room): (u16, u16, u16),
+    cell: (u16, u16, u16),
     text: &str,
     at: usize,
     grapheme: &str,
@@ -1638,38 +1573,11 @@ fn put_grapheme(
     style: Style,
     live: &Live,
 ) -> usize {
-    match live.at(at).0 {
-        Show::Hidden => return 0,
-        Show::Fixed(fixed) => return usize::from(grid.put_str(x, y, fixed, style, room)),
-        Show::Text => {}
-    }
-    match shape(grapheme) {
-        Shape::Text(g, _) => {
-            let used = grid.put_str(x, y, g, style, room);
-            // The grid checks the address again.
-            if let Some(link) = live.link(at).filter(|link| link.web)
-                && let Some(target) = text.get(link.target.clone())
-            {
-                let id = grid.add_link(target);
-                grid.set_link(x, y, used, id);
-            }
-        }
-        Shape::Tab => {
-            let w = width_at(grapheme, column);
-            grid.put_str(x, y, &"    "[..w], style, room);
-        }
-        Shape::Escape => {
-            let dim = style.mods(style.mods.union(Mods::DIM));
-            let mut buf = [0; ESCAPE_LEN];
-            let mut used = 0;
-            for c in grapheme.chars() {
-                let left = room.saturating_sub(used);
-                used += grid.put_str(x + used, y, escape(c, &mut buf), dim, left);
-            }
-        }
-        Shape::Break => {}
-    }
-    width_at(grapheme, column)
+    let link = live
+        .link(at)
+        .filter(|link| link.web)
+        .and_then(|link| text.get(link.target.clone()));
+    glyph::put(grid, cell, grapheme, column, style, live.at(at).0, link)
 }
 
 /// The padding before and after a cell `drawn` columns wide in column
