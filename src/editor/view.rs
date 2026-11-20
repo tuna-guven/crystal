@@ -57,17 +57,18 @@ use pulldown_cmark::Alignment;
 use unicode_segmentation::UnicodeSegmentation;
 
 mod glyph;
+mod look;
 mod rows;
 
-use glyph::width_at;
+use look::{Drawn, Look};
 use rows::{Row, RowStart, line_start, row_start, rows, top_for};
 
 use super::Editor;
 use super::buffer::Change;
-use super::live::layout::{Layout, Piece};
-use super::live::{self, Link, Parsed, Run, Show};
+use super::live::layout::Piece;
+use super::live::{self, Run, Show};
 use super::suggest::{ROWS, Source};
-use crate::md::render::{CODE, DASHES, QUOTE_BAR, fit_columns};
+use crate::md::render::{CODE, DASHES, QUOTE_BAR};
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
@@ -103,40 +104,6 @@ pub const LIVE_MAX: usize = 1 << 20;
 /// Line numbers are shown only if this many columns stay for the text, as
 /// in the viewer.
 const MIN_TEXT: u16 = 20;
-/// How live mode draws the text (steps LE1 to LE7, LR1, LI2): the runs
-/// and the line layout of the last frame (`live::parse`), the bytes drawn
-/// as written (sorted, merged) and the lines' leading markup hidden behind
-/// their prefix (sorted). Not live: all empty, so every grapheme is drawn
-/// as written, with no prefix.
-#[derive(Default)]
-struct Live {
-    runs: Vec<Run>,
-    raw: Vec<Range<usize>>,
-    hidden: Vec<Range<usize>>,
-    layout: Layout,
-    /// The folded sections (step LF1), in order.
-    folds: Vec<Fold>,
-    /// The links a click follows (step LF3), in order.
-    links: Vec<Link>,
-    /// Whole lines not drawn while not edited, as the viewer gives them
-    /// no row (step LV1): fences, Setext underlines, a blank line after
-    /// another, before the first block or after the last. Sorted, each
-    /// from a line's start to the next line's.
-    skips: Vec<Range<usize>>,
-    /// The empty line after a final line break is not drawn either.
-    skip_end: bool,
-    /// The rows drawn before a line that the note has no line for (steps
-    /// LV2, LT2, LW1), sorted by that line (a line drawn, past any
-    /// skipped ones; the text's end after the last line), each line's in
-    /// order: a table's bottom border, the viewer's blank row, a table's
-    /// top or inner border.
-    drawn: Vec<(usize, Vec<Drawn>)>,
-    /// The boxed tables' lines, sorted (step LW2).
-    boxed: Vec<Boxed>,
-    /// Code blocks and inline code, sorted (`Parsed::code`).
-    code: Vec<Range<usize>>,
-}
-
 /// What a mouse event in live mode was for (steps LF2, LF3).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Click {
@@ -194,112 +161,8 @@ struct Boxed {
     rows: Vec<Vec<Range<usize>>>,
 }
 
-/// A row the note has no line for (steps LV2, LT2, LW1).
-#[derive(Clone)]
-enum Drawn {
-    /// The viewer's blank row between two blocks.
-    Gap,
-    /// A table's border: pieces of `Layout::pieces`, its prefix first.
-    Pieces(Range<u32>),
-    /// Row `row` (from 1) of the boxed table line `boxed` (an index of
-    /// `Live::boxed`), whose cells wrap (step LW3).
-    Cells { boxed: usize, row: usize },
-}
-
 /// Indents are slices of this.
 const SPACES: &str = "                                                                ";
-
-/// What is drawn left of a row's text in live mode.
-struct Prefix<'a> {
-    /// Spaces first: the section's indent before a line whose markup is
-    /// drawn as written.
-    spaces: u16,
-    pieces: &'a [Piece],
-    /// A code line: its block's widest line, for the gray box.
-    code: Option<u16>,
-}
-
-impl Prefix<'_> {
-    const NONE: Prefix<'static> = Prefix {
-        spaces: 0,
-        pieces: &[],
-        code: None,
-    };
-
-    fn width(&self) -> usize {
-        usize::from(self.spaces)
-            + self
-                .pieces
-                .iter()
-                .map(|(s, _)| display_width(s))
-                .sum::<usize>()
-    }
-}
-
-/// The lines live mode does not draw (step LV1), as `Live::skips` and
-/// `Live::skip_end` say. One the cursor is on, the selection touches or
-/// a revealed element covers (a code block's fence while the cursor is
-/// in it) is drawn, so the cursor is never hidden.
-fn skipped(
-    layout: &Layout,
-    text: &str,
-    cursor: usize,
-    selection: &Range<usize>,
-    raw: &[Range<usize>],
-) -> (Vec<Range<usize>>, bool) {
-    let lines = &layout.lines;
-    // Line `i`: its start, its end (its line break), the next line's start.
-    let bounds = |i: usize| {
-        let start = lines[i].markup.start;
-        let next = lines.get(i + 1).map_or(text.len(), |l| l.markup.start);
-        let end = if next > start && i + 1 < lines.len() {
-            next - 1
-        } else {
-            next
-        };
-        (start, end, next)
-    };
-    let blank = |i: usize| {
-        let (start, end, _) = bounds(i);
-        lines[i].code.is_none() && text.get(start..end).is_some_and(|l| l.trim().is_empty())
-    };
-    let last_block = (0..lines.len())
-        .rev()
-        .find(|&i| !blank(i) && !lines[i].skip);
-    let mut skips = Vec::new();
-    let mut skip_end = false;
-    let mut seen = false;
-    let mut after_blank = false;
-    for (i, line) in lines.iter().enumerate() {
-        let (start, end, next) = bounds(i);
-        // The cursor on the line, or the selection over any of it.
-        let edited = (start..=end).contains(&cursor)
-            || (!selection.is_empty() && selection.start <= end && start < selection.end);
-        let skip = if line.skip {
-            !overlaps(raw, &(start..end.max(start + 1)))
-        } else if blank(i) {
-            // Only the first blank line between two blocks has a row.
-            let extra = !seen || after_blank || last_block.is_none_or(|last| i > last);
-            if !extra || edited {
-                after_blank = true;
-            }
-            extra
-        } else {
-            seen = true;
-            after_blank = false;
-            false
-        };
-        if skip && !edited {
-            if next > start {
-                skips.push(start..next);
-            } else {
-                // The empty line after a final line break.
-                skip_end = true;
-            }
-        }
-    }
-    (skips, skip_end)
-}
 
 /// A table row's cells wrapped into their columns `widths` wide (step
 /// LW3), as the viewer wraps them (`wrap_each` over the text as drawn,
@@ -361,20 +224,6 @@ fn wrapped(
         .collect()
 }
 
-/// The drawn rows grouped by the line they go before, in their order
-/// (`rank`, then as found), sorted by line (step LW1).
-fn by_line(mut drawn: Vec<(usize, u8, Drawn)>) -> Vec<(usize, Vec<Drawn>)> {
-    drawn.sort_by_key(|&(line, rank, _)| (line, rank));
-    let mut out: Vec<(usize, Vec<Drawn>)> = Vec::new();
-    for (line, _, row) in drawn {
-        match out.last_mut() {
-            Some((last, rows)) if *last == line => rows.push(row),
-            _ => out.push((line, vec![row])),
-        }
-    }
-    out
-}
-
 /// Adds a table border's pieces to `pieces` (step LT2): `prefix`, then
 /// `left`, each column's dashes with `mid` between them, and `right`, in
 /// the viewer's gray. Returns their range.
@@ -419,472 +268,6 @@ fn repeat(row: &mut Vec<Piece>, fill: &'static str, count: u16, style: Style) {
     }
 }
 
-/// Where the line starting at `start` ends: its line break (`\r\n`'s
-/// `\r`) or the text's end.
-fn line_end(text: &str, start: usize) -> usize {
-    let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
-    if text[..end].ends_with('\r') {
-        end - 1
-    } else {
-        end
-    }
-}
-
-/// How the run of `runs` (sorted) holding `at` draws it, if one does: a
-/// fixed string or a cell border at its start, nothing on its other
-/// bytes.
-fn run_at(runs: &[Run], at: usize) -> Option<(Show, Style)> {
-    let run = runs.get(runs.partition_point(|run| run.range.end <= at))?;
-    (run.range.start <= at).then(|| match run.show {
-        show if show.columns().is_some() && at != run.range.start => (Show::Hidden, run.style),
-        show => (show, run.style),
-    })
-}
-
-/// Whether `range` overlaps one of the sorted, disjoint `ranges`.
-fn overlaps(ranges: &[Range<usize>], range: &Range<usize>) -> bool {
-    let i = ranges.partition_point(|r| r.end <= range.start);
-    ranges.get(i).is_some_and(|r| r.start < range.end)
-}
-
-/// Sorts `ranges` and joins those that overlap or touch.
-fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
-    ranges.sort_by_key(|r| r.start);
-    let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        match out.last_mut() {
-            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
-            _ => out.push(range),
-        }
-    }
-    out
-}
-
-impl Live {
-    /// Live mode's look of `parsed` with the cursor at `cursor`. Drawn as
-    /// written: the elements the cursor is in or beside (both ends count,
-    /// so the cursor just after `**b**` reveals it) or the selection
-    /// overlaps, and a line's markup when the cursor is in it, the
-    /// selection or a revealed element (a heading, a code block) overlaps
-    /// it. Every other line's markup is hidden. A table the cursor and
-    /// the selection are not in is boxed if its box fits `width` columns
-    /// (step LT2).
-    fn new(
-        parsed: Parsed,
-        text: &str,
-        cursor: usize,
-        selection: &Range<usize>,
-        kept: &mut Vec<usize>,
-        width: usize,
-    ) -> Self {
-        let selected = |r: &Range<usize>| selection.start < r.end && r.start < selection.end;
-        let elements = parsed
-            .elements
-            .iter()
-            .filter(|e| (e.start..=e.end).contains(&cursor) || selected(e))
-            .cloned()
-            .collect();
-        let elements = merged(elements);
-        let mut raw = elements.clone();
-        // The cursor or the selection in a fenced code block shows its
-        // fences; its code stays styled, so it is typed in yellow on gray.
-        for (block, fences) in &parsed.fenced {
-            if (block.start..=block.end).contains(&cursor) || selected(block) {
-                raw.extend(fences.iter().filter(|f| !f.is_empty()).cloned());
-            }
-        }
-        let mut hidden = Vec::new();
-        for line in &parsed.layout.lines {
-            let markup = &line.markup;
-            if markup.is_empty() {
-                continue;
-            }
-            if markup.contains(&cursor) || selected(markup) || overlaps(&elements, markup) {
-                raw.push(markup.clone());
-            } else {
-                hidden.push(markup.clone());
-            }
-        }
-        // Folds: only on a heading that opens a section and has lines to
-        // hide; one the cursor or the selection is in opens, for good.
-        let headings = &parsed.layout.headings;
-        let mut folds = Vec::new();
-        kept.retain(|&start| {
-            let Ok(i) = headings.binary_search_by_key(&start, |&(line, _)| line) else {
-                return false;
-            };
-            let level = headings[i].1;
-            let Some(newline) = text[start..].find('\n').map(|n| start + n) else {
-                return false;
-            };
-            let end = if text[..newline].ends_with('\r') {
-                newline - 1
-            } else {
-                newline
-            };
-            let section_end = headings[i + 1..]
-                .iter()
-                .find(|&&(_, l)| l <= level)
-                .map_or(text.len(), |&(line, _)| line);
-            let hidden = newline + 1..section_end;
-            let entered = hidden.contains(&cursor)
-                || (hidden.end == text.len() && cursor == text.len())
-                || selected(&hidden);
-            if hidden.is_empty() || entered {
-                return false;
-            }
-            folds.push(Fold {
-                heading: start,
-                end,
-                hidden,
-            });
-            true
-        });
-        let raw = merged(raw);
-        let (skips, skip_end) = skipped(&parsed.layout, text, cursor, selection, &raw);
-        // A gap before a skipped line (a fence) goes before the next line
-        // drawn; none inside a folded section or past the text. Each
-        // drawn row: its line, its place among that line's, the row.
-        let mut drawn: Vec<(usize, u8, Drawn)> = Vec::new();
-        // Their order before one line.
-        const CONTINUED: u8 = 0;
-        const BOTTOM: u8 = 1;
-        const GAP: u8 = 2;
-        const BORDER: u8 = 3;
-        for line in parsed.layout.lines.iter().filter(|line| line.gap) {
-            let mut at = line.markup.start;
-            while let Some(skip) = skips.iter().find(|r| r.start == at) {
-                at = skip.end;
-            }
-            // In a fold, or right after one: the viewer's fold hides the
-            // blank row before the next heading too.
-            let folded = folds
-                .iter()
-                .any(|f| f.hidden.contains(&at) || f.hidden.end == at);
-            if at < text.len() && !folded && drawn.last().is_none_or(|d| d.0 != at) {
-                drawn.push((at, GAP, Drawn::Gap));
-            }
-        }
-        // Boxed tables: their border rows, none in a fold or right after
-        // one (step LT2).
-        let mut layout = parsed.layout;
-        let mut boxed = Vec::new();
-        let open = |at: usize| {
-            !folds
-                .iter()
-                .any(|f| f.hidden.contains(&at) || f.hidden.end == at)
-        };
-        for table in &layout.tables {
-            let lines = &layout.lines;
-            let start_of = |i: usize| lines.get(i).map_or(text.len(), |l| l.markup.start);
-            let Some(first) = lines.get(table.lines.start) else {
-                continue;
-            };
-            let start = first.markup.start;
-            // The line after the table, and where the table's last line ends.
-            let next = start_of(table.lines.end);
-            let end = if table.lines.end < lines.len() {
-                next.saturating_sub(1)
-            } else {
-                next
-            };
-            let edited = (start..=end).contains(&cursor)
-                || (!selection.is_empty() && selection.start <= end && start < selection.end);
-            let prefix = layout.prefix(&first.rest).to_vec();
-            // The columns as the viewer fits them in the screen's width
-            // (the cursor's column too: never in a boxed table), less the
-            // prefix and `│ ` before each cell, ` ` after it, the closing
-            // `│` (step LW3); none fit: drawn as written.
-            let screen = width + 1;
-            let screen = match prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>() {
-                w if w >= screen => screen,
-                w => screen - w,
-            };
-            let natural: Vec<usize> = table.widths.iter().map(|&w| usize::from(w)).collect();
-            let fitted = screen
-                .checked_sub(3 * natural.len() + 1)
-                .and_then(|room| fit_columns(&natural, room));
-            let Some(fitted) = fitted.filter(|_| !edited && !natural.is_empty() && open(start))
-            else {
-                continue;
-            };
-            let widths: &Vec<u16> = &fitted
-                .iter()
-                .map(|&w| u16::try_from(w).unwrap_or(u16::MAX))
-                .collect();
-            let top = border(&mut layout.pieces, &prefix, widths, ["┌─", "─┬─", "─┐"]);
-            drawn.push((start, BORDER, Drawn::Pieces(top)));
-            // Between two body rows, as the viewer draws them.
-            for &(row, _) in table.rows.iter().skip(2) {
-                let inner = border(&mut layout.pieces, &prefix, widths, ["├─", "─┼─", "─┤"]);
-                drawn.push((start_of(row), BORDER, Drawn::Pieces(inner)));
-            }
-            let mut at = next;
-            while let Some(skip) = skips.iter().find(|r| r.start == at) {
-                at = skip.end;
-            }
-            let after = open(at).then_some(at);
-            if after.is_some() {
-                let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
-                drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
-            }
-            // Its lines (step LW2): the `|---|` line as `├─┼─┤`, a row as
-            // its cells.
-            for i in table.lines.clone() {
-                let line = &lines[i];
-                let cells = table.rows.iter().find(|(row, _)| *row == i);
-                let mut first = layout.prefix(&line.first).to_vec();
-                let end = line_end(text, line.markup.start);
-                let rows = match cells {
-                    Some((_, cells)) => wrapped(text, &parsed.runs, cells, widths, end),
-                    None => {
-                        border_row(&mut first, widths, ["├─", "─┼─", "─┤"]);
-                        Vec::new()
-                    }
-                };
-                // A row taller than one line: its other rows go before the
-                // next line, ahead of its border (step LW3).
-                let next = if i + 1 < table.lines.end {
-                    Some(start_of(i + 1))
-                } else {
-                    after
-                };
-                for row in 1..rows.len() {
-                    if let Some(next) = next {
-                        let row = Drawn::Cells {
-                            boxed: boxed.len(),
-                            row,
-                        };
-                        drawn.push((next, CONTINUED, row));
-                    }
-                }
-                boxed.push(Boxed {
-                    start: line.markup.start,
-                    end,
-                    first: store(&mut layout.pieces, &first),
-                    rest: line.rest.clone(),
-                    widths: widths.clone(),
-                    aligns: table.aligns.clone(),
-                    rows,
-                });
-            }
-        }
-        // A link drawn as written is being edited: a click there places
-        // the cursor.
-        let links = parsed
-            .links
-            .into_iter()
-            .filter(|link| !overlaps(&raw, &link.range))
-            .collect();
-        Self {
-            runs: parsed.runs,
-            raw,
-            hidden,
-            layout,
-            folds,
-            links,
-            skips,
-            skip_end,
-            drawn: by_line(drawn),
-            boxed,
-            code: parsed.code,
-        }
-    }
-
-    /// Where the next row starts after a line break that ends at `at`:
-    /// past any folded section and skipped lines; `None` past the text.
-    /// The text's end after a line break is the empty last line, drawn
-    /// unless skipped; after a fold reaching it, it is the fold's.
-    fn next_row(&self, mut at: usize, text: &str) -> Option<RowStart> {
-        let len = text.len();
-        let mut folded = false;
-        loop {
-            if let Some(end) = self.skip(at) {
-                at = end;
-                folded = true;
-            } else if let Some(range) = self.skips.iter().find(|r| r.start == at) {
-                at = range.end;
-                folded = false;
-            } else {
-                break;
-            }
-        }
-        let gone = at >= len && (folded || self.skip_end || !text.ends_with('\n'));
-        // The rows before the line first, if it has any; a table's bottom
-        // border comes even after the last line.
-        let first = self.first_row(at);
-        (!gone || first.is_drawn()).then_some(first)
-    }
-
-    /// The first row of the line at `line`: the first drawn row before
-    /// it, or the line itself.
-    fn first_row(&self, line: usize) -> RowStart {
-        if self.before(line).is_empty() {
-            RowStart::text(line)
-        } else {
-            RowStart::drawn(line)
-        }
-    }
-
-    /// The drawn rows before the line at `line`, in order.
-    fn before(&self, line: usize) -> &[Drawn] {
-        match self.drawn.binary_search_by_key(&line, |(l, _)| *l) {
-            Ok(i) => &self.drawn[i].1,
-            Err(_) => &[],
-        }
-    }
-
-    /// The drawn row the row start `at` is, if it is one and still there.
-    fn drawn_row(&self, at: RowStart) -> Option<&Drawn> {
-        self.before(at.line()).get(at.ordinal()?)
-    }
-
-    /// The drawn row after the drawn row `at`, before the same line.
-    fn next_drawn(&self, at: RowStart) -> Option<RowStart> {
-        let next = at.next_drawn();
-        self.drawn_row(next).is_some().then_some(next)
-    }
-
-    /// A drawn row's pieces (a table's border); none for a blank row.
-    fn pieces(&self, at: RowStart) -> &[Piece] {
-        match self.drawn_row(at) {
-            Some(Drawn::Pieces(range)) => self.layout.prefix(range),
-            _ => &[],
-        }
-    }
-
-    /// The skipped lines `at` is in, if any.
-    fn skipped_at(&self, at: usize) -> Option<&Range<usize>> {
-        let i = self.skips.partition_point(|r| r.end <= at);
-        self.skips.get(i).filter(|r| r.start <= at)
-    }
-
-    /// The link drawn at `at`, if any.
-    fn link(&self, at: usize) -> Option<&Link> {
-        let i = self.links.partition_point(|link| link.range.end <= at);
-        self.links.get(i).filter(|link| link.range.start <= at)
-    }
-
-    /// The end of the folded section starting at `at`, if one does.
-    fn skip(&self, at: usize) -> Option<usize> {
-        self.folds
-            .iter()
-            .find(|fold| fold.hidden.start == at)
-            .map(|fold| fold.hidden.end)
-    }
-
-    /// The heading line of the folded section `at` is in, if any.
-    fn folded_heading(&self, at: usize) -> Option<usize> {
-        self.folds
-            .iter()
-            .find(|fold| fold.hidden.contains(&at))
-            .map(|fold| fold.heading)
-    }
-
-    /// Whether a folded heading's line ends at `end`.
-    fn folded_end(&self, end: usize) -> bool {
-        self.folds.iter().any(|fold| fold.end == end)
-    }
-
-    /// The prefix of the row starting at `start`: a line's first row gets
-    /// its first prefix, or only its section's indent while its markup is
-    /// drawn as written; a wrapped row its rest prefix.
-    fn prefix(&self, start: usize) -> Prefix<'_> {
-        let lines = &self.layout.lines;
-        let i = lines.partition_point(|line| line.markup.start <= start);
-        let Some(line) = i.checked_sub(1).and_then(|i| lines.get(i)) else {
-            return Prefix::NONE;
-        };
-        if start != line.markup.start {
-            return Prefix {
-                spaces: 0,
-                pieces: self.layout.prefix(&line.rest),
-                code: line.code,
-            };
-        }
-        if !line.markup.is_empty() && !overlaps(&self.hidden, &line.markup) {
-            return Prefix {
-                spaces: line.section,
-                pieces: &[],
-                code: None,
-            };
-        }
-        Prefix {
-            spaces: 0,
-            pieces: self.layout.prefix(&line.first),
-            code: line.code,
-        }
-    }
-
-    /// How the grapheme starting at `at` is drawn, and its style. A fixed
-    /// string is drawn once, at its run's start; the rest of the run is
-    /// hidden.
-    fn at(&self, at: usize) -> (Show, Style) {
-        if overlaps(&self.raw, &(at..at + 1)) {
-            // Code drawn as written keeps the code style (a fence, inline
-            // code being edited).
-            let code = overlaps(&self.code, &(at..at + 1));
-            return (Show::Text, if code { CODE } else { Style::PLAIN });
-        }
-        if overlaps(&self.hidden, &(at..at + 1)) {
-            return (Show::Hidden, Style::PLAIN);
-        }
-        run_at(&self.runs, at).unwrap_or((Show::Text, Style::PLAIN))
-    }
-
-    /// The boxed table line starting at `start`, if one does (step LW2).
-    fn boxed_at(&self, start: usize) -> Option<&Boxed> {
-        let i = self.boxed.binary_search_by_key(&start, |b| b.start).ok()?;
-        self.boxed.get(i)
-    }
-
-    /// Where a click `x` columns into a boxed table line lands (step LW2):
-    /// on the grapheme drawn there in the cell under it, else at that
-    /// cell's text's end; on the `|---|` line, its start.
-    fn click_boxed(&self, text: &str, boxed: &Boxed, row: usize, x: usize) -> usize {
-        let Some(cells) = boxed.rows.get(row) else {
-            return boxed.start;
-        };
-        let prefix: usize = self
-            .layout
-            .prefix(&boxed.first)
-            .iter()
-            .map(|(s, _)| display_width(s))
-            .sum();
-        let mut left = prefix;
-        for (c, cell) in cells.iter().enumerate() {
-            // `│ ` or ` │ ` before it: 2 columns of the first, 1 of the
-            // others belong to the cell before.
-            let width = usize::from(boxed.widths[c]);
-            let span = width + if c == 0 { 2 } else { 3 };
-            if x < left + span || c + 1 == cells.len() {
-                let (before, _) = pads(boxed, c, live::drawn_width(text, &self.runs, cell));
-                let start = left + span - width + usize::from(before);
-                let mut column = 0;
-                for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
-                    let at = cell.start + i;
-                    column += self.width(at, grapheme, column);
-                    if x < start + column {
-                        return at;
-                    }
-                }
-                return cell.end;
-            }
-            left += span;
-        }
-        boxed.start
-    }
-
-    /// The columns the grapheme at `at` takes when it starts at `column`.
-    fn width(&self, at: usize, grapheme: &str, column: usize) -> usize {
-        match self.at(at).0 {
-            Show::Text => width_at(grapheme, column),
-            Show::Hidden => 0,
-            show => show.columns().unwrap_or(0),
-        }
-    }
-}
-
 /// The editor's scroll position.
 #[derive(Default)]
 pub struct View {
@@ -903,7 +286,7 @@ pub struct View {
     /// LE1 to LE7).
     live: bool,
     /// Live mode's runs, from the last frame; empty when not live.
-    look: Live,
+    look: Look,
     /// Folded headings, by their line's start (step LF1).
     folds: Vec<usize>,
     /// The heading the mouse is over, by its line's start (step LF2).
@@ -1056,12 +439,12 @@ impl View {
         let area = Rect::new(body.x + gutter, body.y, body.width - gutter, body.height);
         let width = usize::from(area.width - 1);
         self.area = Some(area);
-        self.look = Live::default();
+        self.look = Look::default();
         if live {
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
             let parsed = live::parse(text);
-            self.look = Live::new(parsed, text, cursor, &selection, &mut self.folds, width);
+            self.look = Look::new(parsed, text, cursor, &selection, &mut self.folds, width);
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
@@ -1346,7 +729,7 @@ fn put_grapheme(
     grapheme: &str,
     column: usize,
     style: Style,
-    live: &Live,
+    live: &Look,
 ) -> usize {
     let link = live
         .link(at)
@@ -1372,7 +755,7 @@ fn pads(boxed: &Boxed, c: usize, drawn: usize) -> (u16, u16) {
 /// LW2, LW3): its prefix, then each cell's text on that row between `│`s, padded by its column's alignment, its text as
 /// `live` draws it (styled, markup hidden); the `|---|` line is its
 /// prefix alone (its `├─┼─┤`).
-fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Live, boxed: &Boxed, row: usize) {
+fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Look, boxed: &Boxed, row: usize) {
     let y = area.y;
     let mut x = area.x;
     let room = |x: u16| area.right().saturating_sub(x);
@@ -1412,7 +795,7 @@ fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Live, boxed: &Boxe
 /// Draws one row: its graphemes, the selection, and the cursor (after the
 /// last grapheme when it sits at the line's end), each grapheme as `live`
 /// says. Returns the column the cursor was drawn at, if on this row.
-fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live) -> Option<u16> {
+fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Look) -> Option<u16> {
     // A boxed table's line: drawn whole, never holding the cursor.
     if let Some(boxed) = live.boxed_at(row.range.start).filter(|_| !row.drawn) {
         draw_boxed(grid, area, editor.text(), live, boxed, 0);

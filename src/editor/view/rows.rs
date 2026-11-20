@@ -6,7 +6,7 @@
 //!   wraps or its line ends (a boxed table's line is one row, whole);
 //! - a drawn row: a row live mode shows that the note has no line for (the
 //!   viewer's blank row, a table's border, a wrapped table row's further
-//!   rows; `Live::drawn`). It holds no cursor position: a click there goes
+//!   rows; `Look::drawn`). It holds no cursor position: a click there goes
 //!   to the line below or to the table cell drawn there.
 //!
 //! Rows are found by walking forward from a known row start, never kept:
@@ -25,8 +25,8 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::Live;
 use super::glyph::{Shape, shape};
+use super::look::Look;
 
 /// A drawn row's start has this bit; a text row's never has, as notes
 /// (at most 8 MiB) are far smaller.
@@ -75,7 +75,7 @@ impl RowStart {
     }
 
     /// The drawn row after this drawn one, before the same line (whether
-    /// the line has it is `Live`'s to say).
+    /// the line has it is `Look`'s to say).
     pub const fn next_drawn(self) -> Self {
         Self(self.0 + ORDINAL)
     }
@@ -121,7 +121,7 @@ impl Row {
 pub struct Rows<'a> {
     text: &'a str,
     width: usize,
-    live: &'a Live,
+    live: &'a Look,
     next: Option<RowStart>,
 }
 
@@ -138,7 +138,7 @@ impl Iterator for Rows<'_> {
 
 /// The rows of `text` from `start` on, `width` columns wide, as `live`
 /// draws them.
-pub fn rows<'a>(text: &'a str, start: RowStart, width: usize, live: &'a Live) -> Rows<'a> {
+pub fn rows<'a>(text: &'a str, start: RowStart, width: usize, live: &'a Look) -> Rows<'a> {
     Rows {
         text,
         width,
@@ -149,7 +149,7 @@ pub fn rows<'a>(text: &'a str, start: RowStart, width: usize, live: &'a Live) ->
 
 /// The row starting at `start`, `width` columns wide. A grapheme wider
 /// than a whole row gets a row of its own.
-pub fn row_at(text: &str, start: RowStart, width: usize, live: &Live) -> Row {
+pub fn row_at(text: &str, start: RowStart, width: usize, live: &Look) -> Row {
     if start.is_drawn() {
         let line = start.line().min(text.len());
         // The next drawn row, else the line, unless past the text.
@@ -239,7 +239,7 @@ pub fn line_start(text: &str, at: usize) -> usize {
 /// The start of the row the cursor at `at` is drawn on; for a drawn row
 /// (a kept scroll position), itself while it is still there, else its
 /// line's row.
-pub fn row_start(text: &str, at: RowStart, width: usize, live: &Live) -> RowStart {
+pub fn row_start(text: &str, at: RowStart, width: usize, live: &Look) -> RowStart {
     if at.is_drawn() {
         let line = at.line().min(text.len());
         if live.drawn_row(at).is_some() && text.is_char_boundary(line) {
@@ -272,7 +272,7 @@ pub fn row_start(text: &str, at: RowStart, width: usize, live: &Live) -> RowStar
 /// it needs: on a line of a million rows, finding the row above by
 /// walking from the line's start again for every screen row took seconds
 /// per key (found by review).
-pub fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) -> RowStart {
+pub fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Look) -> RowStart {
     let mut need = rows.max(1);
     let mut line = line_start(text, cursor);
     // On the cursor's line, the walk stops at the cursor's row; on the
@@ -321,7 +321,7 @@ mod tests {
     /// cursor's row, step to the row above `rows - 1` times, each found by
     /// walking its line from the start. Right, but quadratic on long lines.
     fn top_by_rows(text: &str, cursor: usize, width: usize, rows: usize) -> usize {
-        let row = |at| row_start(text, RowStart::text(at), width, &Live::default()).line();
+        let row = |at| row_start(text, RowStart::text(at), width, &Look::default()).line();
         let mut top = row(cursor);
         for _ in 1..rows {
             let Some(c) = text.get(..top).and_then(|head| head.chars().next_back()) else {
@@ -346,7 +346,7 @@ mod tests {
             stops.push(text.len());
             let cursor = stops[pick.index(stops.len())];
             prop_assert_eq!(
-                top_for(&text, cursor, width, rows, &Live::default()).line(),
+                top_for(&text, cursor, width, rows, &Look::default()).line(),
                 top_by_rows(&text, cursor, width, rows)
             );
         }
