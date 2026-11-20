@@ -10,6 +10,7 @@ use std::os::fd::OwnedFd;
 use rustix::fs::{AtFlags, Dir, Mode, OFlags, RenameFlags, fsync, openat, renameat_with, unlinkat};
 use rustix::io::{Errno, write};
 
+use super::public_file::FileStamp;
 use crate::crypto::{Ciphertext, fill_random};
 
 /// What `atomic_write` writes. Every caller must say which kind it has, and
@@ -136,6 +137,36 @@ impl std::error::Error for WriteError {}
 ///
 /// If a step before the rename fails, the temp file is unlinked.
 pub fn atomic_write(dir: &OwnedFd, name: &FileName, data: Payload<'_>) -> Result<(), WriteError> {
+    atomic_write_stamped(dir, name, data).0
+}
+
+/// As `atomic_write`, with the stamp of the new file, taken from the
+/// written file's own descriptor after the rename (before step 5): it
+/// describes exactly the file this call wrote. Looking `name` up again
+/// instead could find a file another writer renamed in a moment later
+/// and vouch for it, so the next save would overwrite it (review SR2).
+/// The stamp is there whenever the rename committed, also if the
+/// directory sync then failed; `None` before the rename, or if `fstat`
+/// failed, which leaves the caller's stamp stale: a later save is
+/// refused rather than risk overwriting.
+pub fn atomic_write_stamped(
+    dir: &OwnedFd,
+    name: &FileName,
+    data: Payload<'_>,
+) -> (Result<(), WriteError>, Option<FileStamp>) {
+    match commit(dir, name, data) {
+        Ok(stamp) => (run(Step::DirFsync, name, || fsync(dir)), stamp),
+        Err(e) => (Err(e), None),
+    }
+}
+
+/// Steps 1 to 4 of `atomic_write`; the new file's stamp if the rename
+/// committed and `fstat` worked.
+fn commit(
+    dir: &OwnedFd,
+    name: &FileName,
+    data: Payload<'_>,
+) -> Result<Option<FileStamp>, WriteError> {
     let bytes = match data {
         Payload::Ciphertext(c) => c.as_bytes(),
         Payload::Public(p) => p.as_bytes(),
@@ -160,13 +191,15 @@ pub fn atomic_write(dir: &OwnedFd, name: &FileName, data: Payload<'_>) -> Result
                 )
             })
         });
-    drop(file);
     if let Err(e) = committed {
+        drop(file);
         // Best effort: if this fails too, the next write's sweep removes it.
         let _ = unlinkat(dir, tmp.as_c_str(), AtFlags::empty());
         return Err(e);
     }
-    run(Step::DirFsync, name, || fsync(dir))
+    Ok(rustix::fs::fstat(&file)
+        .ok()
+        .map(|stat| FileStamp::of(&stat)))
 }
 
 /// Runs one step, mapping its errno to a `WriteError` for that step. In
@@ -339,6 +372,36 @@ mod tests {
     fn save(dir: &OwnedFd, bytes: &[u8]) -> Result<(), WriteError> {
         let c = Ciphertext::for_test(bytes.to_vec());
         atomic_write(dir, &target(), Payload::Ciphertext(&c))
+    }
+
+    /// The stamp `atomic_write_stamped` returns is the file it wrote
+    /// (review SR2): it matches until another writer replaces the file,
+    /// and it comes back also when only the directory sync failed, since
+    /// the rename committed; before the rename there is none.
+    #[test]
+    fn stamped_writes_vouch_for_their_own_file_only() {
+        use crate::vault::public_file::stamp;
+        let (path, dir) = fresh_dir("stamped");
+        let c = Ciphertext::for_test(b"ours".to_vec());
+        let (written, ours) = atomic_write_stamped(&dir, &target(), Payload::Ciphertext(&c));
+        written.unwrap();
+        let ours = ours.unwrap();
+        assert!(stamp(&dir, TARGET).unwrap() == Some(ours));
+        // Another writer renames its file in: the stamp no longer matches.
+        fs::write(path.join("other"), b"theirs").unwrap();
+        fs::rename(path.join("other"), path.join(TARGET)).unwrap();
+        assert!(stamp(&dir, TARGET).unwrap() != Some(ours));
+        // Only the directory sync failed: committed, so stamped.
+        let _armed = FailAt::arm(Step::DirFsync);
+        let (written, after) = atomic_write_stamped(&dir, &target(), Payload::Ciphertext(&c));
+        assert_eq!(written.unwrap_err().step, Step::DirFsync);
+        assert!(stamp(&dir, TARGET).unwrap() == after);
+        drop(_armed);
+        // Failing before the rename: no stamp, the old file stays.
+        let _armed = FailAt::arm(Step::Rename);
+        let (written, none) = atomic_write_stamped(&dir, &target(), Payload::Ciphertext(&c));
+        assert_eq!(written.unwrap_err().step, Step::Rename);
+        assert!(none.is_none());
     }
 
     /// Sorted names in `path`.

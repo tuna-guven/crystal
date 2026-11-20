@@ -54,7 +54,7 @@ pub fn read_bounded(
 pub struct FileStamp([i128; 7]);
 
 impl FileStamp {
-    fn of(stat: &Stat) -> Self {
+    pub(super) fn of(stat: &Stat) -> Self {
         Self([
             i128::from(stat.st_dev),
             i128::from(stat.st_ino),
@@ -78,7 +78,11 @@ pub fn stamp(dir: &OwnedFd, name: &str) -> Result<Option<FileStamp>, Errno> {
 }
 
 /// As `read_bounded`, with the stamp of the file that was read, taken from
-/// the same open file, so it describes exactly these bytes.
+/// the same open file before reading it. A write at any later time, during
+/// the read or after it, changes the file's change time (or its inode or
+/// size), so the stamp never matches a file whose bytes this read did not
+/// see, and a save over it is refused. A stamp taken after the read would
+/// vouch for a write landing between the last read and it (review SR2).
 pub fn read_bounded_with_stamp(
     dir: &OwnedFd,
     name: &str,
@@ -115,10 +119,22 @@ pub fn read_bounded_with_stamp(
         }
     }
     buf.truncate(filled);
-    // fstat again after reading: a write during the read changes the
-    // change time, so the stamp never vouches for bytes it did not see.
-    let after = fstat(&file).map_err(ReadError::Stat)?;
-    Ok(Some((buf, FileStamp::of(&after))))
+    #[cfg(test)]
+    if let Some(hook) = AFTER_READ.take() {
+        hook(dir, name);
+    }
+    Ok(Some((buf, FileStamp::of(&stat))))
+}
+
+/// Test builds only: a write into the file, run once right after the
+/// next read, before `read_bounded_with_stamp` returns.
+#[cfg(test)]
+type Hook = fn(&OwnedFd, &str);
+
+#[cfg(test)]
+thread_local! {
+    // Armed by a test; `take` disarms it.
+    static AFTER_READ: std::cell::Cell<Option<Hook>> = const { std::cell::Cell::new(None) };
 }
 
 /// Parses "decimal number, newline" with exactly one spelling per number:
@@ -136,6 +152,36 @@ pub fn parse_decimal_line(bytes: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A write that lands after the read but before the stamp is returned
+    /// (review SR2): the stamp is the file's before the read, so it no
+    /// longer matches the file, and a save over it would be refused.
+    #[test]
+    fn a_write_after_the_read_leaves_the_stamp_stale() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/unit-public-file/stamp");
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("vault.age"), b"aaaa").unwrap();
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let dir = openat(rustix::fs::CWD, &path, flags, Mode::empty()).unwrap();
+        // In place, same inode: only the size and the change time differ.
+        AFTER_READ.set(Some(|dir, name| {
+            let flags = OFlags::WRONLY | OFlags::CLOEXEC;
+            let file = openat(dir, name, flags, Mode::empty()).unwrap();
+            rustix::io::write(&file, b"bbbbb").unwrap();
+        }));
+        let (bytes, read) = read_bounded_with_stamp(&dir, "vault.age", 16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bytes, b"aaaa");
+        assert!(stamp(&dir, "vault.age").unwrap() != Some(read));
+        // Untouched, the stamp matches.
+        let (_, again) = read_bounded_with_stamp(&dir, "vault.age", 16)
+            .unwrap()
+            .unwrap();
+        assert!(stamp(&dir, "vault.age").unwrap() == Some(again));
+    }
 
     #[test]
     fn decimal_lines() {

@@ -31,7 +31,7 @@ use crate::crypto::VaultRecipient;
 use crate::model::{Note, NoteId, NoteText};
 use crate::notes::Notes;
 use crate::vault::StateDir;
-use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
+use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write_stamped};
 use crate::vault::codec::FORMAT;
 use crate::vault::format::{self, VAULT_FILE, VaultError};
 use crate::vault::generation::{self, Counter, GenError};
@@ -236,19 +236,23 @@ impl Session {
             step: Step::Open,
             errno: Errno::INVAL,
         }))?;
-        atomic_write(fd, &name, Payload::Ciphertext(&sealed)).map_err(|e| match e.step {
+        let (written, new) = atomic_write_stamped(fd, &name, Payload::Ciphertext(&sealed));
+        // Committed: from now on the stamp is the file this session wrote,
+        // taken from its own descriptor (review SR2).
+        if let Some(new) = new {
+            self.stamp = new;
+        }
+        written.map_err(|e| match e.step {
             Step::DirFsync => SaveError::NotDurable(e),
             _ => SaveError::Write(e),
         })
     }
 
-    /// After `vault.age` was replaced: remember the new file, rebuild the
-    /// indexes. If the new file cannot be looked at, the stamp is left
-    /// stale, so the next save is refused rather than risk overwriting.
+    /// After `vault.age` was replaced: rebuild the indexes. The new file's
+    /// stamp was taken in `write`, from the file it wrote; if it could not
+    /// be, the stamp is left stale, so the next save is refused rather than
+    /// risk overwriting.
     fn after_commit(&mut self) {
-        if let Ok(Some(new)) = stamp(self.vault_dir.fd(), VAULT_FILE) {
-            self.stamp = new;
-        }
         self.notes.reindex();
     }
 

@@ -19,7 +19,9 @@ use rustix::io::Errno;
 
 use crate::crypto::{CryptoError, Passphrase, VaultIdentity, VaultRecipient};
 use crate::vault::StateDir;
-use crate::vault::atomic::{FileName, Payload, Step, WriteError, atomic_write};
+use crate::vault::atomic::{
+    FileName, Payload, Step, WriteError, atomic_write, atomic_write_stamped,
+};
 use crate::vault::codec::{FORMAT, VaultContents};
 use crate::vault::format::{self, IDENTITY_FILE, VAULT_FILE, VaultError};
 use crate::vault::generation::{self, Counter, GenError};
@@ -230,11 +232,12 @@ impl<'a> Rekey<'a> {
             self.vault_dir.set_version(FORMAT);
         }
         let fd = self.vault_dir.fd();
-        atomic_write(fd, &fixed_name(VAULT_FILE)?, Payload::Ciphertext(sealed))
-            .map_err(Cause::Write)?;
-        self.stamp = stamp(fd, VAULT_FILE)
-            .map_err(Cause::Stamp)?
-            .ok_or(Cause::Stamp(Errno::NOENT))?;
+        // The new file's stamp from the descriptor it was written through,
+        // not looked up again (review SR2).
+        let (written, new) =
+            atomic_write_stamped(fd, &fixed_name(VAULT_FILE)?, Payload::Ciphertext(sealed));
+        written.map_err(Cause::Write)?;
+        self.stamp = new.ok_or(Cause::Stamp(Errno::NOENT))?;
         Ok(())
     }
 
