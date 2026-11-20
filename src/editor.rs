@@ -8,9 +8,8 @@
 //! and Ctrl+X copy, into Crystal's own clipboard; selecting copies
 //! nothing.
 //!
-//! The brackets `()`, `[]` and `{}` close as you type: an opening one
-//! brings its closer, a typed closer steps over the same one, and
-//! Backspace in an empty pair deletes both.
+//! The brackets `()`, `[]` and `{}` close as you type (`brackets`); the
+//! cursor's moves are in `motion`.
 //!
 //! Inside `[[` it suggests notes to link (`suggest`): the session's keys
 //! and mouse go through `key_in` and `mouse_in`, which wrap `key` and
@@ -22,19 +21,19 @@
 //! Like the pager, it is terminal-free: keys in, an action out. The view
 //! draws it; the session saves, closes, or shows the viewer.
 
+mod brackets;
 pub mod buffer;
 pub mod live;
+mod motion;
 pub mod suggest;
 pub mod view;
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use unicode_segmentation::UnicodeSegmentation;
-
 use crate::shell::keys::{Key, MouseEvent};
 use crate::ui::clipboard::Clipboard;
-use crate::vault::codec::MAX_BODY_BYTES;
+use brackets::pair_of;
 use buffer::{Buffer, EditError};
 
 /// What the session does after a key.
@@ -74,16 +73,6 @@ pub const PASTE_CLEANED: &str = "Untrusted input sanitized and pasted safely.";
 /// the shell).
 pub const UNSAVED: &str = "Not saved (why: in the shell after Ctrl+Q). Ctrl+Q again closes \
                            without saving.";
-
-/// The brackets the editor closes as you type (decision 0045). Each is
-/// two ASCII bytes, so the cursor fits between them. Quotes are left out:
-/// `don't` must not open a pair.
-const PAIRS: [&str; 3] = ["()", "[]", "{}"];
-
-/// The pair an opening bracket starts.
-fn pair_of(c: char) -> Option<&'static str> {
-    PAIRS.iter().copied().find(|pair| pair.starts_with(c))
-}
 
 /// One note being edited. No Debug: it holds note text.
 pub struct Editor {
@@ -385,44 +374,6 @@ impl Editor {
         }
     }
 
-    /// Puts the pair around the selection, which stays selected inside
-    /// it. The closer goes in first, so `range.start` still holds for the
-    /// opener; the room is checked first, so both go in or neither.
-    fn wrap(&mut self, pair: &str, range: Range<usize>) {
-        if self.text().len() + pair.len() > MAX_BODY_BYTES {
-            self.notice = Some(FULL);
-            return;
-        }
-        let (open, close) = pair.split_at(1);
-        let wrapped = self
-            .buffer
-            .replace(range.end..range.end, close)
-            .and_then(|()| self.buffer.replace(range.start..range.start, open));
-        if wrapped.is_ok() {
-            self.dirty = true;
-            // A bracket can join an accent beside it into one grapheme.
-            self.anchor = self.anchor.map(|at| self.snap(at + 1));
-            self.cursor = self.snap(self.cursor + 1);
-            self.goal = None;
-        }
-    }
-
-    /// Whether an opening bracket typed here gets its closer: only before
-    /// whitespace, a closing bracket or the end, so `(word` stays as typed.
-    fn closes_here(&self) -> bool {
-        self.text()[self.cursor..]
-            .chars()
-            .next()
-            .is_none_or(|next| next.is_whitespace() || PAIRS.iter().any(|p| p.ends_with(next)))
-    }
-
-    /// Whether `c` is a closing bracket and the grapheme after the cursor
-    /// is that bracket alone (not `)` with a combining accent on it).
-    fn closer_follows(&self, c: char) -> bool {
-        let next = self.buffer.next_grapheme(self.cursor);
-        PAIRS.iter().any(|p| p.ends_with(c)) && self.text()[self.cursor..next].chars().eq([c])
-    }
-
     /// Backspace and Delete: the selection, or one grapheme before or
     /// after the cursor.
     /// Backspace in an empty pair, `(|)`, takes the closer too.
@@ -439,14 +390,6 @@ impl Editor {
             self.anchor = Some(other);
         }
         self.replace_selection("");
-    }
-
-    /// Whether the graphemes around the cursor are exactly one of the
-    /// pairs: two bytes in all, so neither bracket carries an accent.
-    fn in_empty_pair(&self) -> bool {
-        let start = self.buffer.prev_grapheme(self.cursor);
-        let end = self.buffer.next_grapheme(self.cursor);
-        PAIRS.contains(&&self.text()[start..end])
     }
 
     /// Copies the selection into Crystal's clipboard; false if nothing is
@@ -476,158 +419,32 @@ impl Editor {
             None => self.notice = Some("Nothing to redo."),
         }
     }
-
-    /// Puts the cursor at `at` with nothing selected. After an edit, `at`
-    /// can be inside a grapheme (a letter typed before a combining accent
-    /// joins it); the cursor then goes to that grapheme's end.
-    fn collapse(&mut self, at: usize) {
-        self.cursor = self.snap(at);
-        self.anchor = None;
-        self.goal = None;
-    }
-
-    /// `at` if it is on a grapheme boundary, else the end of the grapheme
-    /// it is inside.
-    fn snap(&self, at: usize) -> usize {
-        if at == 0 {
-            0
-        } else {
-            let start = self.buffer.prev_grapheme(at);
-            self.buffer.next_grapheme(start).max(at)
-        }
-    }
-
-    /// Moves the cursor; with Shift the selection grows from where it
-    /// started, without it the selection is dropped.
-    fn move_to(&mut self, at: usize, select: bool) {
-        if select {
-            self.anchor.get_or_insert(self.cursor);
-        } else {
-            self.anchor = None;
-        }
-        self.cursor = at;
-        self.goal = None;
-    }
-
-    /// Puts the cursor at `at` (on a grapheme's start), the selection
-    /// dropped: where a link followed in live mode leads (step LF3).
-    pub fn jump_to(&mut self, at: usize) {
-        let at = self.snap(at.min(self.text().len()));
-        self.move_to(at, false);
-    }
-
-    /// Selects `range`, the cursor at its end; an empty one only moves
-    /// the cursor.
-    fn select(&mut self, range: Range<usize>) {
-        let (start, end) = (self.snap(range.start), self.snap(range.end));
-        self.move_to(start, false);
-        if end > start {
-            self.move_to(end, true);
-        }
-    }
-
-    /// The word around `at` in its line, by Unicode word boundaries (a
-    /// run of spaces or one punctuation mark counts as a word too); empty
-    /// at the line's end.
-    fn word_at(&self, at: usize) -> Range<usize> {
-        let (start, end) = (self.line_start(at), self.line_end(at));
-        self.text()
-            .get(start..end)
-            .unwrap_or("")
-            .split_word_bound_indices()
-            .map(|(i, word)| start + i..start + i + word.len())
-            .find(|word| word.contains(&at))
-            .unwrap_or(at..at)
-    }
-
-    /// The line around `at`, with its line break if it has one.
-    fn line_at(&self, at: usize) -> Range<usize> {
-        let end = self.line_end(at);
-        let end = if end < self.text().len() {
-            self.buffer.next_grapheme(end)
-        } else {
-            end
-        };
-        self.line_start(at)..end
-    }
-
-    fn line_start(&self, at: usize) -> usize {
-        self.text()
-            .get(..at)
-            .and_then(|head| head.rfind('\n'))
-            .map_or(0, |i| i + 1)
-    }
-
-    /// Where the line's break is: its `\n`, or the `\r` of a `\r\n` (one
-    /// grapheme, which the cursor never splits); or the end of the text.
-    fn line_end(&self, at: usize) -> usize {
-        let text = self.text();
-        match text.get(at..).and_then(|tail| tail.find('\n')) {
-            Some(i) if text[..at + i].ends_with('\r') && i > 0 => at + i - 1,
-            Some(i) => at + i,
-            None => text.len(),
-        }
-    }
-
-    /// Up, Down, PgUp and PgDn: `count` lines, to the goal column (in
-    /// graphemes) or the end of a shorter line.
-    fn vertical(&mut self, down: bool, count: usize, select: bool) {
-        let start = self.line_start(self.cursor);
-        let goal = self.goal.unwrap_or_else(|| {
-            self.text()
-                .get(start..self.cursor)
-                .map_or(0, |part| part.graphemes(true).count())
-        });
-        let mut at = self.cursor;
-        for _ in 0..count {
-            if down {
-                let end = self.line_end(at);
-                if end >= self.text().len() {
-                    break;
-                }
-                // Past the whole line break, `\n` or `\r\n`.
-                at = self.buffer.next_grapheme(end);
-            } else {
-                let line = self.line_start(at);
-                if line == 0 {
-                    break;
-                }
-                // The previous line's start: `line - 1` itself can be the
-                // `\n` inside a `\r\n`.
-                at = self.line_start(line - 1);
-            }
-        }
-        let line = self.line_start(at);
-        let text = self.text().get(line..self.line_end(at)).unwrap_or("");
-        let offset: usize = text.graphemes(true).take(goal).map(str::len).sum();
-        self.move_to(line + offset, select);
-        self.goal = Some(goal);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use unicode_segmentation::UnicodeSegmentation;
     use zeroize::Zeroizing;
 
-    fn editor(text: &str) -> (Editor, Clipboard) {
+    pub(super) fn editor(text: &str) -> (Editor, Clipboard) {
         (Editor::new(text).unwrap(), Clipboard::default())
     }
 
-    fn typed(ed: &mut Editor, clip: &mut Clipboard, text: &str) {
+    pub(super) fn typed(ed: &mut Editor, clip: &mut Clipboard, text: &str) {
         for c in text.chars() {
             ed.key(Key::Char(c), clip);
         }
     }
 
-    fn keys(ed: &mut Editor, clip: &mut Clipboard, keys: impl IntoIterator<Item = Key>) {
+    pub(super) fn keys(ed: &mut Editor, clip: &mut Clipboard, keys: impl IntoIterator<Item = Key>) {
         for key in keys {
             ed.key(key, clip);
         }
     }
 
-    fn selected(ed: &Editor) -> &str {
+    pub(super) fn selected(ed: &Editor) -> &str {
         ed.selection().map_or("", |r| &ed.text()[r])
     }
 
@@ -647,172 +464,6 @@ mod tests {
         ed.key(Key::Ctrl('y'), &mut clip);
         assert_eq!(ed.text(), "hello");
         assert!(ed.is_dirty());
-    }
-
-    #[test]
-    fn opening_brackets_close_before_space_closers_and_the_end() {
-        // At the end, and nested: a wikilink closes as it is opened.
-        let (mut ed, mut clip) = editor("");
-        typed(&mut ed, &mut clip, "[[Note");
-        assert_eq!(ed.text(), "[[Note]]");
-        assert_eq!(ed.cursor(), "[[Note".len());
-
-        // Before whitespace, also a line break.
-        let (mut ed, mut clip) = editor("a b\n");
-        ed.key(Key::Right, &mut clip);
-        typed(&mut ed, &mut clip, "{");
-        ed.key(Key::End, &mut clip);
-        typed(&mut ed, &mut clip, "(");
-        assert_eq!(ed.text(), "a{} b()\n");
-        assert_eq!(ed.cursor(), "a{} b(".len());
-
-        // Before a word: no closer.
-        let (mut ed, mut clip) = editor("word");
-        typed(&mut ed, &mut clip, "(");
-        assert_eq!(ed.text(), "(word");
-    }
-
-    #[test]
-    fn a_typed_closer_steps_over_the_same_closer() {
-        // Typed in full, a wikilink and a call come out once.
-        let (mut ed, mut clip) = editor("");
-        typed(&mut ed, &mut clip, "[[Note]] f(x)");
-        assert_eq!(ed.text(), "[[Note]] f(x)");
-        assert_eq!(ed.cursor(), ed.text().len());
-
-        // Stepping over changes no text, so there is nothing to save.
-        let (mut ed, mut clip) = editor("()");
-        ed.key(Key::Right, &mut clip);
-        typed(&mut ed, &mut clip, ")");
-        assert_eq!(ed.text(), "()");
-        assert_eq!(ed.cursor(), 2);
-        assert!(!ed.is_dirty());
-
-        // Another closer, or one with an accent on it, is typed.
-        let (mut ed, mut clip) = editor(")\u{301}");
-        typed(&mut ed, &mut clip, "]");
-        typed(&mut ed, &mut clip, ")");
-        assert_eq!(ed.text(), "]))\u{301}");
-    }
-
-    #[test]
-    fn backspace_in_an_empty_pair_deletes_both() {
-        // A wikilink opened by mistake goes with two Backspaces.
-        let (mut ed, mut clip) = editor("");
-        typed(&mut ed, &mut clip, "a[[");
-        ed.key(Key::Backspace, &mut clip);
-        assert_eq!((ed.text(), ed.cursor()), ("a[]", 2));
-        ed.key(Key::Backspace, &mut clip);
-        assert_eq!((ed.text(), ed.cursor()), ("a", 1));
-
-        // Not in a pair: one grapheme, as before.
-        for (text, right, key, left) in [
-            ("()", 1, Key::Delete, "("),      // Delete takes only the closer
-            ("()", 2, Key::Backspace, "("),   // after the pair
-            ("(]", 1, Key::Backspace, "]"),   // brackets that don't match
-            ("(x)", 2, Key::Backspace, "()"), // not empty
-            ("()\u{301}", 1, Key::Backspace, ")\u{301}"), // an accented closer
-        ] {
-            let (mut ed, mut clip) = editor(text);
-            for _ in 0..right {
-                ed.key(Key::Right, &mut clip);
-            }
-            ed.key(key, &mut clip);
-            assert_eq!(ed.text(), left, "{text:?}");
-        }
-    }
-
-    #[test]
-    fn an_opening_bracket_wraps_the_selection() {
-        // `[` twice makes a wikilink; the name stays selected, either way.
-        for forward in [true, false] {
-            let (mut ed, mut clip) = editor("see Note now");
-            let at = if forward { 4 } else { 8 };
-            for _ in 0..at {
-                ed.key(Key::Right, &mut clip);
-            }
-            for _ in 0..4 {
-                let select = if forward {
-                    Key::ShiftRight
-                } else {
-                    Key::ShiftLeft
-                };
-                ed.key(select, &mut clip);
-            }
-            typed(&mut ed, &mut clip, "[[");
-            assert_eq!(ed.text(), "see [[Note]] now");
-            assert_eq!(selected(&ed), "Note");
-            assert_eq!(ed.cursor(), if forward { 10 } else { 6 });
-        }
-
-        // A bracket joining an accent: the selection ends stay on
-        // grapheme boundaries.
-        let (mut ed, mut clip) = editor("\u{301}");
-        ed.key(Key::Ctrl('a'), &mut clip);
-        typed(&mut ed, &mut clip, "(");
-        assert_eq!(ed.text(), "(\u{301})");
-        assert_eq!(ed.selection(), None);
-        assert_eq!(ed.cursor(), "(\u{301}".len());
-    }
-
-    #[test]
-    fn brackets_undo_with_the_typing_around_them() {
-        // A pair and a step-over.
-        let (mut ed, mut clip) = editor("");
-        typed(&mut ed, &mut clip, "f(x) ");
-        assert_eq!(ed.text(), "f(x) ");
-        ed.key(Key::Ctrl('z'), &mut clip);
-        assert_eq!(ed.text(), "");
-
-        // A pair deleted by Backspace.
-        let (mut ed, mut clip) = editor("");
-        typed(&mut ed, &mut clip, "a[");
-        ed.key(Key::Backspace, &mut clip);
-        typed(&mut ed, &mut clip, "b");
-        assert_eq!(ed.text(), "ab");
-        ed.key(Key::Ctrl('z'), &mut clip);
-        assert_eq!(ed.text(), "");
-
-        // A wrap: two inserts, one step, both ways.
-        let (mut ed, mut clip) = editor("Note");
-        ed.key(Key::Ctrl('a'), &mut clip);
-        typed(&mut ed, &mut clip, "[[");
-        ed.key(Key::Ctrl('z'), &mut clip);
-        assert_eq!(ed.text(), "Note");
-        ed.key(Key::Ctrl('y'), &mut clip);
-        assert_eq!(ed.text(), "[[Note]]");
-    }
-
-    #[test]
-    fn a_full_note_takes_no_half_pair() {
-        let (mut ed, mut clip) = editor(&"x".repeat(MAX_BODY_BYTES - 1));
-        ed.key(Key::End, &mut clip);
-        typed(&mut ed, &mut clip, "(");
-        ed.key(Key::Ctrl('a'), &mut clip);
-        typed(&mut ed, &mut clip, "[");
-        assert_eq!(ed.text().len(), MAX_BODY_BYTES - 1);
-        assert_eq!(ed.notice(), Some(FULL));
-        assert!(!ed.is_dirty());
-    }
-
-    #[test]
-    fn shift_selects_and_typing_replaces_the_selection() {
-        let (mut ed, mut clip) = editor("one two");
-        keys(
-            &mut ed,
-            &mut clip,
-            [Key::ShiftRight, Key::ShiftRight, Key::ShiftRight],
-        );
-        assert_eq!(selected(&ed), "one");
-        typed(&mut ed, &mut clip, "1");
-        assert_eq!(ed.text(), "1 two");
-        keys(&mut ed, &mut clip, [Key::ShiftEnd]);
-        assert_eq!(selected(&ed), " two");
-        ed.key(Key::Backspace, &mut clip);
-        assert_eq!(ed.text(), "1");
-        // A movement without Shift drops the selection.
-        keys(&mut ed, &mut clip, [Key::ShiftHome, Key::Right]);
-        assert_eq!(ed.selection(), None);
     }
 
     #[test]
@@ -956,33 +607,6 @@ mod tests {
         assert_eq!((ed.cursor(), ed.selection()), (4, None));
     }
 
-    #[test]
-    fn moves_by_lines_and_graphemes() {
-        let (mut ed, mut clip) = editor("abcd\nx\nwxyz");
-        keys(&mut ed, &mut clip, [Key::End, Key::Down]);
-        assert_eq!(ed.cursor(), 6, "the end of the shorter line");
-        ed.key(Key::Down, &mut clip);
-        assert_eq!(ed.cursor(), 11, "the goal column comes back");
-        keys(&mut ed, &mut clip, [Key::Home, Key::Up, Key::Up]);
-        assert_eq!(ed.cursor(), 0);
-        ed.key(Key::Up, &mut clip);
-        assert_eq!(ed.cursor(), 0, "the first line stays");
-
-        let (mut ed, mut clip) = editor("e\u{301}x");
-        ed.key(Key::Right, &mut clip);
-        assert_eq!(ed.cursor(), 3, "e and its accent are one step");
-        ed.key(Key::Backspace, &mut clip);
-        assert_eq!(ed.text(), "x");
-    }
-
-    #[test]
-    fn typing_before_a_combining_accent_keeps_the_cursor_on_a_grapheme() {
-        let (mut ed, mut clip) = editor("\u{301}");
-        typed(&mut ed, &mut clip, "e");
-        assert_eq!(ed.text(), "e\u{301}");
-        assert_eq!(ed.cursor(), 3, "after the joined grapheme, not inside it");
-    }
-
     /// Found by the property test: a redo that replaced `a` by `é` put
     /// the cursor at a position from before the change, inside the `é`.
     #[test]
@@ -997,25 +621,6 @@ mod tests {
         assert_eq!((ed.text(), ed.cursor()), ("\na", 2));
         ed.key(Key::Ctrl('y'), &mut clip);
         assert_eq!((ed.text(), ed.cursor()), ("\né", 3));
-    }
-
-    #[test]
-    fn lines_end_before_a_windows_line_break() {
-        let (mut ed, mut clip) = editor("ab\r\ncd");
-        keys(&mut ed, &mut clip, [Key::Down, Key::End, Key::Up]);
-        assert_eq!(ed.cursor(), 2, "before the \\r\\n, not between them");
-    }
-
-    #[test]
-    fn pages_move_by_the_view_height() {
-        let (mut ed, mut clip) = editor("0\n1\n2\n3\n4\n5");
-        ed.set_page(2);
-        ed.key(Key::PageDown, &mut clip);
-        assert_eq!(ed.cursor(), 4);
-        keys(&mut ed, &mut clip, [Key::PageDown, Key::PageDown]);
-        assert_eq!(ed.cursor(), 10, "stops on the last line");
-        ed.key(Key::PageUp, &mut clip);
-        assert_eq!(ed.cursor(), 6);
     }
 
     #[test]

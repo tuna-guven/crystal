@@ -57,7 +57,7 @@ becomes a directory of single-job modules under `src/editor/view/`:
 | RF3 (done) | `view/look.rs`: live mode's look of one frame (`Live`, renamed `Look`): what is revealed, hidden, skipped; `Look::new` split into named steps (reveal, folds, skipped lines, blank rows, tables), each a function | Tests unchanged; 5000 cases |
 | RF4 (done) | `view/fold.rs` (folds kept by offset, moved by changes) and `view/table.rs` (boxed tables: fitting, wrapping, borders, drawing, clicks) | Tests unchanged |
 | RF5 (done) | `view/suggestions.rs`: the link suggestion list under the cursor and its mouse mapping; `view.rs` keeps `View` (state, `draw`, scrolling, the mouse) | Tests unchanged |
-| RF6 | `editor.rs`: `editor/motion.rs` (cursor moves, words, lines, selection) and `editor/brackets.rs` (closing pairs) apart from the key dispatch | Tests unchanged |
+| RF6 (done) | `editor.rs`: `editor/motion.rs` (cursor moves, words, lines, selection) and `editor/brackets.rs` (closing pairs) apart from the key dispatch | Tests unchanged |
 | RF7 | `editor/suggest.rs`: `suggest/query.rs` (what is typed after `[[`, pure matching), `suggest/ids.rs` (new `^id`s and the block request), the list and its keys staying in `suggest.rs` | Tests unchanged |
 | RF8 | The architecture chapter's module map; every module's header says its one job and its invariants; fmt, clippy, test, deny, audit, mdbook | Review: no logic changed (diff of moved bodies), no new `unsafe`, syscalls or dependencies |
 
