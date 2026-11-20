@@ -456,8 +456,9 @@ the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
-preview (no security benefit; about 1 500 lines of code, comments
-included, and 1 000 of tests, folding and link clicks included), draws a Markdown note with its markup
+preview (no security benefit; about 1 900 lines of code, comments
+included, and 1 250 of tests, folding, link clicks and boxed tables
+included), draws a Markdown note with its markup
 hidden and its text styled as in the viewer, without line numbers.
 Each line is indented as the viewer indents it (sections under their
 heading, quote bars, list markers with wrapped rows hanging, heading
@@ -469,9 +470,15 @@ the viewer drops (a second one in a row, any before the first block or
 after the last) get no row while the cursor is not on them, and the
 viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
-rows are the viewer's; tables keep their pipes as written (cells
-styled), and rows wrap by
-character. Drawn as written are only the elements the
+rows are the viewer's. A table the cursor and the selection are not in
+is boxed as in the viewer, if the box fits the screen: its cells
+styled, padded by their column's alignment between `│`s, `├─┼─┤` for
+its `|---|` line, and the border rows the note has no line for (above,
+between two body rows, below) drawn as rows with no text, like the
+blank row; a row start's two top bits say which of these rows comes
+before a line. With the cursor in it, or too wide, a table is drawn as
+written with its cells styled, so its columns never move while typing.
+Rows wrap by character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,
 its code staying yellow on gray in its box), a line's leading markup while

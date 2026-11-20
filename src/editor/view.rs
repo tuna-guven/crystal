@@ -3174,7 +3174,8 @@ mod tests {
 
     /// Same rows as the viewer (step LV3): a note shaped like a real one
     /// (a heading, a list, a paragraph, a fenced code block, inline code,
-    /// subheadings, a link, a paragraph right before a list): every word
+    /// subheadings, a link, a paragraph right before a list, a table,
+    /// step LT4): every word
     /// is drawn in the viewer's row and column, the cursor away from them.
     #[test]
     fn live_rows_are_the_viewers() {
@@ -3182,7 +3183,8 @@ mod tests {
                     with *italic* alpha:\n\n```rust\npub enum bravo {\n    charlie,\n}\n```\n\n\
                     Look delta `another` echo.\n\n## Subheading\n\n### Subsub\n\nThis is \
                     foxtrot [Monero](https://getmonero.org)\nI am golf testing:\n- \
-                    [[hotel#^3y5wrv]]\n\nmike end";
+                    [[hotel#^3y5wrv]]\n\n| Name | Qty |\n|:--|--:|\n| **india** | 3 |\n\
+                    | juliet | 120 |\n\nmike end";
         let words = [
             "Heading",
             "one",
@@ -3199,14 +3201,24 @@ mod tests {
             "Monero",
             "golf",
             "hotel",
+            // A boxed table (steps LT1 to LT3): its borders, cells padded
+            // and aligned.
+            "┌─",
+            "Qty",
+            "├─",
+            "india",
+            "  3 │",
+            "juliet",
+            "120",
+            "└─",
             "mike",
         ];
         let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 70);
-        let mut viewer = Grid::new(70, 40);
-        page.draw(&mut viewer, Rect::new(0, 0, 70, 40), 0);
+        let mut viewer = Grid::new(70, 50);
+        page.draw(&mut viewer, Rect::new(0, 0, 70, 50), 0);
         let mut ed = Editor::new(text).unwrap();
         ed.jump_to(text.len());
-        let live = drawn(&mut ed, &mut View::live(), 73, 42);
+        let live = drawn(&mut ed, &mut View::live(), 73, 52);
         for word in words {
             // The page alone: the pager puts its gutter left of it and
             // its title above.
