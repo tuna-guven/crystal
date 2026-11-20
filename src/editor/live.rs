@@ -42,6 +42,22 @@ pub enum Show {
     Hidden,
     /// This fixed string in their place (a rule's line).
     Fixed(&'static str),
+    /// Between two cells of a boxed table (step LT3, the view's): the
+    /// cell's padding after its text, ` │ `, and the next cell's padding
+    /// before its text, in columns.
+    Cell { after: u16, before: u16 },
+}
+
+impl Show {
+    /// The columns a fixed string or a cell border takes, drawn once at
+    /// its run's start; `None` for text as written or hidden.
+    pub fn columns(self) -> Option<usize> {
+        match self {
+            Show::Text | Show::Hidden => None,
+            Show::Fixed(fixed) => Some(display_width(fixed)),
+            Show::Cell { after, before } => Some(usize::from(after) + 3 + usize::from(before)),
+        }
+    }
 }
 
 /// A range of the text and how it is drawn. Holds offsets, never text.
@@ -330,7 +346,7 @@ pub fn parse(text: &str) -> Parsed {
 
 /// The columns `range` takes as `runs` draw it on one line: hidden bytes
 /// none, a fixed string its own width.
-fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {
+pub fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {
     let first = runs.partition_point(|run| run.range.end <= range.start);
     runs[first..]
         .iter()
@@ -341,8 +357,8 @@ fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {
                 display_width(&text[part])
             }
             Show::Hidden => 0,
-            Show::Fixed(fixed) if run.range.start >= range.start => display_width(fixed),
-            Show::Fixed(_) => 0,
+            show if run.range.start >= range.start => show.columns().unwrap_or(0),
+            _ => 0,
         })
         .sum()
 }
@@ -402,7 +418,7 @@ impl Runs<'_> {
             && last.range.end == range.start
             && last.style == style
             && last.show == show
-            && !matches!(show, Show::Fixed(_))
+            && show.columns().is_none()
         {
             last.range.end = range.end;
             return;
@@ -463,6 +479,7 @@ mod tests {
                 Show::Text => &text[run.range.clone()],
                 Show::Hidden => "",
                 Show::Fixed(s) => s,
+                Show::Cell { .. } => " │ ",
             })
             .collect()
     }
