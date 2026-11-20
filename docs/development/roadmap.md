@@ -32,6 +32,19 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps BL1 to BL2 (live mode: blank lines as written)
+
+Reported by the user (2026-11-20) with screenshots: Enter on a blank
+line added a line that did not show. Live mode hid a blank line after
+another (step LV1, the viewer's rule) unless the cursor was on it, so
+each new blank line hid once the cursor moved on to the next one.
+Option A, as in Obsidian's live preview: every blank line gets a row.
+
+| Step | What | Check |
+| --- | --- | --- |
+| BL1 (done) | Live mode draws every blank line (before the first block, in a row, after the last, the empty line after a final line break); only fences and Setext underlines stay hidden. The viewer's added blank rows (step LV2) stay | Unit tests: a run of blank lines shows whole with the cursor elsewhere; Enter on a blank line adds a row |
+| BL2 (done) | Decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook | Review: no note text in strings |
+
 ## Steps TD1 to TD4 (live tables: three fixes from use)
 
 Reported by the user (2026-11-20) with screenshots:

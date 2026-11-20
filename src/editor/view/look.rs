@@ -43,12 +43,9 @@ pub struct Look {
     /// The links a click follows (step LF3), in order.
     links: Vec<Link>,
     /// Whole lines not drawn while not edited, as the viewer gives them
-    /// no row (step LV1): fences, Setext underlines, a blank line after
-    /// another, before the first block or after the last. Sorted, each
+    /// no row (step LV1): fences and Setext underlines. Sorted, each
     /// from a line's start to the next line's.
     skips: Vec<Range<usize>>,
-    /// The empty line after a final line break is not drawn either.
-    pub skip_end: bool,
     /// The rows drawn before a line that the note has no line for (steps
     /// LV2, LT2, LW1), sorted by that line (a line drawn, past any
     /// skipped ones; the text's end after the last line), each line's in
@@ -100,69 +97,28 @@ impl Prefix<'_> {
     }
 }
 
-/// The lines live mode does not draw (step LV1), as `Look::skips` and
-/// `Look::skip_end` say. One the cursor is on, the selection touches or
-/// a revealed element covers (a code block's fence while the cursor is
-/// in it) is drawn, so the cursor is never hidden.
-fn skipped(
-    layout: &Layout,
-    text: &str,
-    cursor: usize,
-    selection: &Range<usize>,
-    raw: &[Range<usize>],
-) -> (Vec<Range<usize>>, bool) {
+/// The lines live mode does not draw (step LV1), as `Look::skips` says:
+/// fences and Setext underlines, the viewer giving them no row. One a
+/// revealed element covers (a code block's fence while the cursor is in
+/// it) is drawn. Blank lines are drawn as written (step BL1), as in
+/// Obsidian's live preview: hiding them hid the lines Enter added.
+fn skipped(layout: &Layout, text: &str, raw: &[Range<usize>]) -> Vec<Range<usize>> {
     let lines = &layout.lines;
-    // Line `i`: its start, its end (its line break), the next line's start.
-    let bounds = |i: usize| {
-        let start = lines[i].markup.start;
+    let mut skips = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let start = line.markup.start;
         let next = lines.get(i + 1).map_or(text.len(), |l| l.markup.start);
+        // Its end: its line break, the text's end for the last line.
         let end = if next > start && i + 1 < lines.len() {
             next - 1
         } else {
             next
         };
-        (start, end, next)
-    };
-    let blank = |i: usize| {
-        let (start, end, _) = bounds(i);
-        lines[i].code.is_none() && text.get(start..end).is_some_and(|l| l.trim().is_empty())
-    };
-    let last_block = (0..lines.len())
-        .rev()
-        .find(|&i| !blank(i) && !lines[i].skip);
-    let mut skips = Vec::new();
-    let mut skip_end = false;
-    let mut seen = false;
-    let mut after_blank = false;
-    for (i, line) in lines.iter().enumerate() {
-        let (start, end, next) = bounds(i);
-        // The cursor on the line, or the selection over any of it.
-        let edited = (start..=end).contains(&cursor)
-            || (!selection.is_empty() && selection.start <= end && start < selection.end);
-        let skip = if line.skip {
-            !overlaps(raw, &(start..end.max(start + 1)))
-        } else if blank(i) {
-            // Only the first blank line between two blocks has a row.
-            let extra = !seen || after_blank || last_block.is_none_or(|last| i > last);
-            if !extra || edited {
-                after_blank = true;
-            }
-            extra
-        } else {
-            seen = true;
-            after_blank = false;
-            false
-        };
-        if skip && !edited {
-            if next > start {
-                skips.push(start..next);
-            } else {
-                // The empty line after a final line break.
-                skip_end = true;
-            }
+        if line.skip && next > start && !overlaps(raw, &(start..end.max(start + 1))) {
+            skips.push(start..next);
         }
     }
-    (skips, skip_end)
+    skips
 }
 
 /// The drawn rows grouped by the line they go before, in their order
@@ -387,7 +343,7 @@ impl Look {
         let editing = Editing { cursor, selection };
         let (raw, hidden) = reveal(&parsed, editing);
         let folds = folds(kept, &parsed.layout.headings, text, editing);
-        let (skips, skip_end) = skipped(&parsed.layout, text, cursor, selection, &raw);
+        let skips = skipped(&parsed.layout, text, &raw);
         let hiding = Hiding {
             skips: &skips,
             folds: &folds,
@@ -419,7 +375,6 @@ impl Look {
             folds,
             links,
             skips,
-            skip_end,
             drawn: by_line(drawn),
             boxed,
             code: parsed.code,
@@ -444,7 +399,7 @@ impl Look {
                 break;
             }
         }
-        let gone = at >= len && (folded || self.skip_end || !text.ends_with('\n'));
+        let gone = at >= len && (folded || !text.ends_with('\n'));
         // The rows before the line first, if it has any; a table's bottom
         // border comes even after the last line.
         let first = self.first_row(at);

@@ -156,7 +156,7 @@ pub fn row_at(text: &str, start: RowStart, width: usize, live: &Look) -> Row {
     if start.is_drawn() {
         let line = start.line().min(text.len());
         // The next drawn row, else the line, unless past the text.
-        let gone = line >= text.len() && (live.skip_end || !text.ends_with('\n'));
+        let gone = line >= text.len() && !text.ends_with('\n');
         let next = live.next_drawn(start);
         return Row {
             range: line..line,

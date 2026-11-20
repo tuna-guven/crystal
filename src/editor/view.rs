@@ -1579,11 +1579,11 @@ mod tests {
         );
     }
 
-    /// Rows as in the viewer (step LV1): blank lines before the first
-    /// block, after another blank line or after the last block, a Setext
-    /// underline and a code block's fences get no row while not edited;
-    /// the fences come back while the cursor is in the block, a blank
-    /// line while the cursor is on it.
+    /// Rows as in the viewer (step LV1), but blank lines as written (step
+    /// BL1, as in Obsidian's live preview): a Setext underline and a code
+    /// block's fences get no row while not edited, the fences coming back
+    /// while the cursor is in the block; every blank line has a row, the
+    /// cursor on it or not.
     #[test]
     fn live_skips_lines_the_viewer_has_no_row_for() {
         let mut clip = Clipboard::default();
@@ -1592,11 +1592,15 @@ mod tests {
         let mut ed = Editor::new(text).unwrap();
         ed.jump_to(text.find("end").unwrap());
         let mut view = View::live();
-        let grid = drawn(&mut ed, &mut view, 30, 12);
+        let grid = drawn(&mut ed, &mut view, 30, 18);
         assert_eq!(
-            rows(&grid)[1..10],
+            rows(&grid)[1..17],
             [
-                "  A".to_owned(),
+                String::new(),
+                String::new(),
+                "  A".into(),
+                String::new(),
+                String::new(),
                 String::new(),
                 "  B".into(),
                 String::new(),
@@ -1605,18 +1609,40 @@ mod tests {
                 "     code".into(),
                 // The viewer's blank row after a code block (step LV2).
                 String::new(),
-                "    end".into()
+                "    end".into(),
+                // The blank line after `end`, then the empty last line.
+                String::new(),
+                String::new(),
+                String::new(),
             ]
         );
         // Up into the code block: its fences show.
         ed.key(Key::Up, &mut clip);
-        let grid = drawn(&mut ed, &mut view, 30, 12);
+        let grid = drawn(&mut ed, &mut view, 30, 18);
         let fences = rows(&grid).iter().filter(|r| r.trim() == "```").count();
         assert_eq!(fences, 2);
-        // On the third blank line between A and B: it shows.
-        ed.jump_to(text.find("A").unwrap() + 3);
-        let grid = drawn(&mut ed, &mut view, 30, 12);
-        assert_eq!(rows(&grid)[1..5], ["  A", "", "", "  B"]);
+    }
+
+    /// Enter on a blank line adds a row each time (step BL1): the lines
+    /// it adds stay drawn once the cursor moves on.
+    #[test]
+    fn live_enter_on_a_blank_line_adds_a_row() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("A\n\nB").unwrap();
+        ed.jump_to(2);
+        let mut view = View::live();
+        let b_row = |ed: &mut Editor, view: &mut View| {
+            let grid = drawn(ed, view, 30, 12);
+            rows(&grid).iter().position(|r| r.trim() == "B")
+        };
+        let before = b_row(&mut ed, &mut view).unwrap();
+        for added in 1..=3 {
+            ed.key(Key::Enter, &mut clip);
+            assert_eq!(b_row(&mut ed, &mut view), Some(before + added));
+        }
+        // The cursor away: the rows stay.
+        ed.jump_to(0);
+        assert_eq!(b_row(&mut ed, &mut view), Some(before + 3));
     }
 
     /// The viewer's blank rows while scrolling (step LV2): scrolled to the

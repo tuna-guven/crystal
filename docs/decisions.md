@@ -473,12 +473,13 @@ heading, quote bars, list markers with wrapped rows hanging, heading
 icons, code blocks as a gray box), the viewer's prefix standing in for
 the line's own leading markup, after the viewer's blank 2-column
 gutter, its markers dimmed; a test compares the columns with the
-viewer's. A code block's fences, a Setext underline and blank lines
-the viewer drops (a second one in a row, any before the first block or
-after the last) get no row while the cursor is not on them, and the
+viewer's. A code block's fences and a Setext underline get no row
+while the cursor is not on them; blank lines keep a row each, as in
+Obsidian's live preview (hiding the ones the viewer drops hid the
+lines Enter added), and the
 viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
-rows are the viewer's. A table is boxed as in the viewer: its cells styled, padded by their column's
+rows are the viewer's but for blank lines in a row. A table is boxed as in the viewer: its cells styled, padded by their column's
 alignment between `│`s, `├─┼─┤` for its `|---|` line; a table wider
 than the screen has its columns narrowed by the viewer's
 `fit_columns` and each cell wrapped inside its column by the viewer's
