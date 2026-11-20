@@ -191,13 +191,8 @@ struct Live {
     /// order: a table's bottom border, the viewer's blank row, a table's
     /// top or inner border.
     drawn: Vec<(usize, Vec<Drawn>)>,
-    /// The boxed tables' lines (step LT3): runs drawn in place of the
-    /// parser's (their pipes and spaces hidden or drawn as `Show::Cell`,
-    /// the `|---|` line hidden), sorted; and by line start, the pieces
-    /// of each line's first prefix and of what follows its last cell.
-    cells: Vec<Run>,
-    firsts: Vec<(usize, Range<u32>)>,
-    suffixes: Vec<(usize, Range<u32>)>,
+    /// The boxed tables' lines, sorted (step LW2).
+    boxed: Vec<Boxed>,
     /// Code blocks and inline code, sorted (`Parsed::code`).
     code: Vec<Range<usize>>,
 }
@@ -249,6 +244,23 @@ const ORDINAL: usize = 1 << 40;
 /// The line a row start is on, or goes before.
 fn line_of(at: usize) -> usize {
     if at & MARK == 0 { at } else { at % ORDINAL }
+}
+
+/// A boxed table's line (step LW2): one row drawn whole from its cells
+/// (`draw_boxed`), never wrapped, since the cursor is never in it.
+struct Boxed {
+    /// The line's start and its end, before its line break.
+    start: usize,
+    end: usize,
+    /// The prefix of its first row: the line's own, then for the `|---|`
+    /// line its `├─┼─┤` (and no cells).
+    first: Range<u32>,
+    /// Each column's width and alignment.
+    widths: Vec<u16>,
+    aligns: Vec<Alignment>,
+    /// Each column's cell text, without the spaces around it (empty for a
+    /// cell a short row lacks).
+    cells: Vec<Range<usize>>,
 }
 
 /// A row the note has no line for (steps LV2, LT2, LW1).
@@ -376,15 +388,21 @@ fn border(
     pieces: &mut Vec<Piece>,
     prefix: &[Piece],
     widths: &[u16],
-    [left, mid, right]: [&'static str; 3],
+    ends: [&'static str; 3],
 ) -> Range<u32> {
     let mut row = prefix.to_vec();
+    border_row(&mut row, widths, ends);
+    store(pieces, &row)
+}
+
+/// Adds a border's `left`, each column's dashes with `mid` between them,
+/// and `right` to `row`, in the viewer's gray.
+fn border_row(row: &mut Vec<Piece>, widths: &[u16], [left, mid, right]: [&'static str; 3]) {
     for (c, &width) in widths.iter().enumerate() {
         row.push((if c == 0 { left } else { mid }, QUOTE_BAR));
-        repeat(&mut row, DASHES, width, QUOTE_BAR);
+        repeat(row, DASHES, width, QUOTE_BAR);
     }
     row.push((right, QUOTE_BAR));
-    store(pieces, &row)
 }
 
 /// Adds `row` to `pieces`; returns its range.
@@ -404,17 +422,6 @@ fn repeat(row: &mut Vec<Piece>, fill: &'static str, count: u16, style: Style) {
         let n = count.min(most);
         row.push((&fill[..n * size], style));
         count -= n;
-    }
-}
-
-/// Hides `range` of a boxed table's line (step LT3), unless empty.
-fn hide(cells: &mut Vec<Run>, range: Range<usize>) {
-    if range.start < range.end {
-        cells.push(Run {
-            range,
-            show: Show::Hidden,
-            style: Style::PLAIN,
-        });
     }
 }
 
@@ -566,7 +573,7 @@ impl Live {
         // Boxed tables: their border rows, none in a fold or right after
         // one (step LT2).
         let mut layout = parsed.layout;
-        let (mut cells, mut firsts, mut suffixes) = (Vec::new(), Vec::new(), Vec::new());
+        let mut boxed = Vec::new();
         let open = |at: usize| {
             !folds
                 .iter()
@@ -590,14 +597,14 @@ impl Live {
                 || (!selection.is_empty() && selection.start <= end && start < selection.end);
             let prefix = layout.prefix(&first.rest).to_vec();
             // `│ ` before each cell, ` ` after it, and the closing `│`.
-            let boxed = prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>()
+            let needed = prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>()
                 + table
                     .widths
                     .iter()
                     .map(|&w| usize::from(w) + 3)
                     .sum::<usize>()
                 + 1;
-            if edited || table.widths.is_empty() || boxed > width || !open(start) {
+            if edited || table.widths.is_empty() || needed > width || !open(start) {
                 continue;
             }
             let widths = &table.widths;
@@ -616,82 +623,32 @@ impl Live {
                 let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
                 drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
             }
-            // Its lines (step LT3). The `|---|` line: `├─┼─┤` in place of
-            // its text.
-            let delimiter = table.lines.start + 1;
-            if let Some(line) = lines.get(delimiter).filter(|_| delimiter < table.lines.end) {
-                let first = layout.prefix(&line.first).to_vec();
-                let rule = border(&mut layout.pieces, &first, widths, ["├─", "─┼─", "─┤"]);
-                firsts.push((line.markup.start, rule));
-                hide(
-                    &mut cells,
-                    line.markup.end..line_end(text, line.markup.start),
-                );
-            }
-            // A row: `│ ` and its first cell's padding as its prefix, its
-            // pipes and spaces as `Show::Cell` or hidden, the last cell's
-            // padding and ` │` after it.
-            for (row, row_cells) in &table.rows {
-                let (line, columns) = (&lines[*row], widths.len());
-                let Some(cell) = row_cells.first() else {
-                    continue;
-                };
-                // Each cell's padding before and after its text.
-                let pads: Vec<(u16, u16)> = (0..columns)
-                    .map(|c| {
-                        let drawn = row_cells
-                            .get(c)
-                            .map_or(0, |cell| live::drawn_width(text, &parsed.runs, cell));
-                        let room =
-                            widths[c].saturating_sub(u16::try_from(drawn).unwrap_or(u16::MAX));
-                        let before = match table.aligns.get(c) {
-                            Some(Alignment::Right) => room,
-                            Some(Alignment::Center) => room / 2,
-                            _ => 0,
-                        };
-                        (before, room - before)
-                    })
-                    .collect();
-                // The cells with a pipe before them: not one the parser
-                // added to a short row, drawn after the text.
-                let mut last = 0;
-                while last + 1 < row_cells.len().min(columns)
-                    && row_cells[last].end < row_cells[last + 1].start
-                {
-                    last += 1;
-                }
+            // Its lines (step LW2): the `|---|` line as `├─┼─┤`, a row as
+            // its cells.
+            for i in table.lines.clone() {
+                let line = &lines[i];
+                let cells = table.rows.iter().find(|(row, _)| *row == i);
                 let mut first = layout.prefix(&line.first).to_vec();
-                first.push(("│ ", QUOTE_BAR));
-                repeat(&mut first, SPACES, pads[0].0, Style::PLAIN);
-                firsts.push((line.markup.start, store(&mut layout.pieces, &first)));
-                hide(&mut cells, line.markup.end..cell.start);
-                for c in 0..last {
-                    cells.push(Run {
-                        range: row_cells[c].end..row_cells[c + 1].start,
-                        show: Show::Cell {
-                            after: pads[c].1,
-                            before: pads[c + 1].0,
-                        },
-                        style: QUOTE_BAR,
-                    });
-                }
-                hide(
-                    &mut cells,
-                    row_cells[last].end..line_end(text, line.markup.start),
-                );
-                let mut suffix = Vec::new();
-                repeat(&mut suffix, SPACES, pads[last].1, Style::PLAIN);
-                for &width in &widths[last + 1..] {
-                    suffix.push((" │ ", QUOTE_BAR));
-                    repeat(&mut suffix, SPACES, width, Style::PLAIN);
-                }
-                suffix.push((" │", QUOTE_BAR));
-                suffixes.push((line.markup.start, store(&mut layout.pieces, &suffix)));
+                let end = line_end(text, line.markup.start);
+                let cells: Vec<Range<usize>> = match cells {
+                    Some((_, cells)) => (0..widths.len())
+                        .map(|c| cells.get(c).cloned().unwrap_or(end..end))
+                        .collect(),
+                    None => {
+                        border_row(&mut first, widths, ["├─", "─┼─", "─┤"]);
+                        Vec::new()
+                    }
+                };
+                boxed.push(Boxed {
+                    start: line.markup.start,
+                    end,
+                    first: store(&mut layout.pieces, &first),
+                    widths: widths.clone(),
+                    aligns: table.aligns.clone(),
+                    cells,
+                });
             }
         }
-        cells.sort_by_key(|run| run.range.start);
-        firsts.sort_by_key(|r| r.0);
-        suffixes.sort_by_key(|r| r.0);
         // A link drawn as written is being edited: a click there places
         // the cursor.
         let links = parsed
@@ -709,9 +666,7 @@ impl Live {
             skips,
             skip_end,
             drawn: by_line(drawn),
-            cells,
-            firsts,
-            suffixes,
+            boxed,
             code: parsed.code,
         }
     }
@@ -823,16 +778,6 @@ impl Live {
         let Some(line) = i.checked_sub(1).and_then(|i| lines.get(i)) else {
             return Prefix::NONE;
         };
-        // A boxed table's line (step LT3).
-        if start == line.markup.start
-            && let Ok(i) = self.firsts.binary_search_by_key(&start, |r| r.0)
-        {
-            return Prefix {
-                spaces: 0,
-                pieces: self.layout.prefix(&self.firsts[i].1),
-                code: None,
-            };
-        }
         if start != line.markup.start {
             return Prefix {
                 spaces: 0,
@@ -858,10 +803,6 @@ impl Live {
     /// string is drawn once, at its run's start; the rest of the run is
     /// hidden.
     fn at(&self, at: usize) -> (Show, Style) {
-        // A boxed table's line (step LT3).
-        if let Some(drawn) = run_at(&self.cells, at) {
-            return drawn;
-        }
         if overlaps(&self.raw, &(at..at + 1)) {
             // Code drawn as written keeps the code style (a fence, inline
             // code being edited).
@@ -874,13 +815,44 @@ impl Live {
         run_at(&self.runs, at).unwrap_or((Show::Text, Style::PLAIN))
     }
 
-    /// What follows the last cell of a boxed table's line starting at
-    /// `start` (step LT3).
-    fn suffix(&self, start: usize) -> &[Piece] {
-        match self.suffixes.binary_search_by_key(&start, |r| r.0) {
-            Ok(i) => self.layout.prefix(&self.suffixes[i].1),
-            Err(_) => &[],
+    /// The boxed table line starting at `start`, if one does (step LW2).
+    fn boxed_at(&self, start: usize) -> Option<&Boxed> {
+        let i = self.boxed.binary_search_by_key(&start, |b| b.start).ok()?;
+        self.boxed.get(i)
+    }
+
+    /// Where a click `x` columns into a boxed table line lands (step LW2):
+    /// on the grapheme drawn there in the cell under it, else at that
+    /// cell's text's end; on the `|---|` line, its start.
+    fn click_boxed(&self, text: &str, boxed: &Boxed, x: usize) -> usize {
+        let prefix: usize = self
+            .layout
+            .prefix(&boxed.first)
+            .iter()
+            .map(|(s, _)| display_width(s))
+            .sum();
+        let mut left = prefix;
+        for (c, cell) in boxed.cells.iter().enumerate() {
+            // `│ ` or ` │ ` before it: 2 columns of the first, 1 of the
+            // others belong to the cell before.
+            let width = usize::from(boxed.widths[c]);
+            let span = width + if c == 0 { 2 } else { 3 };
+            if x < left + span || c + 1 == boxed.cells.len() {
+                let (before, _) = pads(boxed, c, live::drawn_width(text, &self.runs, cell));
+                let start = left + span - width + usize::from(before);
+                let mut column = 0;
+                for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
+                    let at = cell.start + i;
+                    column += self.width(at, grapheme, column);
+                    if x < start + column {
+                        return at;
+                    }
+                }
+                return cell.end;
+            }
+            left += span;
         }
+        boxed.start
     }
 
     /// The columns the grapheme at `at` takes when it starts at `column`.
@@ -943,6 +915,27 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
             ends_line: false,
             indent: 0,
             drawn: true,
+        };
+    }
+    // A boxed table's line: one row, whole (step LW2).
+    if let Some(boxed) = live.boxed_at(start) {
+        let rest = &text[boxed.end..];
+        let break_len = if rest.starts_with("\r\n") {
+            2
+        } else {
+            usize::from(rest.starts_with('\n'))
+        };
+        let next = if break_len > 0 {
+            live.next_row(boxed.end + break_len, text)
+        } else {
+            Some(live.first_row(text.len())).filter(|&first| first & MARK != 0)
+        };
+        return Row {
+            range: start..boxed.end,
+            next,
+            ends_line: true,
+            indent: 0,
+            drawn: false,
         };
     }
     // Live mode's prefix takes its columns first, if text still fits.
@@ -1382,6 +1375,11 @@ impl View {
             }
         }
         let row = row_at(text, start, width, &self.look);
+        // A boxed table's line: the cell under the click (step LW2).
+        if let Some(boxed) = self.look.boxed_at(row.range.start).filter(|_| !row.drawn) {
+            let x = usize::from(column.saturating_sub(area.x));
+            return Some(self.look.click_boxed(text, boxed, x));
+        }
         // Live mode's prefix: a click there lands on the row's first
         // grapheme shown.
         let target = usize::from(column.saturating_sub(area.x)).saturating_sub(row.indent);
@@ -1517,10 +1515,127 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
     }
 }
 
+/// Draws the grapheme at `at` that starts `column` columns into its row,
+/// at `x, y` with `room` columns left, as `live` says: hidden markup not
+/// at all, a fixed string for its run, a tab as spaces, an invisible
+/// character spelled out dimmed, a web link's cells carrying its address
+/// for the terminal (Ctrl+click), as in the viewer. Returns the columns
+/// it took.
+#[allow(clippy::too_many_arguments)]
+fn put_grapheme(
+    grid: &mut Grid,
+    (x, y, room): (u16, u16, u16),
+    text: &str,
+    at: usize,
+    grapheme: &str,
+    column: usize,
+    style: Style,
+    live: &Live,
+) -> usize {
+    match live.at(at).0 {
+        Show::Hidden => return 0,
+        Show::Fixed(fixed) => return usize::from(grid.put_str(x, y, fixed, style, room)),
+        Show::Text => {}
+    }
+    match shape(grapheme) {
+        Shape::Text(g, _) => {
+            let used = grid.put_str(x, y, g, style, room);
+            // The grid checks the address again.
+            if let Some(link) = live.link(at).filter(|link| link.web)
+                && let Some(target) = text.get(link.target.clone())
+            {
+                let id = grid.add_link(target);
+                grid.set_link(x, y, used, id);
+            }
+        }
+        Shape::Tab => {
+            let w = width_at(grapheme, column);
+            grid.put_str(x, y, &"    "[..w], style, room);
+        }
+        Shape::Escape => {
+            let dim = style.mods(style.mods.union(Mods::DIM));
+            let mut buf = [0; ESCAPE_LEN];
+            let mut used = 0;
+            for c in grapheme.chars() {
+                let left = room.saturating_sub(used);
+                used += grid.put_str(x + used, y, escape(c, &mut buf), dim, left);
+            }
+        }
+        Shape::Break => {}
+    }
+    width_at(grapheme, column)
+}
+
+/// The padding before and after a cell `drawn` columns wide in column
+/// `c` of `boxed`, by the column's alignment, as the viewer pads it.
+fn pads(boxed: &Boxed, c: usize, drawn: usize) -> (u16, u16) {
+    let width = boxed.widths.get(c).copied().unwrap_or(0);
+    let room = width.saturating_sub(u16::try_from(drawn).unwrap_or(u16::MAX));
+    let before = match boxed.aligns.get(c) {
+        Some(Alignment::Right) => room,
+        Some(Alignment::Center) => room / 2,
+        _ => 0,
+    };
+    (before, room - before)
+}
+
+/// Draws a boxed table's line in `area`'s row (step LW2): `prefix`, then
+/// each cell between `│`s, padded by its column's alignment, its text as
+/// `live` draws it (styled, markup hidden); the `|---|` line is its
+/// prefix alone (its `├─┼─┤`).
+fn draw_boxed(
+    grid: &mut Grid,
+    area: Rect,
+    text: &str,
+    live: &Live,
+    boxed: &Boxed,
+    prefix: &[Piece],
+) {
+    let y = area.y;
+    let mut x = area.x;
+    let room = |x: u16| area.right().saturating_sub(x);
+    for (piece, style) in prefix {
+        x += grid.put_str(x, y, piece, *style, room(x));
+    }
+    if boxed.cells.is_empty() {
+        return;
+    }
+    for (c, cell) in boxed.cells.iter().enumerate() {
+        x += grid.put_str(x, y, if c == 0 { "│ " } else { " │ " }, QUOTE_BAR, room(x));
+        let (before, _) = pads(boxed, c, live::drawn_width(text, &live.runs, cell));
+        let start = x;
+        x = x.saturating_add(before);
+        let mut column = 0;
+        for (i, grapheme) in text[cell.clone()].grapheme_indices(true) {
+            let at = cell.start + i;
+            let style = live.at(at).1;
+            let here = x.saturating_add(u16::try_from(column).unwrap_or(u16::MAX));
+            column += put_grapheme(
+                grid,
+                (here, y, room(here)),
+                text,
+                at,
+                grapheme,
+                column,
+                style,
+                live,
+            );
+        }
+        x = start.saturating_add(boxed.widths[c]);
+    }
+    grid.put_str(x, y, " │", QUOTE_BAR, room(x));
+}
+
 /// Draws one row: its graphemes, the selection, and the cursor (after the
 /// last grapheme when it sits at the line's end), each grapheme as `live`
 /// says. Returns the column the cursor was drawn at, if on this row.
 fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live) -> Option<u16> {
+    // A boxed table's line: drawn whole, never holding the cursor.
+    if let Some(boxed) = live.boxed_at(row.range.start).filter(|_| !row.drawn) {
+        let prefix = live.layout.prefix(&boxed.first);
+        draw_boxed(grid, area, editor.text(), live, boxed, prefix);
+        return None;
+    }
     // Live mode's prefix, then the text right of it.
     let prefix = live.prefix(row.range.start);
     let code = if row.indent > 0 {
@@ -1546,7 +1661,6 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
         (false, false) => live.at(at).1,
     };
     let mut column = 0;
-    let mut buf = [0; ESCAPE_LEN];
     for (i, grapheme) in text[row.range.clone()].grapheme_indices(true) {
         let at = row.range.start + i;
         let style = style_at(at);
@@ -1557,65 +1671,8 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
         if at == editor.cursor() {
             cursor = Some(x);
         }
-        // Live mode: hidden markup takes no column, a fixed string stands
-        // for its run. The cursor's lines are always drawn as written.
-        match live.at(at).0 {
-            Show::Hidden => continue,
-            Show::Fixed(fixed) => {
-                column += usize::from(grid.put_str(x, area.y, fixed, style, room));
-                continue;
-            }
-            // Between two cells of a boxed table: padding, ` │ `, padding.
-            show @ Show::Cell { after, before } => {
-                // The paddings in slices of `SPACES`: one wider than it
-                // drew the ` │ ` too early (found in use).
-                let mut pieces = Vec::new();
-                repeat(&mut pieces, SPACES, after, Style::PLAIN);
-                pieces.push((" │ ", style));
-                repeat(&mut pieces, SPACES, before, Style::PLAIN);
-                let mut x = x;
-                for (piece, style) in pieces {
-                    x += grid.put_str(x, area.y, piece, style, area.right().saturating_sub(x));
-                }
-                column += show.columns().unwrap_or(0);
-                continue;
-            }
-            Show::Text => {}
-        }
-        match shape(grapheme) {
-            Shape::Text(g, _) => {
-                let used = grid.put_str(x, area.y, g, style, room);
-                // A web link's cells carry its address for the terminal
-                // (Ctrl+click), as in the viewer; the grid checks it again.
-                if let Some(link) = live.link(at).filter(|link| link.web)
-                    && let Some(target) = text.get(link.target.clone())
-                {
-                    let id = grid.add_link(target);
-                    grid.set_link(x, area.y, used, id);
-                }
-            }
-            Shape::Tab => {
-                let w = width_at(grapheme, column);
-                grid.put_str(x, area.y, &"    "[..w], style, room);
-            }
-            Shape::Escape => {
-                let dim = style.mods(style.mods.union(Mods::DIM));
-                let mut x = x;
-                for c in grapheme.chars() {
-                    let room = area.width.saturating_sub(x - area.x);
-                    x += grid.put_str(x, area.y, escape(c, &mut buf), dim, room);
-                }
-            }
-            Shape::Break => {}
-        }
-        column += width_at(grapheme, column);
-    }
-    // A boxed table's line: what follows its last cell (step LT3).
-    if row.ends_line {
-        let mut x = area.x + u16::try_from(column).unwrap_or(u16::MAX);
-        for (piece, style) in live.suffix(row.range.start) {
-            x += grid.put_str(x, area.y, piece, *style, area.right().saturating_sub(x));
-        }
+        let room = (x, area.y, room);
+        column += put_grapheme(grid, room, text, at, grapheme, column, style, live);
     }
     // A code line's gray box, to one column past its block's widest line.
     if let Some(widest) = code {
@@ -3165,8 +3222,19 @@ mod tests {
         );
         let (x, y) = find(&grid, "apple").unwrap();
         assert!(style_at(&grid, x, y).mods.contains(Mods::BOLD));
-        // Right after `Name`: its padding.
+        // Right after `Name`: its padding, so its text's end. A click on
+        // a cell's text lands there, in any column (step LW2); on the
+        // `├─┼─┤` line, at that line's start.
         assert_eq!(view.position_at(text, 10, 2, false), Some(8));
+        for word in ["120", "x", "日本"] {
+            let (x, y) = find(&grid, word).unwrap();
+            assert_eq!(
+                view.position_at(text, x, y, false),
+                text.find(word),
+                "{word}"
+            );
+        }
+        assert_eq!(view.position_at(text, 12, 3, false), text.find("> |:"));
 
         // Padding wider than `SPACES` (64 columns): the ` │ ` after it
         // stays at its column.

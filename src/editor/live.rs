@@ -42,20 +42,15 @@ pub enum Show {
     Hidden,
     /// This fixed string in their place (a rule's line).
     Fixed(&'static str),
-    /// Between two cells of a boxed table (step LT3, the view's): the
-    /// cell's padding after its text, ` │ `, and the next cell's padding
-    /// before its text, in columns.
-    Cell { after: u16, before: u16 },
 }
 
 impl Show {
-    /// The columns a fixed string or a cell border takes, drawn once at
-    /// its run's start; `None` for text as written or hidden.
+    /// The columns a fixed string takes, drawn once at its run's start;
+    /// `None` for text as written or hidden.
     pub fn columns(self) -> Option<usize> {
         match self {
             Show::Text | Show::Hidden => None,
             Show::Fixed(fixed) => Some(display_width(fixed)),
-            Show::Cell { after, before } => Some(usize::from(after) + 3 + usize::from(before)),
         }
     }
 }
@@ -481,7 +476,6 @@ mod tests {
                 Show::Text => &text[run.range.clone()],
                 Show::Hidden => "",
                 Show::Fixed(s) => s,
-                Show::Cell { .. } => " │ ",
             })
             .collect()
     }

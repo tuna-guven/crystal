@@ -52,7 +52,7 @@ viewer unboxes it). No security benefit; about 200 lines of code net
 | Step | What | Check |
 | --- | --- | --- |
 | LW1 (done) | Drawn rows by list: the 2-bit row marks become one ordered list of drawn rows before each line (a blank row, a border, later a table row's continuation), a row start's top bit and an ordinal saying which. A refactor: rows drawn as now. About 40 lines changed | All tests unchanged; the cursor property test with `PROPTEST_CASES=5000` |
-| LW2 | Table rows drawn whole: a boxed line is one row, not wrapped, drawn from its cells' ranges, padded by alignment (its `|---|` line as `├─┼─┤`); LT3's `Show::Cell`, hidden runs, prefixes and suffixes go. A click lands at the clicked cell's text. Same look as now | LT tests unchanged but the click; a click per column |
+| LW2 (done) | Table rows drawn whole: a boxed line is one row, not wrapped, drawn from its cells' ranges, padded by alignment (its `|---|` line as `├─┼─┤`); LT3's `Show::Cell`, hidden runs, prefixes and suffixes go. A click lands at the clicked cell's text. Same look as now | LT tests unchanged but the click; a click per column |
 | LW3 | Wide tables: column widths by `fit_columns` (made public in `md::render`), cells wrapped by `wrap_each` over their drawn text, trailing spaces dropped; continuation rows before the next line, ahead of its border | Unit tests: a wide table's rows, a tall cell in the last row, scrolling over continuation rows; the cursor property test |
 | LW4 | The comparison test gains a wide table; decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook; live property tests with `PROPTEST_CASES=5000` | Review of the diff: row starts, note text, `unsafe`, syscalls, dependencies |
 
