@@ -113,7 +113,7 @@ impl Editor {
     /// The table whose lines hold `at`, in live mode (step TB3), as the
     /// view boxes it: none above `LIVE_MAX`, where the view draws the
     /// text as written.
-    fn cells_at(&self, at: usize) -> Option<Cells> {
+    pub(super) fn cells_at(&self, at: usize) -> Option<Cells> {
         if !self.live || self.text().len() > LIVE_MAX {
             return None;
         }
@@ -154,6 +154,17 @@ impl Editor {
             _ => at,
         };
         self.move_to(at, select);
+    }
+
+    /// Tab and Shift+Tab in a table in live mode (step TB4): to the next
+    /// or the previous cell's start (`Cells::tab`), the selection dropped;
+    /// past the last or the first cell nothing happens, so a table never
+    /// gets a tab character or a new row from them.
+    pub(super) fn tab_cell(&mut self, cells: &Cells, forward: bool) {
+        if let Some(at) = cells.tab(self.cursor, forward) {
+            let at = self.snap(at);
+            self.move_to(at, false);
+        }
     }
 
     /// Home and End: the line's start or end; in a table's cell in live
@@ -285,7 +296,9 @@ mod tests {
     /// across cells. Not live: one grapheme, as always.
     #[test]
     fn arrows_move_through_live_table_cells() {
-        let text = "before\n| ab | c |\n|---|---|\n| d | é |\nafter";
+        // A blank line ends the table: `after` right below it would be
+        // one more row.
+        let text = "before\n| ab | c |\n|---|---|\n| d | é |\n\nafter";
         let at = |s: &str| text.find(s).unwrap();
         let (mut ed, mut clip) = editor(text);
         ed.set_live(true);
@@ -296,7 +309,7 @@ mod tests {
             seen.push(ed.cursor());
         }
         let (ab, c, d, e) = (at("ab"), at("c |"), at("d |"), at("é"));
-        let after = at("after");
+        let after = at("\n\nafter") + 1;
         let way = [ab, ab + 1, ab + 2, c, c + 1, d, d + 1, e, e + 2, after];
         assert_eq!(seen, way);
         let mut back = Vec::new();
@@ -340,5 +353,48 @@ mod tests {
         ed.jump_to(7);
         ed.key(Key::Right, &mut clip);
         assert_eq!(ed.cursor(), 7);
+    }
+
+    /// Tab and Shift+Tab in a live table (step TB4): cell to cell, row to
+    /// row, nothing at the ends, and undo still takes typing in a cell
+    /// back on its own. Outside a table, and not live, Tab types a tab;
+    /// Shift+Tab does nothing there.
+    #[test]
+    fn tabs_move_between_live_table_cells() {
+        let text = "| ab | c |\n|---|---|\n| d | e |\n\nafter";
+        let at = |s: &str| text.find(s).unwrap();
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(at("ab") + 1);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            ed.key(Key::Tab, &mut clip);
+            seen.push(ed.cursor());
+        }
+        assert_eq!(seen, [at("c |"), at("d |"), at("e |"), at("e |")]);
+        for _ in 0..4 {
+            ed.key(Key::BackTab, &mut clip);
+        }
+        assert_eq!(ed.cursor(), at("ab"));
+        assert_eq!(ed.text(), text);
+        // Typing, a Tab, more typing: two undo steps.
+        typed(&mut ed, &mut clip, "x");
+        ed.key(Key::Tab, &mut clip);
+        typed(&mut ed, &mut clip, "y");
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), text.replacen("ab", "xab", 1));
+        // Outside the table: a tab; Shift+Tab nothing.
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(text.len());
+        ed.key(Key::BackTab, &mut clip);
+        assert_eq!((ed.text(), ed.cursor()), (text, text.len()));
+        ed.key(Key::Tab, &mut clip);
+        assert_eq!(ed.text(), format!("{text}\t"));
+        // Not live: a tab in the cell.
+        let (mut ed, mut clip) = editor(text);
+        ed.jump_to(at("ab"));
+        ed.key(Key::Tab, &mut clip);
+        assert!(ed.text().starts_with("| \tab"));
     }
 }

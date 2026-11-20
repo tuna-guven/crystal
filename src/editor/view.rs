@@ -1108,12 +1108,12 @@ mod tests {
             text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}|```\n|\n\n|==\n|\\|a\\|b\\|\n\\|-\\|-\\|\n|\\|---\\|\n){0,60}",
             width in 3u16..30,
             height in 3u16..8,
-            moves in prop::collection::vec(0u8..5, 0..12),
+            moves in prop::collection::vec(0u8..7, 0..12),
         ) {
             let mut clip = Clipboard::default();
             let mut ed = Editor::new(&text).unwrap();
             // As the session opens a live editor: keys move through
-            // table cells (step TB3).
+            // table cells (steps TB3, TB4).
             ed.set_live(true);
             for m in moves {
                 let key = match m {
@@ -1121,7 +1121,9 @@ mod tests {
                     1 => Key::Down,
                     2 => Key::Left,
                     3 => Key::Right,
-                    _ => Key::ShiftDown,
+                    4 => Key::ShiftDown,
+                    5 => Key::Tab,
+                    _ => Key::BackTab,
                 };
                 ed.key(key, &mut clip);
             }

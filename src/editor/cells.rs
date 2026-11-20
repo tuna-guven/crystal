@@ -115,6 +115,24 @@ impl Cells {
         };
         next.map_or(Step::Leave, Step::To)
     }
+
+    /// Where Tab (`forward`) or Shift+Tab goes from `at` (step TB4): the
+    /// next or the previous cell's start, from a row's last cell to the
+    /// next row's first and back; from a pipe, the padding or the `|---|`
+    /// line, the nearest cell's start that way. `None` past the last or
+    /// the first cell: Tab never adds a row to a table.
+    pub fn tab(&self, at: usize, forward: bool) -> Option<usize> {
+        let here = self
+            .all()
+            .position(|cell| (cell.start..=cell.end).contains(&at));
+        let cell = match (here, forward) {
+            (Some(i), true) => self.all().nth(i + 1),
+            (Some(i), false) => self.all().nth(i.checked_sub(1)?),
+            (None, true) => self.all().find(|cell| cell.start > at),
+            (None, false) => self.all().rev().find(|cell| cell.end < at),
+        };
+        cell.map(|cell| cell.start)
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +174,29 @@ mod tests {
         assert!(Cells::around(text, text.len()).is_none());
         assert!(Cells::around("a | b\nc", 0).is_none());
         assert!(Cells::around("| a | b |\n|---|---|\n\nplain", 22).is_none());
+    }
+
+    /// Tab and Shift+Tab: every cell's start in order, row to row, and
+    /// back; nothing past the ends; from pipes and the `|---|` line the
+    /// nearest cell that way.
+    #[test]
+    fn tabs_go_cell_to_cell() {
+        let text = "| ab | c |\n|---|---|\n| d |  |\n| f | g |";
+        let found = Cells::around(text, 0).unwrap();
+        let at = |s: &str| text.find(s).unwrap();
+        let empty = found.rows[1][1].start;
+        let starts = [at("ab"), at("c |"), at("d |"), empty, at("f |"), at("g |")];
+        for pair in starts.windows(2) {
+            assert_eq!(found.tab(pair[0], true), Some(pair[1]));
+            assert_eq!(found.tab(pair[1], false), Some(pair[0]));
+        }
+        // From the middle or the end of a cell too.
+        assert_eq!(found.tab(at("ab") + 2, true), Some(at("c |")));
+        assert_eq!(found.tab(at("ab") + 1, false), None);
+        assert_eq!(found.tab(at("g |") + 1, true), None);
+        assert_eq!(found.tab(0, true), Some(at("ab")));
+        assert_eq!(found.tab(at("|---"), true), Some(at("d |")));
+        assert_eq!(found.tab(at("|---"), false), Some(at("c |")));
     }
 
     /// Tables in a quote, in a list item and with `\r\n` breaks.

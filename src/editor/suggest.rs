@@ -551,6 +551,24 @@ mod tests {
         assert_eq!(ed.text(), "see [[pzz\n]]");
     }
 
+    /// In a live table's cell (step TB4), Tab still links while the list
+    /// is open; once it is closed, Tab and Shift+Tab move between cells.
+    #[test]
+    fn tab_links_in_a_live_table_cell_while_the_list_is_open() {
+        let n = sample();
+        let (mut ed, mut clip) = at_end("| a | b |\n|---|---|\n| x | ");
+        ed.set_live(true);
+        send(&mut ed, &mut clip, &n, chars("[[gar"));
+        assert!(ed.suggestions().is_some());
+        send(&mut ed, &mut clip, &n, [Key::Tab]);
+        assert_eq!(ed.text(), "| a | b |\n|---|---|\n| x | [[Garden plan]]");
+        // The last cell: Tab stays; Shift+Tab goes to `x`.
+        send(&mut ed, &mut clip, &n, [Key::Tab]);
+        assert_eq!(ed.cursor(), ed.text().len());
+        send(&mut ed, &mut clip, &n, [Key::BackTab]);
+        assert_eq!(ed.cursor(), ed.text().find('x').unwrap());
+    }
+
     #[test]
     fn enter_and_tab_link_the_highlighted_note() {
         let n = sample();

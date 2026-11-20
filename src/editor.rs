@@ -266,12 +266,23 @@ impl Editor {
         self.last_press = None;
         self.notice = None;
         let quit_armed = std::mem::take(&mut self.quit_armed);
-        let typing = matches!(
-            key,
-            Key::Char(_) | Key::Enter | Key::Tab | Key::Backspace | Key::Delete
-        );
+        // Tab and Shift+Tab in a live table go from cell to cell (step
+        // TB4): a move, which ends a run of typing; elsewhere Tab types.
+        let cells = match key {
+            Key::Tab | Key::BackTab => self.cells_at(self.cursor),
+            _ => None,
+        };
+        let typing = cells.is_none()
+            && matches!(
+                key,
+                Key::Char(_) | Key::Enter | Key::Tab | Key::Backspace | Key::Delete
+            );
         if !typing {
             self.buffer.commit();
+        }
+        if let Some(cells) = cells {
+            self.tab_cell(&cells, key == Key::Tab);
+            return EditorAction::Stay;
         }
         match key {
             // A closer typed before the same closer steps over it.
