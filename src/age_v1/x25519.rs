@@ -17,6 +17,7 @@
 //! encrypting is an error, not a panic. Key strings use Crystal's
 //! zeroizing Bech32 (`super::bech32`).
 
+#[cfg(test)]
 use std::fmt;
 
 use subtle::ConstantTimeEq;
@@ -30,6 +31,7 @@ use super::{Error, FILE_KEY_BYTES, FileKey, base64, bech32};
 /// Bech32 human-readable parts, lowercase (`bech32::decode` returns them
 /// lowercase; the secret key is shown upper case).
 const SECRET_KEY_PREFIX: &str = "age-secret-key-";
+#[cfg(test)]
 const PUBLIC_KEY_PREFIX: &str = "age";
 
 pub(super) const X25519_RECIPIENT_TAG: &str = "X25519";
@@ -142,9 +144,16 @@ impl Identity {
     }
 }
 
-/// An age X25519 recipient (public key).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// An age X25519 recipient (public key). Private data (decision 0044):
+/// Debug and Display exist in test builds only, so program code cannot
+/// print it; Clone stays for `VaultRecipient::encrypt_with`, which wipes
+/// its copies.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct Recipient(PublicKey);
+
+#[cfg(not(test))]
+crate::model::assert_not_impl!(Recipient: std::fmt::Debug, std::fmt::Display);
 
 /// For `crypto::VaultRecipient`, which wipes the vault's recipient on drop
 /// (decision 0044). `PublicKey` derives
@@ -191,7 +200,8 @@ impl Recipient {
     }
 }
 
-/// `age1…`, lowercase.
+/// `age1…`, lowercase. Test builds only (see `Recipient`).
+#[cfg(test)]
 impl fmt::Display for Recipient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&bech32::encode(PUBLIC_KEY_PREFIX, self.0.as_bytes()))
