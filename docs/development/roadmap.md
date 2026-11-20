@@ -32,6 +32,30 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps LW1 to LW4 (live editing: wide tables as in the viewer)
+
+Asked for by the user (2026-11-20) after a complexity warning (option B
+of three; the viewer's unboxed fallback and leaving it as written were
+declined): a table too wide for the screen looks as in the viewer while
+the cursor is not in it, its columns narrowed by the viewer's
+`fit_columns` and each cell wrapped inside its column by the viewer's
+`wrap_each`, a row as tall as its tallest cell. Those extra rows show
+text from several cells side by side, so they cannot be ranges of the
+note like other rows. They are drawn rows like the border rows: no
+position, since the cursor is never in a boxed table (it unboxes the
+table). Every boxed row is drawn whole from its cells (LT3's per-byte
+cell borders go), so fitting and wide tables take one path. A table
+whose columns would keep fewer than 3 columns stays as written (the
+viewer unboxes it). No security benefit; about 200 lines of code net
+(about 300 added, 100 of LT3 removed) and 150 of tests.
+
+| Step | What | Check |
+| --- | --- | --- |
+| LW1 (done) | Drawn rows by list: the 2-bit row marks become one ordered list of drawn rows before each line (a blank row, a border, later a table row's continuation), a row start's top bit and an ordinal saying which. A refactor: rows drawn as now. About 40 lines changed | All tests unchanged; the cursor property test with `PROPTEST_CASES=5000` |
+| LW2 | Table rows drawn whole: a boxed line is one row, not wrapped, drawn from its cells' ranges, padded by alignment (its `|---|` line as `├─┼─┤`); LT3's `Show::Cell`, hidden runs, prefixes and suffixes go. A click lands at the clicked cell's text. Same look as now | LT tests unchanged but the click; a click per column |
+| LW3 | Wide tables: column widths by `fit_columns` (made public in `md::render`), cells wrapped by `wrap_each` over their drawn text, trailing spaces dropped; continuation rows before the next line, ahead of its border | Unit tests: a wide table's rows, a tall cell in the last row, scrolling over continuation rows; the cursor property test |
+| LW4 | The comparison test gains a wide table; decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook; live property tests with `PROPTEST_CASES=5000` | Review of the diff: row starts, note text, `unsafe`, syscalls, dependencies |
+
 ## Steps LT1 to LT4 (live editing: boxed tables; done)
 
 Asked for by the user (2026-11-20) after a complexity warning: a table

@@ -185,15 +185,12 @@ struct Live {
     skips: Vec<Range<usize>>,
     /// The empty line after a final line break is not drawn either.
     skip_end: bool,
-    /// The lines the viewer's added blank row goes before (step LV2),
-    /// sorted: each a line drawn, past any skipped ones.
-    gaps: Vec<usize>,
-    /// The boxed tables' border rows (step LT2), sorted by the line they
-    /// go before: a bottom border, past any skipped lines (the text's end
-    /// after the last line), and a top or inner border; each with its
-    /// pieces in `layout.pieces`, the line's prefix first.
-    bottoms: Vec<(usize, Range<u32>)>,
-    borders: Vec<(usize, Range<u32>)>,
+    /// The rows drawn before a line that the note has no line for (steps
+    /// LV2, LT2, LW1), sorted by that line (a line drawn, past any
+    /// skipped ones; the text's end after the last line), each line's in
+    /// order: a table's bottom border, the viewer's blank row, a table's
+    /// top or inner border.
+    drawn: Vec<(usize, Vec<Drawn>)>,
     /// The boxed tables' lines (step LT3): runs drawn in place of the
     /// parser's (their pipes and spaces hidden or drawn as `Show::Cell`,
     /// the `|---|` line hidden), sorted; and by line start, the pieces
@@ -242,15 +239,26 @@ fn shift(folds: &mut Vec<usize>, change: Change) {
     });
 }
 
-/// A row start's two top bits mark a row the viewer draws before the line
-/// starting at the rest, a row with no text of the note (steps LV2, LT2).
-/// Notes are far smaller, so no offset has them. Before one line they come
-/// in this order: a table's bottom border, the viewer's blank row, a
-/// table's top or inner border.
-const MARK: usize = 3 << (usize::BITS - 2);
-const BOTTOM: usize = 1 << (usize::BITS - 2);
-const GAP: usize = 2 << (usize::BITS - 2);
-const BORDER: usize = MARK;
+/// A row start with this bit is a drawn row (`Live::drawn`, steps LV2,
+/// LT2, LW1): the line it goes before in the bits under `ORDINAL`, which
+/// of that line's drawn rows from `ORDINAL` up. Notes (at most 8 MiB)
+/// are far smaller than `ORDINAL`, so no offset has these bits.
+const MARK: usize = 1 << (usize::BITS - 1);
+const ORDINAL: usize = 1 << 40;
+
+/// The line a row start is on, or goes before.
+fn line_of(at: usize) -> usize {
+    if at & MARK == 0 { at } else { at % ORDINAL }
+}
+
+/// A row the note has no line for (steps LV2, LT2, LW1).
+#[derive(Clone)]
+enum Drawn {
+    /// The viewer's blank row between two blocks.
+    Gap,
+    /// A table's border: pieces of `Layout::pieces`, its prefix first.
+    Pieces(Range<u32>),
+}
 
 /// Indents are slices of this.
 const SPACES: &str = "                                                                ";
@@ -345,6 +353,20 @@ fn skipped(
         }
     }
     (skips, skip_end)
+}
+
+/// The drawn rows grouped by the line they go before, in their order
+/// (`rank`, then as found), sorted by line (step LW1).
+fn by_line(mut drawn: Vec<(usize, u8, Drawn)>) -> Vec<(usize, Vec<Drawn>)> {
+    drawn.sort_by_key(|&(line, rank, _)| (line, rank));
+    let mut out: Vec<(usize, Vec<Drawn>)> = Vec::new();
+    for (line, _, row) in drawn {
+        match out.last_mut() {
+            Some((last, rows)) if *last == line => rows.push(row),
+            _ => out.push((line, vec![row])),
+        }
+    }
+    out
 }
 
 /// Adds a table border's pieces to `pieces` (step LT2): `prefix`, then
@@ -520,8 +542,13 @@ impl Live {
         let raw = merged(raw);
         let (skips, skip_end) = skipped(&parsed.layout, text, cursor, selection, &raw);
         // A gap before a skipped line (a fence) goes before the next line
-        // drawn; none inside a folded section or past the text.
-        let mut gaps: Vec<usize> = Vec::new();
+        // drawn; none inside a folded section or past the text. Each
+        // drawn row: its line, its place among that line's, the row.
+        let mut drawn: Vec<(usize, u8, Drawn)> = Vec::new();
+        // Their order before one line.
+        const BOTTOM: u8 = 0;
+        const GAP: u8 = 1;
+        const BORDER: u8 = 2;
         for line in parsed.layout.lines.iter().filter(|line| line.gap) {
             let mut at = line.markup.start;
             while let Some(skip) = skips.iter().find(|r| r.start == at) {
@@ -532,14 +559,13 @@ impl Live {
             let folded = folds
                 .iter()
                 .any(|f| f.hidden.contains(&at) || f.hidden.end == at);
-            if at < text.len() && !folded && gaps.last() != Some(&at) {
-                gaps.push(at);
+            if at < text.len() && !folded && drawn.last().is_none_or(|d| d.0 != at) {
+                drawn.push((at, GAP, Drawn::Gap));
             }
         }
         // Boxed tables: their border rows, none in a fold or right after
         // one (step LT2).
         let mut layout = parsed.layout;
-        let (mut bottoms, mut borders) = (Vec::new(), Vec::new());
         let (mut cells, mut firsts, mut suffixes) = (Vec::new(), Vec::new(), Vec::new());
         let open = |at: usize| {
             !folds
@@ -576,11 +602,11 @@ impl Live {
             }
             let widths = &table.widths;
             let top = border(&mut layout.pieces, &prefix, widths, ["┌─", "─┬─", "─┐"]);
-            borders.push((start, top));
+            drawn.push((start, BORDER, Drawn::Pieces(top)));
             // Between two body rows, as the viewer draws them.
             for &(row, _) in table.rows.iter().skip(2) {
                 let inner = border(&mut layout.pieces, &prefix, widths, ["├─", "─┼─", "─┤"]);
-                borders.push((start_of(row), inner));
+                drawn.push((start_of(row), BORDER, Drawn::Pieces(inner)));
             }
             let mut at = next;
             while let Some(skip) = skips.iter().find(|r| r.start == at) {
@@ -588,7 +614,7 @@ impl Live {
             }
             if open(at) {
                 let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
-                bottoms.push((at, bottom));
+                drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
             }
             // Its lines (step LT3). The `|---|` line: `├─┼─┤` in place of
             // its text.
@@ -682,19 +708,12 @@ impl Live {
             links,
             skips,
             skip_end,
-            gaps,
-            bottoms,
-            borders,
+            drawn: by_line(drawn),
             cells,
             firsts,
             suffixes,
             code: parsed.code,
         }
-    }
-
-    /// Whether the viewer's added blank row goes before the line at `at`.
-    fn gap_before(&self, at: usize) -> bool {
-        self.gaps.binary_search(&at).is_ok()
     }
 
     /// Where the next row starts after a line break that ends at `at`:
@@ -722,40 +741,44 @@ impl Live {
         (!gone || first & MARK != 0).then_some(first)
     }
 
-    /// The first row of the line at `line`: the first marked row before
-    /// it (step LT2), or the line itself.
+    /// The first row of the line at `line`: the first drawn row before
+    /// it, or the line itself.
     fn first_row(&self, line: usize) -> usize {
-        self.after(line, 0).unwrap_or(line)
-    }
-
-    /// The marked row after the one marked `mark` before the line at
-    /// `line` (0: the first), if any.
-    fn after(&self, line: usize, mark: usize) -> Option<usize> {
-        [BOTTOM, GAP, BORDER]
-            .into_iter()
-            .find(|&m| m > mark && self.marked(line | m))
-            .map(|m| line | m)
-    }
-
-    /// Whether the marked row `at` is there.
-    fn marked(&self, at: usize) -> bool {
-        match at & MARK {
-            GAP => self.gap_before(at & !MARK),
-            0 => false,
-            _ => self.border(at).is_some(),
+        if self.before(line).is_empty() {
+            line
+        } else {
+            MARK | line
         }
     }
 
-    /// A border row's pieces: the bottom border, or the top or inner
-    /// border, before the line of the row start `at`.
-    fn border(&self, at: usize) -> Option<&[Piece]> {
-        let rows = match at & MARK {
-            BOTTOM => &self.bottoms,
-            BORDER => &self.borders,
-            _ => return None,
-        };
-        let i = rows.binary_search_by_key(&(at & !MARK), |r| r.0).ok()?;
-        Some(self.layout.prefix(&rows[i].1))
+    /// The drawn rows before the line at `line`, in order.
+    fn before(&self, line: usize) -> &[Drawn] {
+        match self.drawn.binary_search_by_key(&line, |(l, _)| *l) {
+            Ok(i) => &self.drawn[i].1,
+            Err(_) => &[],
+        }
+    }
+
+    /// The drawn row the row start `at` is, if it is one and still there.
+    fn drawn_row(&self, at: usize) -> Option<&Drawn> {
+        if at & MARK == 0 {
+            return None;
+        }
+        self.before(line_of(at)).get((at & !MARK) / ORDINAL)
+    }
+
+    /// The drawn row after the drawn row `at`, before the same line.
+    fn next_drawn(&self, at: usize) -> Option<usize> {
+        let next = at + ORDINAL;
+        self.drawn_row(next).is_some().then_some(next)
+    }
+
+    /// A drawn row's pieces (a table's border); none for a blank row.
+    fn pieces(&self, at: usize) -> &[Piece] {
+        match self.drawn_row(at) {
+            Some(Drawn::Pieces(range)) => self.layout.prefix(range),
+            _ => &[],
+        }
     }
 
     /// The skipped lines `at` is in, if any.
@@ -881,10 +904,10 @@ struct Row {
     /// Columns left of its text for live mode's prefix (0 when the prefix
     /// would leave no room).
     indent: usize,
-    /// A marked row (steps LV2, LT2), its mark: the viewer's blank row
-    /// or a table's border, no text of the note; it holds no position, a
-    /// click there goes to the line below. 0 for a row of text.
-    mark: usize,
+    /// A drawn row (steps LV2, LT2, LW1): the viewer's blank row or a
+    /// table's border, no text of the note; it holds no position, a click
+    /// there goes to the line below.
+    drawn: bool,
 }
 
 impl Row {
@@ -895,7 +918,7 @@ impl Row {
         // ending the text is followed by no line, at most a table's
         // bottom border: the text's end is its own.
         let end = if self.ends_line {
-            match self.next.map(|next| next & !MARK) {
+            match self.next.map(line_of) {
                 Some(next) if next > self.range.end => next,
                 _ => usize::MAX,
             }
@@ -910,16 +933,16 @@ impl Row {
 /// grapheme wider than a whole row gets a row of its own.
 fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
     if start & MARK != 0 {
-        let line = (start & !MARK).min(text.len());
-        // The next marked row, else the line, unless past the text.
+        let line = line_of(start).min(text.len());
+        // The next drawn row, else the line, unless past the text.
         let gone = line >= text.len() && (live.skip_end || !text.ends_with('\n'));
-        let next = live.after(line, start & MARK);
+        let next = live.next_drawn(start);
         return Row {
             range: line..line,
             next: next.or((!gone).then_some(line)),
             ends_line: false,
             indent: 0,
-            mark: start & MARK,
+            drawn: true,
         };
     }
     // Live mode's prefix takes its columns first, if text still fits.
@@ -938,7 +961,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 next,
                 ends_line: true,
                 indent,
-                mark: 0,
+                drawn: false,
             };
         }
         let w = live.width(at, grapheme, column);
@@ -948,19 +971,20 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 next: Some(at),
                 ends_line: false,
                 indent,
-                mark: 0,
+                drawn: false,
             };
         }
         column += w;
     }
     // A boxed table's bottom border may follow the last line.
-    let next = live.after(text.len(), 0).filter(|_| !text.ends_with('\n'));
+    let next = Some(live.first_row(text.len()))
+        .filter(|&first| first & MARK != 0 && !text.ends_with('\n'));
     Row {
         range: start..text.len(),
         next,
         ends_line: true,
         indent,
-        mark: 0,
+        drawn: false,
     }
 }
 
@@ -972,13 +996,13 @@ fn line_start(text: &str, at: usize) -> usize {
 
 /// The start of the row the cursor at `at` is drawn on.
 fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
-    // A marked row (a kept scroll position): itself while it is there.
+    // A drawn row (a kept scroll position): itself while it is there.
     if at & MARK != 0 {
-        let line = at & !MARK;
-        if live.marked(at) && text.is_char_boundary(line.min(text.len())) {
+        let line = line_of(at).min(text.len());
+        if live.drawn_row(at).is_some() && text.is_char_boundary(line) {
             return at;
         }
-        return row_start(text, line.min(text.len()), width, live);
+        return row_start(text, line, width, live);
     }
     // Inside a folded section: its heading's row.
     // In skipped lines: the next row drawn (no row holds `at` itself).
@@ -1177,7 +1201,7 @@ impl View {
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
-        let mut number = lines::count(&text[..line_start(text, self.top & !MARK)]);
+        let mut number = lines::count(&text[..line_start(text, line_of(self.top))]);
         let mut start = Some(self.top);
         self.heading_rows.clear();
         for y in area.y..area.bottom() {
@@ -1186,9 +1210,9 @@ impl View {
             start = row.next;
             // The viewer's added blank row: nothing to draw; a table's
             // border: its pieces.
-            if row.mark != 0 {
+            if row.drawn {
                 let mut x = area.x;
-                for (piece, style) in self.look.border(next).unwrap_or(&[]) {
+                for (piece, style) in self.look.pieces(next) {
                     x += grid.put_str(x, y, piece, *style, area.right().saturating_sub(x));
                 }
                 continue;
@@ -1345,7 +1369,7 @@ impl View {
         }
         let y = row.clamp(area.y, area.bottom() - 1);
         let width = usize::from(area.width - 1);
-        let top = if text.is_char_boundary(self.top & !MARK) {
+        let top = if text.is_char_boundary(line_of(self.top)) {
             row_start(text, self.top, width, &self.look)
         } else {
             0
@@ -1386,14 +1410,14 @@ impl View {
     pub fn line_row(&self, text: &str, at: usize) -> Option<isize> {
         let area = self.area?;
         let width = usize::from(area.width - 1);
-        if !text.is_char_boundary(self.top & !MARK) || !text.is_char_boundary(at) {
+        if !text.is_char_boundary(line_of(self.top)) || !text.is_char_boundary(at) {
             return None;
         }
         let line = line_start(text, at);
         let mut start = Some(self.top);
         for y in 0..area.height {
             let row = row_at(text, start?, width, &self.look);
-            if row.mark == 0 && row.range.start == line {
+            if !row.drawn && row.range.start == line {
                 return isize::try_from(y).ok();
             }
             start = row.next;
@@ -1411,7 +1435,7 @@ impl View {
 
     /// Moves `top` so the cursor's row is on screen.
     fn scroll(&mut self, text: &str, cursor: usize, width: usize, rows: usize) {
-        if !text.is_char_boundary(self.top & !MARK) {
+        if !text.is_char_boundary(line_of(self.top)) {
             self.top = 0;
         }
         // An edit or a new width may have moved the row starts. At the
@@ -1422,7 +1446,7 @@ impl View {
         if self.top == 0 {
             self.top = live.first_row(0);
         }
-        if cursor < self.top & !MARK {
+        if cursor < line_of(self.top) {
             self.top = row_start(text, cursor, width, live);
             return;
         }
