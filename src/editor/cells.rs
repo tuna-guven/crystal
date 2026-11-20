@@ -6,10 +6,9 @@
 //! the same parse the view draws from (`live::parse`, `Layout::tables`),
 //! made again on a key, never kept, so nothing has to follow edits; the
 //! parse runs only when the cursor's line holds a `|`, so other keys cost
-//! nothing. A cell counts only inside its own line: the parser places a
-//! short row's missing cells past the line's break, where they are no
-//! place of the row (the view's rule too, `view::table`). The `|---|`
-//! line has no cells. A body row the parser continues without any `|`
+//! nothing. Every cell the layout records is a place of its row (a short
+//! row's missing cells are left out there). The `|---|` line has no
+//! cells. A body row the parser continues without any `|`
 //! (a lazy row) is not found from its own line: keys move there as on
 //! any line.
 //!
@@ -18,6 +17,8 @@
 //! boundary; outside a table they say nothing and keys work as always.
 
 use std::ops::Range;
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::live::{self, line_end};
 
@@ -57,19 +58,7 @@ impl Cells {
             let first = line_start(table.lines.start);
             let end = line_end(text, line_start(table.lines.end.checked_sub(1)?));
             (first..=end).contains(&at).then(|| Self {
-                rows: table
-                    .rows
-                    .iter()
-                    .map(|(line, cells)| {
-                        let start = line_start(*line);
-                        let end = line_end(text, start);
-                        cells
-                            .iter()
-                            .filter(|cell| start <= cell.start && cell.end <= end)
-                            .cloned()
-                            .collect()
-                    })
-                    .collect(),
+                rows: table.rows.iter().map(|(_, cells)| cells.clone()).collect(),
                 start: first,
                 end,
             })
@@ -114,6 +103,57 @@ impl Cells {
                 .map(|cell| cell.end)
         };
         next.map_or(Step::Leave, Step::To)
+    }
+
+    /// Where Up (`down` false) or Down goes from `at` in a cell (step
+    /// TB5): the same column's cell in the row above or below (that row's
+    /// last cell if it is shorter), `goal` graphemes into its text, or as
+    /// many as `at` is into its own, clamped to the text; with that goal,
+    /// kept for the next row. `None` outside a cell, from the first row
+    /// up or the last row down: the editor moves by line then, out of the
+    /// table.
+    pub fn vertical(
+        &self,
+        text: &str,
+        at: usize,
+        down: bool,
+        goal: Option<usize>,
+    ) -> Option<(usize, usize)> {
+        let (r, c) = self.rows.iter().enumerate().find_map(|(r, row)| {
+            let c = row
+                .iter()
+                .position(|cell| (cell.start..=cell.end).contains(&at))?;
+            Some((r, c))
+        })?;
+        let cell = &self.rows[r][c];
+        let goal = goal.unwrap_or_else(|| {
+            text.get(cell.start..at)
+                .map_or(0, |s| s.graphemes(true).count())
+        });
+        let row = self
+            .rows
+            .get(if down { r + 1 } else { r.checked_sub(1)? })?;
+        let target = row.get(c).or(row.last())?;
+        let offset: usize = text
+            .get(target.clone())?
+            .graphemes(true)
+            .take(goal)
+            .map(str::len)
+            .sum();
+        Some((target.start + offset, goal))
+    }
+
+    /// The position in a cell's text nearest `at` on `at`'s line, for a
+    /// cursor that landed on a hidden pipe or the padding there (step
+    /// TB5): `at` itself if a cell holds it, else the nearest cell's start
+    /// or end. `None` on a line without cells (the `|---|` line).
+    pub fn nearest(&self, text: &str, at: usize) -> Option<usize> {
+        let start = text.get(..at)?.rfind('\n').map_or(0, |i| i + 1);
+        let end = line_end(text, start);
+        self.all()
+            .filter(|cell| start <= cell.start && cell.end <= end)
+            .map(|cell| at.clamp(cell.start, cell.end))
+            .min_by_key(|&to| to.abs_diff(at))
     }
 
     /// Where Tab (`forward`) or Shift+Tab goes from `at` (step TB4): the
@@ -197,6 +237,32 @@ mod tests {
         assert_eq!(found.tab(0, true), Some(at("ab")));
         assert_eq!(found.tab(at("|---"), true), Some(at("d |")));
         assert_eq!(found.tab(at("|---"), false), Some(at("c |")));
+    }
+
+    /// Up and Down: the same column's cell a row away (the `|---|` line
+    /// has none), the row's last cell when it is shorter, the offset kept
+    /// as a goal across a short cell; none past the first or last row.
+    /// A cursor on a pipe or padding: the nearest cell on its line.
+    #[test]
+    fn up_and_down_go_row_to_row() {
+        let text = "| ab | cde |\n|---|---|\n| f | g |\n| hij |";
+        let found = Cells::around(text, 0).unwrap();
+        let at = |s: &str| text.find(s).unwrap();
+        let (c, g, h) = (at("cde"), at("g |"), at("hij"));
+        assert_eq!(found.vertical(text, c + 2, true, None), Some((g + 1, 2)));
+        assert_eq!(found.vertical(text, g + 1, true, Some(2)), Some((h + 2, 2)));
+        assert_eq!(
+            found.vertical(text, g + 1, false, Some(2)),
+            Some((c + 2, 2))
+        );
+        assert_eq!(found.vertical(text, h, true, None), None);
+        assert_eq!(found.vertical(text, at("ab"), false, None), None);
+        assert_eq!(found.vertical(text, 0, true, None), None, "on a pipe");
+        // The nearest cell on the line.
+        assert_eq!(found.nearest(text, 0), Some(at("ab")));
+        assert_eq!(found.nearest(text, at("ab") + 3), Some(at("ab") + 2));
+        assert_eq!(found.nearest(text, at(" |\n|---")), Some(c + 3));
+        assert_eq!(found.nearest(text, at("|---")), None);
     }
 
     /// Tables in a quote, in a list item and with `\r\n` breaks.

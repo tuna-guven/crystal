@@ -80,8 +80,10 @@ pub struct Table {
     /// Each column's alignment; there are as many columns.
     pub aligns: Vec<Alignment>,
     /// Each row's line (an index of `Layout::lines`) and its cells'
-    /// text, without the spaces around it; a short row gets empty cells
-    /// at its end, as the parser gives them.
+    /// text, without the spaces around it. A short row has fewer: the
+    /// parser's empty cells for its missing columns are left out (step
+    /// TB5), as they are no place in the row (they sit at its end, past
+    /// its line break), so every cell is a place the cursor may be.
     pub rows: Vec<(usize, Vec<Range<usize>>)>,
     /// Each column's widest cell as drawn, in columns (`live::parse`
     /// sets it from the runs: hidden markup takes none).
@@ -139,8 +141,9 @@ pub struct Builder<'a> {
     blank_since: bool,
     /// The next line laid out gets `Line::gap`.
     gap_next: bool,
-    /// The table being read.
+    /// The table being read, and where its current row ends.
     table: Option<Table>,
+    row_end: usize,
     /// The last prefix interned, to share it with the next line.
     last: Range<u32>,
     /// A prefix being built, kept to spare an allocation per line.
@@ -160,6 +163,7 @@ impl<'a> Builder<'a> {
             hide_bare: false,
             heading: None,
             table: None,
+            row_end: 0,
             last: 0..0,
             scratch: Vec::new(),
             ended: false,
@@ -205,6 +209,7 @@ impl<'a> Builder<'a> {
                 // A row starts at its line's content: its line is the
                 // last laid out.
                 Tag::TableHead | Tag::TableRow => {
+                    self.row_end = range.end;
                     self.content(range);
                     let line = self.layout.lines.len().saturating_sub(1);
                     if let Some(table) = &mut self.table {
@@ -311,8 +316,11 @@ impl<'a> Builder<'a> {
                 }
             }
             TagEnd::TableCell => {
+                // A missing column's cell: empty, at the row's very end
+                // (a real empty cell, `||`, lies before it).
+                let missing = range.is_empty() && range.start >= self.row_end;
                 let row = self.table.as_mut().and_then(|t| t.rows.last_mut());
-                if let Some((_, cells)) = row {
+                if let Some((_, cells)) = row.filter(|_| !missing) {
                     cells.push(trimmed(self.text, range));
                 }
             }

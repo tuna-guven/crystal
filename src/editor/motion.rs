@@ -183,8 +183,25 @@ impl Editor {
     }
 
     /// Up, Down, PgUp and PgDn: `count` lines, to the goal column (in
-    /// graphemes) or the end of a shorter line.
+    /// graphemes) or the end of a shorter line. In a table's cell in live
+    /// mode, Up and Down go row by row (`Cells::vertical`), the goal the
+    /// offset in the cell; out of its first or last row, by line again,
+    /// with that goal. A move by line that lands on a table's hidden pipe
+    /// or padding (entering it, or by pages) goes on to the nearest cell
+    /// on that line (`Cells::nearest`), its goal dropped, so the cursor is
+    /// never where the box hides it (step TB5).
     pub(super) fn vertical(&mut self, down: bool, count: usize, select: bool) {
+        if count == 1 {
+            let cells = self.cells_at(self.cursor);
+            let row =
+                cells.and_then(|cells| cells.vertical(self.text(), self.cursor, down, self.goal));
+            if let Some((at, goal)) = row {
+                let at = self.snap(at);
+                self.move_to(at, select);
+                self.goal = Some(goal);
+                return;
+            }
+        }
         let start = self.line_start(self.cursor);
         let goal = self.goal.unwrap_or_else(|| {
             self.text()
@@ -215,6 +232,20 @@ impl Editor {
         let offset: usize = text.graphemes(true).take(goal).map(str::len).sum();
         self.move_to(line + offset, select);
         self.goal = Some(goal);
+        let cells = self.cells_at(self.cursor);
+        if let Some(cells) = cells.filter(|cells| cells.cell_at(self.cursor).is_none()) {
+            let to =
+                cells
+                    .nearest(self.text(), self.cursor)
+                    .or(match cells.step(self.cursor, down) {
+                        Step::To(to) => Some(to),
+                        _ => None,
+                    });
+            if let Some(to) = to {
+                let to = self.snap(to);
+                self.move_to(to, select);
+            }
+        }
     }
 }
 
@@ -396,5 +427,60 @@ mod tests {
         ed.jump_to(at("ab"));
         ed.key(Key::Tab, &mut clip);
         assert!(ed.text().starts_with("| \tab"));
+    }
+
+    /// Up and Down in a live table (step TB5): the same column's cell a row
+    /// away (a short row's last cell when it has no such column), the
+    /// offset kept across a short cell; out of the first and last
+    /// rows by line, with that offset as the goal column; entering from a
+    /// line around, or by a page, at the nearest cell, never on a pipe.
+    /// Shift selects. Not live: by line, as always.
+    #[test]
+    fn up_and_down_move_through_live_table_rows() {
+        let text = "before\n| ab | cde |\n|---|---|\n| f | g |\n| hij |\n\nafter";
+        let at = |s: &str| text.find(s).unwrap();
+        let (c, f, g, h) = (at("cde"), at("f |"), at("g |"), at("hij"));
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(c + 2);
+        let mut seen = Vec::new();
+        for key in [Key::Down, Key::Down, Key::Up, Key::Up, Key::Up] {
+            ed.key(key, &mut clip);
+            seen.push(ed.cursor());
+        }
+        // The short row's only cell is column 0, so Up from it goes to
+        // `f`, then `ab`; the offset 2 is kept throughout.
+        assert_eq!(seen, [g + 1, h + 2, f + 1, at("ab") + 2, 2]);
+        // Entering from above at column 0: the first cell, not the pipe.
+        ed.jump_to(0);
+        ed.key(Key::Down, &mut clip);
+        assert_eq!(ed.cursor(), at("ab"));
+        // Out of the last row, and back in from below.
+        ed.jump_to(h + 1);
+        ed.key(Key::Down, &mut clip);
+        assert_eq!(ed.cursor(), at("\n\nafter") + 1);
+        // Down and back up: the line's goal column brings it back.
+        ed.key(Key::Down, &mut clip);
+        ed.key(Key::Up, &mut clip);
+        ed.key(Key::Up, &mut clip);
+        assert_eq!(ed.cursor(), h + 1);
+        // From below at column 0: on a pipe, so on to the nearest cell.
+        ed.jump_to(at("after"));
+        ed.key(Key::Up, &mut clip);
+        ed.key(Key::Up, &mut clip);
+        assert_eq!(ed.cursor(), h);
+        // Shift selects across rows.
+        ed.jump_to(at("ab"));
+        ed.key(Key::ShiftDown, &mut clip);
+        assert_eq!(selected(&ed), &text[at("ab")..at("f |")]);
+        // A page landing in the table: in a cell.
+        ed.set_page(2);
+        ed.jump_to(0);
+        ed.key(Key::PageDown, &mut clip);
+        assert!(ed.cursor() == at("f |"), "{}", ed.cursor());
+        // Not live: the line's start, a pipe.
+        let (mut ed, mut clip) = editor(text);
+        ed.key(Key::Down, &mut clip);
+        assert_eq!(ed.cursor(), at("| ab"));
     }
 }

@@ -27,7 +27,7 @@ use super::look::{BORDER, BOTTOM, CONTINUED, Drawn, Editing, Hiding, Look};
 use super::rows::{Row, RowStart};
 use super::{drawn_style, put_grapheme};
 use crate::editor::Editor;
-use crate::editor::live::layout::{Layout, Line, Piece, Table};
+use crate::editor::live::layout::{Layout, Piece, Table};
 use crate::editor::live::{self, Run, Show, line_end};
 use crate::md::render::{DASHES, QUOTE_BAR, fit_columns};
 use crate::ui::grid::{Grid, Style, display_width};
@@ -53,10 +53,9 @@ pub struct Boxed {
     /// where a cell has no more lines, or a short row lacks it). One row
     /// unless a cell wraps; none for the `|---|` line.
     rows: Vec<Vec<Range<usize>>>,
-    /// Each cell's text, without the spaces around it (`Table::rows`),
-    /// if it is in the line (`in_line`): where the cursor may be; none
-    /// for the `|---|` line.
-    cells: Vec<Option<Range<usize>>>,
+    /// Each cell's text, without the spaces around it (`Table::rows`):
+    /// where the cursor may be; none for the `|---|` line.
+    cells: Vec<Range<usize>>,
 }
 
 impl Boxed {
@@ -66,10 +65,10 @@ impl Boxed {
     /// starts at or before `at` (a space a wrap dropped stays on the row
     /// before it). `None` on a pipe, padding, or the `|---|` line.
     pub fn spot(&self, at: usize) -> Option<(usize, usize)> {
-        let c = self.cells.iter().position(|cell| {
-            cell.as_ref()
-                .is_some_and(|cell| (cell.start..=cell.end).contains(&at))
-        })?;
+        let c = self
+            .cells
+            .iter()
+            .position(|cell| (cell.start..=cell.end).contains(&at))?;
         // A cell's further rows are never empty; an empty range there is
         // a shorter cell's filler.
         let k = (1..self.rows.len())
@@ -83,41 +82,21 @@ impl Boxed {
     }
 }
 
-/// The cells of a row on the line starting at `start` that lie in that
-/// line, by column (step TB1): the parser places a short row's missing
-/// cells past the line's break, where they are no place of the row.
-fn in_line(text: &str, start: usize, cells: &[Range<usize>]) -> Vec<Option<Range<usize>>> {
-    let end = line_end(text, start);
-    cells
-        .iter()
-        .map(|cell| (start <= cell.start && cell.end <= end).then(|| cell.clone()))
-        .collect()
-}
-
 /// Whether an edited table stays boxed (step TB1): the cursor is in the
-/// text of one of its cells (`in_line`) and a selection, if any, stays
-/// inside its lines, from `start` to `end`. Anywhere else in it (a hidden
-/// pipe, the padding, the `|---|` line) the cursor would not be drawn, and
-/// a selection reaching out of it would show its hidden bytes as nothing,
+/// text of one of its cells and a selection, if any, stays inside its
+/// lines, from `start` to `end`. Anywhere else in it (a hidden pipe, the
+/// padding, the `|---|` line) the cursor would not be drawn, and a
+/// selection reaching out of it would show its hidden bytes as nothing,
 /// so the table is drawn as written then, as before step TB1.
-fn in_cells(
-    table: &Table,
-    lines: &[Line],
-    text: &str,
-    editing: Editing,
-    start: usize,
-    end: usize,
-) -> bool {
+fn in_cells(table: &Table, editing: Editing, start: usize, end: usize) -> bool {
     let selection = editing.selection;
     let inside = selection.is_empty() || (start <= selection.start && selection.end <= end);
     inside
-        && table.rows.iter().any(|(line, cells)| {
-            let start = lines.get(*line).map_or(text.len(), |l| l.markup.start);
-            in_line(text, start, cells)
-                .iter()
-                .flatten()
-                .any(|cell| (cell.start..=cell.end).contains(&editing.cursor))
-        })
+        && table
+            .rows
+            .iter()
+            .flat_map(|(_, cells)| cells)
+            .any(|cell| (cell.start..=cell.end).contains(&editing.cursor))
 }
 
 /// Whether every grapheme of the table's cells is drawn as wide as it is
@@ -210,7 +189,7 @@ pub fn tables(
         // Edited: the last line's wrapped rows go before the line after
         // it, so without one (a fold right after) the cursor could be on
         // a row not drawn.
-        if edited && (!in_cells(table, lines, text, editing, start, end) || after.is_none()) {
+        if edited && (!in_cells(table, editing, start, end) || after.is_none()) {
             continue;
         }
         if !measurable(text, table) {
@@ -271,9 +250,7 @@ pub fn tables(
                 widths: widths.clone(),
                 aligns: table.aligns.clone(),
                 rows,
-                cells: cells.map_or_else(Vec::new, |(_, cells)| {
-                    in_line(text, line.markup.start, cells)
-                }),
+                cells: cells.map(|(_, cells)| cells.clone()).unwrap_or_default(),
             });
         }
     }
@@ -298,13 +275,9 @@ fn wrapped(
         .map(|(c, &width)| {
             let cell = cells.get(c).cloned().unwrap_or(end..end);
             // An empty cell keeps its place, where the cursor is drawn in
-            // it (step TB1); a missing one, placed past the line, has none.
+            // it (step TB1).
             if cell.is_empty() {
-                return if cell.end <= end {
-                    vec![cell]
-                } else {
-                    Vec::new()
-                };
+                return vec![cell];
             }
             // The cell's shown parts, each with where it starts.
             let first = runs.partition_point(|run| run.range.end <= cell.start);

@@ -1931,14 +1931,15 @@ mod tests {
         }
     }
 
-    /// A short row's missing cell is no place in the row (step TB1, found
-    /// by the property test): the parser puts it past the row's line
-    /// break, so the cursor there is on the next line, drawn once, there.
+    /// A short row's missing cell is no place in the row (steps TB1, TB5;
+    /// found by the property test): the parser puts it past the row's
+    /// line break, and the layout leaves it out, so the cursor there is on
+    /// the next line, drawn once, there.
     #[test]
     fn live_missing_cells_hold_no_cursor() {
         let text = "|a|b|\n|-|-|\né(é\r\n\nend";
         let next = text.find("\r\n").unwrap() + 2;
-        assert_eq!(live::parse(text).layout.tables[0].rows[1].1[1], next..next);
+        assert_eq!(live::parse(text).layout.tables[0].rows[1].1.len(), 1);
         let mut ed = Editor::new(text).unwrap();
         ed.jump_to(next);
         let grid = drawn(&mut ed, &mut View::live(), 11, 7);

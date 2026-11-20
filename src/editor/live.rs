@@ -621,7 +621,8 @@ mod tests {
     }
 
     /// A table's cells and column widths as drawn (step LT1): hidden
-    /// markup takes no column, a short row gets empty cells.
+    /// markup takes no column; a short row has fewer cells (step TB5),
+    /// a real empty one (`||`) is kept.
     #[test]
     fn tables_record_cells_and_widths() {
         let text = "> | a  | **bold** |\n> |:-|--:|\n> | `日本` |";
@@ -635,7 +636,14 @@ mod tests {
             .iter()
             .map(|(line, cells)| (*line, cells.iter().map(|c| &text[c.clone()]).collect()))
             .collect();
-        assert_eq!(cells, [(0, vec!["a", "**bold**"]), (2, vec!["`日本`", ""])]);
+        assert_eq!(cells, [(0, vec!["a", "**bold**"]), (2, vec!["`日本`"])]);
+        let short = parse("| a | b | c |\n|-|-|-|\n| x |\n||  |\n| y | |\nz");
+        let lens: Vec<usize> = short.layout.tables[0]
+            .rows
+            .iter()
+            .map(|(_, c)| c.len())
+            .collect();
+        assert_eq!(lens, [3, 1, 2, 2, 1]);
         assert_eq!(table.widths, [4, 4]);
         // In a list, after a paragraph: its own lines.
         let text = "- x\n\n  | a |\n  |---|\n  | b |\nafter";
