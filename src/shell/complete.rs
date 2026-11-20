@@ -11,8 +11,11 @@ pub const COMMANDS: [&str; 14] = [
     "tags", "view",
 ];
 
-/// The word the cursor is at the end of.
-#[derive(Debug, PartialEq, Eq)]
+/// The word the cursor is at the end of. It is what was typed, which may be
+/// a note's name (metadata, an asset of the threat model): Debug exists in
+/// test builds only, so program code cannot print it.
+#[derive(PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Word {
     /// Where the word starts in the line, its opening quote included.
     pub start: usize,
@@ -21,6 +24,9 @@ pub struct Word {
     /// Whether it is the line's first word (a command).
     pub first: bool,
 }
+
+#[cfg(not(test))]
+crate::model::assert_not_impl!(Word: std::fmt::Debug, std::fmt::Display);
 
 /// The word before `cursor`, read as `parse::words` reads it: spaces end a
 /// word unless inside quotes, a backslash takes the next character.

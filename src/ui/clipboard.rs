@@ -2,7 +2,7 @@
 //! `y` in the pager copies the note into zeroizing memory that never
 //! leaves Crystal; the editor's Ctrl+C and Ctrl+X copy into it and Ctrl+V
 //! pastes from it (decision 0045). It is wiped on
-//! quit, and on lock once that exists (Phase 5).
+//! quit and on lock (decision 0048).
 //!
 //! Crystal never writes to the system clipboard: copying to other
 //! programs is the terminal's own selection (select with the mouse, then
