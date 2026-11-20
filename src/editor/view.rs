@@ -1512,13 +1512,13 @@ fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live
             }
             // Between two cells of a boxed table: padding, ` │ `, padding.
             show @ Show::Cell { after, before } => {
+                // The paddings in slices of `SPACES`: one wider than it
+                // drew the ` │ ` too early (found in use).
+                let mut pieces = Vec::new();
+                repeat(&mut pieces, SPACES, after, Style::PLAIN);
+                pieces.push((" │ ", style));
+                repeat(&mut pieces, SPACES, before, Style::PLAIN);
                 let mut x = x;
-                let pad = |n: u16| &SPACES[..usize::from(n).min(SPACES.len())];
-                let pieces = [
-                    (pad(after), Style::PLAIN),
-                    (" │ ", style),
-                    (pad(before), Style::PLAIN),
-                ];
                 for (piece, style) in pieces {
                     x += grid.put_str(x, area.y, piece, style, area.right().saturating_sub(x));
                 }
@@ -3112,6 +3112,16 @@ mod tests {
         assert!(style_at(&grid, x, y).mods.contains(Mods::BOLD));
         // Right after `Name`: its padding.
         assert_eq!(view.position_at(text, 10, 2, false), Some(8));
+
+        // Padding wider than `SPACES` (64 columns): the ` │ ` after it
+        // stays at its column.
+        let wide = format!("| a | b |\n|---|---|\n| {} | c |\n\nend", "x".repeat(70));
+        let mut ed = Editor::new(&wide).unwrap();
+        for _ in 0..4 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let grid = drawn(&mut ed, &mut View::live(), 90, 12);
+        assert_eq!(rows(&grid)[2], format!("  │ a{} │ b │", " ".repeat(69)));
 
         let mut ed = Editor::new("a | b\n--|--\n1 | 2\n\nend").unwrap();
         for _ in 0..4 {

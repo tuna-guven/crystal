@@ -232,6 +232,8 @@ pub fn parse(text: &str) -> Parsed {
                     Tag::Link { .. } => inner.style = LINK,
                     Tag::Image { .. } => inner.style = add(frame.style, Mods::DIM),
                     Tag::Heading { level, .. } => inner.style = heading_mark(level).1,
+                    // A table's header, bold as in the viewer.
+                    Tag::TableHead => inner.style = add(frame.style, Mods::BOLD),
                     Tag::CodeBlock(_) => inner.style = CODE,
                     // A numbered item's number, dimmed as in the viewer.
                     Tag::Item => {
@@ -548,6 +550,8 @@ mod tests {
         let table = "| a | **b** |\n|---|---|\n| 1 | 2 |";
         assert_eq!(shown(table), "| a | b |\n|---|---|\n| 1 | 2 |");
         assert!(style_of(table, "b").mods.contains(Mods::BOLD));
+        assert!(style_of(table, "a").mods.contains(Mods::BOLD));
+        assert_eq!(style_of(table, "1"), Style::PLAIN);
         for text in ["1. one\n2. two", "plain\n\n\nblank lines"] {
             assert_eq!(shown(text), text);
         }
