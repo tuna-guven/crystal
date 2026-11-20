@@ -695,10 +695,12 @@ impl<'s> Builder<'s> {
                 self.add(run, style);
             }
             // Inline code: no padding, as a padding space could be where
-            // the line wraps.
+            // the line wraps. Bold or crossed out by an outer tag, as in
+            // Obsidian and live mode (`editor::live::code`).
             Event::Code(t) => {
                 let run = self.text(&t);
-                self.add(run, CODE);
+                let style = CODE.mods(self.style().mods);
+                self.add(run, style);
             }
             Event::Html(t) | Event::InlineHtml(t) => {
                 let run = self.text(&t);

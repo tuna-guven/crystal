@@ -1371,6 +1371,28 @@ mod tests {
         assert_eq!(rows(&grid)[4], "- item");
     }
 
+    /// Inline code is styled as in the viewer, kept bold, crossed out or
+    /// italic by an outer tag, as in Obsidian: every code span's cells
+    /// have the viewer's style.
+    #[test]
+    fn live_inline_code_is_styled_as_in_the_viewer() {
+        let text = "Plain `cp` and **bold `cb` end** and ~~gone `cs`~~ and *it `ci`*\n\nx";
+        let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 70);
+        let mut viewer = Grid::new(70, 6);
+        page.draw(&mut viewer, Rect::new(0, 0, 70, 6), 0);
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.len());
+        let live = drawn(&mut ed, &mut View::live(), 73, 8);
+        for word in ["cp", "cb", "cs", "ci"] {
+            let (x, y) = find(&viewer, word).unwrap();
+            let want = style_at(&viewer, x, y);
+            assert_eq!(style_at(&live, x + GUTTER, y + 1), want, "{word}");
+            assert_eq!(want.bg, crate::md::render::CODE.bg, "{word}");
+        }
+        let (x, y) = find(&viewer, "cb").unwrap();
+        assert!(style_at(&viewer, x, y).mods.contains(Mods::BOLD));
+    }
+
     /// Where `word` starts on `grid`: its first cell, if drawn.
     fn find(grid: &Grid, word: &str) -> Option<(u16, u16)> {
         for y in 0..grid.height() {
