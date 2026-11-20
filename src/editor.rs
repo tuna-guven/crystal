@@ -243,12 +243,12 @@ impl Editor {
                 // double-clicking would undo the word.
                 self.pressed = count == 1;
                 match count {
-                    1 => self.move_to(at, false),
+                    1 => self.move_to(self.clicked(at), false),
                     2 => self.select(self.word_at(at)),
                     _ => self.select(self.line_at(at)),
                 }
             }
-            (MouseEvent::Drag, Some(at)) if self.pressed => self.move_to(at, true),
+            (MouseEvent::Drag, Some(at)) if self.pressed => self.move_to(self.clicked(at), true),
             (MouseEvent::WheelUp, _) => self.vertical(false, WHEEL_LINES, false),
             (MouseEvent::WheelDown, _) => self.vertical(true, WHEEL_LINES, false),
             (MouseEvent::Press | MouseEvent::Release, _) => self.pressed = false,
@@ -334,6 +334,8 @@ impl Editor {
             Key::Tab => {
                 self.replace_selection("\t");
             }
+            // An empty table row goes whole (step TD1).
+            Key::Backspace if self.delete_empty_row() => {}
             Key::Backspace => self.delete(false),
             Key::Delete => self.delete(true),
             Key::Paste { text, cut, cleaned } => {

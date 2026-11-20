@@ -32,6 +32,26 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps TD1 to TD4 (live tables: three fixes from use)
+
+Reported by the user (2026-11-20) with screenshots:
+
+1. Backspace in a row whose cells are all empty should delete the row,
+   as in Obsidian; it deleted the space or pipe before the cursor.
+2. Dragging a selection over a table made it flicker between the box and
+   the text as written: a selection reaching out of a table drew it as
+   written (TB1's rule), which has other rows (no borders), so the same
+   mouse row then landed on other text, back inside, boxed again.
+3. A click on a border row between two rows put the cursor on the next
+   line's start, its hidden `|`, which drew the table as written.
+
+| Step | What | Check |
+| --- | --- | --- |
+| TD1 (done) | Backspace in a body row of empty cells (the header never) deletes the row and its line break, the cursor to the end of the row above's last cell; one undo step | Unit tests: a last row, a middle row, the first body row (the cursor to the header), a row with text kept, a header of empty cells kept, not live |
+| TD2 (done) | Clicks and drags in a table land in a cell (`in_cell`, as the keys do): never on a hidden pipe, the padding or the `\|---\|` line. Found by the cursor property test: Tab from the padding past the last cell stayed there; it now goes to the nearest cell | Unit tests: a click on a pipe or the `\|---\|` line lands in the nearest cell; a drag likewise |
+| TD3 | A selection reaching out of a table keeps it boxed, its cells' selected text highlighted: only the cursor on a hidden pipe or padding (now only by undo or an edit) draws it as written | Unit tests: a selection from above into a cell, from a cell to below, over the whole table: boxed; the cursor property test |
+| TD4 | Decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook | Review: positions snapped, no note text in strings |
+
 ## Steps TC1 to TC3 (live editing: Tab fills a row and adds one, as in Obsidian)
 
 Asked for by the user (2026-11-20) after a complexity warning (about 65

@@ -168,7 +168,8 @@ impl Editor {
 
     /// Tab and Shift+Tab in a table in live mode (step TB4): to the next
     /// or the previous cell's start (`Cells::tab`), the selection dropped;
-    /// before the first cell nothing happens, so a table never gets a tab
+    /// before the first cell nothing happens (from a pipe or the padding,
+    /// the cursor goes into the nearest cell), so a table never gets a tab
     /// character from them. Tab's missing cells or new row (step TC1) go
     /// in, then the cursor into the first new cell; then the table is
     /// padded (step TP2). All of it is one undo step. If the edit fails,
@@ -189,7 +190,13 @@ impl Editor {
                 }
                 self.collapse(cursor);
             }
-            None => return,
+            // From a pipe or the padding with no cell that way: to the
+            // nearest cell, as every move ends (step TD2's property test).
+            None => {
+                let at = self.in_cell(self.cursor, forward);
+                self.move_to(at, false);
+                return;
+            }
         }
         self.pad_table(self.cursor);
         self.buffer.commit();
@@ -235,6 +242,37 @@ impl Editor {
         self.pad_table(start);
         self.buffer.commit();
         self.goal = goal;
+    }
+
+    /// Backspace in a live table's body row of empty cells (step TD1):
+    /// deletes the row and its line break, the cursor to the end of the
+    /// row above's last cell; its own undo step. False elsewhere (with a
+    /// selection too), for Backspace to delete as always.
+    pub(super) fn delete_empty_row(&mut self) -> bool {
+        if self.selection().is_some() {
+            return false;
+        }
+        let Some((range, cursor)) = self
+            .cells_at(self.cursor)
+            .and_then(|cells| cells.empty_row(self.text(), self.cursor))
+        else {
+            return false;
+        };
+        self.buffer.commit();
+        if self.buffer.replace(range, "").is_ok() {
+            self.dirty = true;
+            self.collapse(cursor);
+        }
+        self.buffer.commit();
+        true
+    }
+
+    /// Where a click or a drag at `at` puts the cursor (step TD2): in a
+    /// live table, in a cell, as every key does (`in_cell`), never on a
+    /// hidden pipe, the padding or the `|---|` line (a click on a border
+    /// row lands on the line below's start, its first pipe).
+    pub(super) fn clicked(&self, at: usize) -> usize {
+        self.in_cell(at, true)
     }
 
     /// Home and End: the line's start or end; in a table's cell in live
@@ -577,6 +615,59 @@ mod tests {
         assert_eq!(ed.text(), text);
         ed.mouse(MouseEvent::Press, Some(text.len()), now);
         assert_eq!((ed.text(), ed.cursor()), (padded, padded.len()));
+    }
+
+    /// Backspace in an empty body row deletes it (step TD1), the cursor at
+    /// the end of the row above, one undo step; in a row with text, or
+    /// not live, it deletes one character as always.
+    #[test]
+    fn backspace_deletes_an_empty_row() {
+        let text = "| ab  | c   |\n| --- | --- |\n| d   | e   |\n|     |     |\n\nafter";
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        let empty = text.rfind("|     |").unwrap() + 2;
+        ed.jump_to(empty);
+        ed.key(Key::Backspace, &mut clip);
+        let gone = text.replacen("\n|     |     |", "", 1);
+        assert_eq!(
+            (ed.text(), ed.cursor()),
+            (gone.as_str(), text.find("e ").unwrap() + 1)
+        );
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), text);
+        // A row with text: one character.
+        ed.jump_to(text.find("e ").unwrap() + 1);
+        ed.key(Key::Backspace, &mut clip);
+        assert_eq!(ed.text(), text.replacen("| e ", "|  ", 1));
+        // Not live: one character.
+        let (mut ed, mut clip) = editor(text);
+        ed.jump_to(empty);
+        ed.key(Key::Backspace, &mut clip);
+        assert_eq!(ed.text().len(), text.len() - 1);
+    }
+
+    /// Clicks and drags in a live table land in a cell (step TD2): on a
+    /// row's first pipe (where a click on the border row above lands), at
+    /// the nearest cell; on the `|---|` line, at the next cell.
+    #[test]
+    fn clicks_land_in_cells() {
+        use crate::shell::keys::MouseEvent;
+        let text = "| ab  | c   |\n| --- | --- |\n| d   | e   |\n\nafter";
+        let at = |s: &str| text.find(s).unwrap();
+        let (mut ed, _) = editor(text);
+        ed.set_live(true);
+        let now = std::time::Instant::now();
+        ed.mouse(MouseEvent::Press, Some(at("| d")), now);
+        assert_eq!(ed.cursor(), at("d "));
+        ed.mouse(MouseEvent::Press, Some(at("| ---")), now);
+        assert_eq!(ed.cursor(), at("d "));
+        ed.mouse(MouseEvent::Press, Some(at("ab")), now);
+        ed.mouse(MouseEvent::Drag, Some(at("| d")), now);
+        assert_eq!(
+            (ed.selection(), ed.cursor()),
+            (Some(at("ab")..at("d ")), at("d "))
+        );
+        assert_eq!(ed.text(), text);
     }
 
     /// Tab pads the table (step TP2): pipes lined up, the cursor in the

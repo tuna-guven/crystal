@@ -254,6 +254,28 @@ impl Cells {
         }
     }
 
+    /// Backspace at `at` in a body row whose cells are all empty (step
+    /// TD1), as in Obsidian: the row's line and the line break before it,
+    /// to delete, and where the cursor goes then, the end of the row
+    /// above's last cell (before what is deleted, so it stays put).
+    /// `None` in the header (the table would go) or a row with text.
+    pub fn empty_row(&self, text: &str, at: usize) -> Option<(Range<usize>, usize)> {
+        let r = self
+            .rows
+            .iter()
+            .position(|row| row.iter().any(|cell| cell.holds(at)))?;
+        if r == 0 || !self.rows[r].iter().all(|cell| cell.text.is_empty()) {
+            return None;
+        }
+        let end = self.ends[r];
+        let mut start = text.get(..end)?.rfind('\n')?;
+        if text[..start].ends_with('\r') {
+            start -= 1;
+        }
+        let cursor = self.rows[r - 1].last()?.text.end;
+        Some((start..end, cursor))
+    }
+
     /// Row `r`'s missing cells, `  |` each, after its closing `|`, or at
     /// its line's end after the closing `|` it lacks; the cursor in the first of them,
     /// between its spaces (`layout::trimmed`).
@@ -362,6 +384,32 @@ mod tests {
         assert_eq!(tab(at("|---"), false), Some(Tab::To(at("c |"))));
         // From the closing pipe, past the last cell: nothing.
         assert_eq!(tab(text.len(), true), None);
+    }
+
+    /// Backspace in a body row of empty cells (step TD1): the row and the
+    /// break before it, the cursor to the row above's last cell's end (the
+    /// header's for the first body row); none in a row with text or in
+    /// the header, even an empty one.
+    #[test]
+    fn backspace_finds_an_empty_row() {
+        let text = "| a | b |\n|---|---|\n|  |  |\n| c | d |\r\n|  |  |\n\nafter";
+        let found = Cells::around(text, 0).unwrap();
+        let at = |s: &str| text.find(s).unwrap();
+        let first = at("|  |  |\n| c");
+        let last = at("|  |  |\n\n");
+        let empty = |row: usize| found.rows[row][1].text.start;
+        assert_eq!(
+            found.empty_row(text, empty(1)),
+            Some((first - 1..at("\n| c"), at("b |") + 1))
+        );
+        assert_eq!(
+            found.empty_row(text, empty(3)),
+            Some((last - 2..at("\n\nafter"), at("d |") + 1))
+        );
+        assert_eq!(found.empty_row(text, at("c |")), None);
+        let head = "|  |\n|---|\n| a |";
+        let found = Cells::around(head, 0).unwrap();
+        assert_eq!(found.empty_row(head, found.rows[0][0].text.start), None);
     }
 
     /// `text` after Tab at `at`'s `Tab::Add`, and the new cursor, which
