@@ -543,7 +543,9 @@ keeps its icon and color while the cursor is in its text, so typing in
 it stays in its style. What is not being edited works as in the
 viewer, by mouse ([0076](#0076)): a section folds by its heading's
 marker, a fold moving with every edit and opening when the cursor or
-the selection enters it; a click follows a link. The text, keys, undo and
+the selection enters it (folding the section they are in moves the
+cursor to the heading line's end first, as in Obsidian); a click
+follows a link. The text, keys, undo and
 Crystal's clipboard are the plain editor's, so copying and saving keep
 the Markdown as written. Every grapheme drawn is the note's own,
 through the same checks as below, or a fixed string (an icon, `•`,
@@ -1102,7 +1104,9 @@ open section and `>` for a folded one (plain ASCII, one column in every
 terminal); a click on the row folds or unfolds the section, except on a
 link in the heading, which it follows ([0052](#0052)). In live mode only
 a click on the marker's gutter cell folds: a click on the heading's
-text places the cursor, and a fold opens when the cursor enters it. A
+text places the cursor, and a fold opens when the cursor enters it;
+folding the section the cursor or a selection is in puts the cursor at
+the heading line's end, the selection dropped, so it stays folded. A
 click on a link not drawn as written follows it as here: an internal
 one opens its note live at its heading or `^block` (with unsaved
 changes Crystal says to save first, nothing is lost), a web one only

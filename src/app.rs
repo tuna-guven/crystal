@@ -489,8 +489,12 @@ fn run_loop(
                             // Live mode first: a heading's marker, or a
                             // link to follow (steps LF2, LF3).
                             if let Key::Mouse { event, column, row } = key {
-                                match e.view.mouse(e.editor.text(), event, column, row) {
+                                match e.view.mouse(&e.editor, event, column, row) {
                                     Click::Taken => continue,
+                                    Click::Fold { cursor } => {
+                                        e.editor.jump_to(cursor);
+                                        continue;
+                                    }
                                     Click::Link { target, web } => {
                                         if let Some(next) =
                                             follow(session.notes(), e, target, web, shell)

@@ -67,7 +67,7 @@ mod table;
 pub(super) use table::measurable;
 
 use fold::shift;
-use look::{Drawn, Look};
+use look::{Drawn, Editing, Look};
 use rows::{Row, RowStart, line_start, row_start, rows, top_for};
 use table::draw_boxed;
 
@@ -113,6 +113,10 @@ const MIN_TEXT: u16 = 20;
 pub enum Click {
     /// The view took it: a heading's marker, or the mouse moving.
     Taken,
+    /// A heading's marker folded the section the cursor or the selection
+    /// is in: the cursor goes to the heading line's end, the selection
+    /// dropped, so the fold stays (as in Obsidian).
+    Fold { cursor: usize },
     /// A press on a link not drawn as written: its target, where it is
     /// written in the text, and whether it is a web link.
     Link { target: Range<usize>, web: bool },
@@ -168,7 +172,7 @@ impl View {
     /// press in the gutter of that row folds or unfolds it; a press on a
     /// link not drawn as written is for the caller to follow. Anything
     /// else is the editor's.
-    pub fn mouse(&mut self, text: &str, event: MouseEvent, column: u16, row: u16) -> Click {
+    pub fn mouse(&mut self, editor: &Editor, event: MouseEvent, column: u16, row: u16) -> Click {
         if !self.live {
             return Click::Editor;
         }
@@ -183,7 +187,7 @@ impl View {
                 Click::Taken
             }
             MouseEvent::Press => {
-                let click = self.press(text, heading, column, row);
+                let click = self.press(editor, heading, column, row);
                 self.pressed = click != Click::Editor;
                 click
             }
@@ -198,13 +202,29 @@ impl View {
         }
     }
 
-    /// A press: on a heading row's gutter it folds; on a link's text (not
-    /// past its end, the row's end) it is the link's.
-    fn press(&mut self, text: &str, heading: Option<usize>, column: u16, row: u16) -> Click {
+    /// A press: on a heading row's gutter it folds (or unfolds); on a
+    /// link's text (not past its end, the row's end) it is the link's.
+    /// Folding the section the cursor or the selection is in moves the
+    /// cursor to the heading line's end first, or the next frame would
+    /// open the fold again (`fold::folds`).
+    fn press(&mut self, editor: &Editor, heading: Option<usize>, column: u16, row: u16) -> Click {
+        let text = editor.text();
         let in_gutter = self.area.is_some_and(|area| column < area.x);
         if let Some(start) = heading.filter(|_| in_gutter) {
+            let folding = !self.folds.contains(&start);
             self.toggle_fold(start);
-            return Click::Taken;
+            let cursor = editor.cursor();
+            let selection = editor.selection().unwrap_or(cursor..cursor);
+            let editing = Editing {
+                cursor,
+                selection: &selection,
+            };
+            return match fold::section(&self.look.layout.headings, text, start) {
+                Some(fold) if folding && fold::entered(&fold, text, editing) => {
+                    Click::Fold { cursor: fold.end }
+                }
+                _ => Click::Taken,
+            };
         }
         let at = self.position_at(text, column, row, false);
         match at.and_then(|at| self.look.link(at)) {
@@ -1489,24 +1509,24 @@ mod tests {
         }
         let mut view = View::live();
         drawn(&mut ed, &mut view, 30, 9);
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 9, 1), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Move, 9, 1), Click::Taken);
         let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(rows(&grid)[1], format!("v {h1}A"));
         assert_eq!(style_at(&grid, 0, 1), crate::pager::MARKER);
         // Off the heading: no marker.
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 9, 2), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Move, 9, 2), Click::Taken);
         assert_eq!(
             rows(&drawn(&mut ed, &mut view, 30, 9))[1],
             format!("  {h1}A")
         );
         // A press on the gutter of `# B`'s row (row 5: blank rows as in
         // the viewer, step LV2) folds it.
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Move, 0, 5), Click::Taken);
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 0, 5), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Move, 0, 5), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 0, 5), Click::Taken);
         let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(rows(&grid)[5..7], [format!("> {h1}B …"), String::new()]);
         // Again: unfolded.
-        assert_eq!(view.mouse(ed.text(), MouseEvent::Press, 1, 5), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 1, 5), Click::Taken);
         let grid = drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(
             rows(&grid)[5..8],
@@ -1514,25 +1534,54 @@ mod tests {
         );
         // A press on the heading's text, or on a row without a heading:
         // the editor's.
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Press, 5, 5),
-            Click::Editor
-        );
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Press, 0, 2),
-            Click::Editor
-        );
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 5, 5), Click::Editor);
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 0, 2), Click::Editor);
         // Not live: nothing here.
         let mut plain = View::default();
         drawn(&mut ed, &mut plain, 30, 6);
+        assert_eq!(plain.mouse(&ed, MouseEvent::Move, 0, 1), Click::Editor);
+        assert_eq!(plain.mouse(&ed, MouseEvent::Press, 0, 1), Click::Editor);
+    }
+
+    /// A press on the marker of the section the cursor or the selection
+    /// is in (the outermost heading, holding everything) folds it: the
+    /// cursor goes to the heading line's end, so the fold stays; folding
+    /// another section or unfolding leaves the cursor where it is.
+    #[test]
+    fn folding_the_cursors_section_moves_the_cursor_out() {
+        let mut clip = Clipboard::default();
+        let text = "# A\nx\n\n## B\ny\n";
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.find('y').unwrap());
+        let mut view = View::live();
+        drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(
-            plain.mouse(ed.text(), MouseEvent::Move, 0, 1),
-            Click::Editor
+            view.mouse(&ed, MouseEvent::Press, 0, 1),
+            Click::Fold { cursor: 3 }
         );
+        ed.jump_to(3);
+        let shown = rows(&drawn(&mut ed, &mut view, 30, 9));
+        assert!(shown[1].ends_with('…'), "{shown:?}");
+        assert!(!shown.iter().any(|r| r.contains('y')), "{shown:?}");
+        // Unfolding: the cursor stays.
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 0, 1), Click::Taken);
+        let shown = rows(&drawn(&mut ed, &mut view, 30, 9));
+        assert!(shown.iter().any(|r| r.contains('y')), "{shown:?}");
+        // A selection in the section counts too.
+        ed.jump_to(text.find('x').unwrap());
+        ed.key(Key::ShiftRight, &mut clip);
+        drawn(&mut ed, &mut view, 30, 9);
         assert_eq!(
-            plain.mouse(ed.text(), MouseEvent::Press, 0, 1),
-            Click::Editor
+            view.mouse(&ed, MouseEvent::Press, 0, 1),
+            Click::Fold { cursor: 3 }
         );
+        // The cursor outside `## B`'s section: folding it moves nothing.
+        ed.jump_to(0);
+        view.toggle_fold(0);
+        let shown = rows(&drawn(&mut ed, &mut view, 30, 9));
+        let b = shown.iter().position(|r| r.contains('B')).unwrap();
+        let b = u16::try_from(b).unwrap();
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 0, b), Click::Taken);
     }
 
     /// Links in live mode (step LF3): a press on a link's text is for the
@@ -1549,37 +1598,25 @@ mod tests {
         let grid = drawn(&mut ed, &mut view, 40, 4);
         assert_eq!(rows(&grid)[1], "  a alias b site");
         // `alias` at columns 4 to 8, `site` at 12 to 15.
-        let wiki = view.mouse(ed.text(), MouseEvent::Press, 5, 1);
+        let wiki = view.mouse(&ed, MouseEvent::Press, 5, 1);
         let Click::Link { target, web: false } = wiki else {
             panic!("{wiki:?}");
         };
         assert_eq!(&text[target], "Note#Head");
-        let site = view.mouse(ed.text(), MouseEvent::Press, 13, 1);
+        let site = view.mouse(&ed, MouseEvent::Press, 13, 1);
         assert!(matches!(site, Click::Link { web: true, .. }), "{site:?}");
         // Its release is the view's too, so the editor keeps any notice.
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Release, 13, 1),
-            Click::Taken
-        );
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Release, 13, 1),
-            Click::Editor
-        );
+        assert_eq!(view.mouse(&ed, MouseEvent::Release, 13, 1), Click::Taken);
+        assert_eq!(view.mouse(&ed, MouseEvent::Release, 13, 1), Click::Editor);
         // The web link's cells carry its address; the wiki link's none.
         let link = grid.cell(13, 1).unwrap().link();
         assert_eq!(grid.link_target(link), Some("https://example.org"));
         assert_eq!(grid.cell(5, 1).unwrap().link(), 0);
         // Beside a link, and on a link the cursor is in: the editor's.
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Press, 10, 1),
-            Click::Editor
-        );
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 10, 1), Click::Editor);
         ed.jump_to(5);
         drawn(&mut ed, &mut view, 40, 4);
-        assert_eq!(
-            view.mouse(ed.text(), MouseEvent::Press, 5, 1),
-            Click::Editor
-        );
+        assert_eq!(view.mouse(&ed, MouseEvent::Press, 5, 1), Click::Editor);
     }
 
     /// Rows as in the viewer (step LV1), but blank lines as written (step

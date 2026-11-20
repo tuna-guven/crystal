@@ -50,40 +50,50 @@ pub fn folds(
     text: &str,
     editing: Editing,
 ) -> Vec<Fold> {
-    let cursor = editing.cursor;
     let mut folds = Vec::new();
-    kept.retain(|&start| {
-        let Ok(i) = headings.binary_search_by_key(&start, |&(line, _)| line) else {
-            return false;
-        };
-        let level = headings[i].1;
-        let Some(newline) = text[start..].find('\n').map(|n| start + n) else {
-            return false;
-        };
-        let end = if text[..newline].ends_with('\r') {
-            newline - 1
-        } else {
-            newline
-        };
-        let section_end = headings[i + 1..]
-            .iter()
-            .find(|&&(_, l)| l <= level)
-            .map_or(text.len(), |&(line, _)| line);
-        let hidden = newline + 1..section_end;
-        let entered = hidden.contains(&cursor)
-            || (hidden.end == text.len() && cursor == text.len())
-            || editing.selects(&hidden);
-        if hidden.is_empty() || entered {
-            return false;
+    kept.retain(|&start| match section(headings, text, start) {
+        Some(fold) if !entered(&fold, text, editing) => {
+            folds.push(fold);
+            true
         }
-        folds.push(Fold {
-            heading: start,
-            end,
-            hidden,
-        });
-        true
+        _ => false,
     });
     folds
+}
+
+/// The section of the heading whose line starts at `start`, as it would
+/// fold: `None` if no heading starts there, it is the text's last line,
+/// or it has no lines to hide.
+pub fn section(headings: &[(usize, u8)], text: &str, start: usize) -> Option<Fold> {
+    let i = headings
+        .binary_search_by_key(&start, |&(line, _)| line)
+        .ok()?;
+    let level = headings[i].1;
+    let newline = start + text[start..].find('\n')?;
+    let end = if text[..newline].ends_with('\r') {
+        newline - 1
+    } else {
+        newline
+    };
+    let section_end = headings[i + 1..]
+        .iter()
+        .find(|&&(_, l)| l <= level)
+        .map_or(text.len(), |&(line, _)| line);
+    let hidden = newline + 1..section_end;
+    (!hidden.is_empty()).then_some(Fold {
+        heading: start,
+        end,
+        hidden,
+    })
+}
+
+/// Whether the cursor or the selection is in what `fold` hides (the
+/// text's end counts for a section that reaches it), which opens it.
+pub fn entered(fold: &Fold, text: &str, editing: Editing) -> bool {
+    let hidden = &fold.hidden;
+    hidden.contains(&editing.cursor)
+        || (hidden.end == text.len() && editing.cursor == text.len())
+        || editing.selects(hidden)
 }
 
 #[cfg(test)]
