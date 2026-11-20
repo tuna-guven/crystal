@@ -61,7 +61,7 @@ use super::buffer::Change;
 use super::live::layout::{Layout, Piece};
 use super::live::{self, Link, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
-use crate::md::render::CODE;
+use crate::md::render::{CODE, DASHES, QUOTE_BAR};
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
@@ -187,6 +187,12 @@ struct Live {
     /// The lines the viewer's added blank row goes before (step LV2),
     /// sorted: each a line drawn, past any skipped ones.
     gaps: Vec<usize>,
+    /// The boxed tables' border rows (step LT2), sorted by the line they
+    /// go before: a bottom border, past any skipped lines (the text's end
+    /// after the last line), and a top or inner border; each with its
+    /// pieces in `layout.pieces`, the line's prefix first.
+    bottoms: Vec<(usize, Range<u32>)>,
+    borders: Vec<(usize, Range<u32>)>,
     /// Code blocks and inline code, sorted (`Parsed::code`).
     code: Vec<Range<usize>>,
 }
@@ -228,10 +234,15 @@ fn shift(folds: &mut Vec<usize>, change: Change) {
     });
 }
 
-/// A row start with this bit is the blank row the viewer draws before
-/// the line starting at the rest (step LV2): a row with no text. Notes
-/// are far smaller than this bit, so no offset has it.
-const GAP: usize = 1 << (usize::BITS - 1);
+/// A row start's two top bits mark a row the viewer draws before the line
+/// starting at the rest, a row with no text of the note (steps LV2, LT2).
+/// Notes are far smaller, so no offset has them. Before one line they come
+/// in this order: a table's bottom border, the viewer's blank row, a
+/// table's top or inner border.
+const MARK: usize = 3 << (usize::BITS - 2);
+const BOTTOM: usize = 1 << (usize::BITS - 2);
+const GAP: usize = 2 << (usize::BITS - 2);
+const BORDER: usize = MARK;
 
 /// Indents are slices of this.
 const SPACES: &str = "                                                                ";
@@ -328,6 +339,32 @@ fn skipped(
     (skips, skip_end)
 }
 
+/// Adds a table border's pieces to `pieces` (step LT2): `prefix`, then
+/// `left`, each column's dashes with `mid` between them, and `right`, in
+/// the viewer's gray. Returns their range.
+fn border(
+    pieces: &mut Vec<Piece>,
+    prefix: &[Piece],
+    widths: &[u16],
+    [left, mid, right]: [&'static str; 3],
+) -> Range<u32> {
+    let start = u32::try_from(pieces.len()).unwrap_or(u32::MAX);
+    pieces.extend_from_slice(prefix);
+    // `DASHES` has 3 bytes a dash.
+    let most = DASHES.len() / 3;
+    for (c, &width) in widths.iter().enumerate() {
+        pieces.push((if c == 0 { left } else { mid }, QUOTE_BAR));
+        let mut width = usize::from(width);
+        while width > 0 {
+            let n = width.min(most);
+            pieces.push((&DASHES[..3 * n], QUOTE_BAR));
+            width -= n;
+        }
+    }
+    pieces.push((right, QUOTE_BAR));
+    start..u32::try_from(pieces.len()).unwrap_or(u32::MAX)
+}
+
 /// Whether `range` overlaps one of the sorted, disjoint `ranges`.
 fn overlaps(ranges: &[Range<usize>], range: &Range<usize>) -> bool {
     let i = ranges.partition_point(|r| r.end <= range.start);
@@ -353,13 +390,16 @@ impl Live {
     /// so the cursor just after `**b**` reveals it) or the selection
     /// overlaps, and a line's markup when the cursor is in it, the
     /// selection or a revealed element (a heading, a code block) overlaps
-    /// it. Every other line's markup is hidden.
+    /// it. Every other line's markup is hidden. A table the cursor and
+    /// the selection are not in is boxed if its box fits `width` columns
+    /// (step LT2).
     fn new(
         parsed: Parsed,
         text: &str,
         cursor: usize,
         selection: &Range<usize>,
         kept: &mut Vec<usize>,
+        width: usize,
     ) -> Self {
         let selected = |r: &Range<usize>| selection.start < r.end && r.start < selection.end;
         let elements = parsed
@@ -443,6 +483,60 @@ impl Live {
                 gaps.push(at);
             }
         }
+        // Boxed tables: their border rows, none in a fold or right after
+        // one (step LT2).
+        let mut layout = parsed.layout;
+        let (mut bottoms, mut borders) = (Vec::new(), Vec::new());
+        let open = |at: usize| {
+            !folds
+                .iter()
+                .any(|f| f.hidden.contains(&at) || f.hidden.end == at)
+        };
+        for table in &layout.tables {
+            let lines = &layout.lines;
+            let start_of = |i: usize| lines.get(i).map_or(text.len(), |l| l.markup.start);
+            let Some(first) = lines.get(table.lines.start) else {
+                continue;
+            };
+            let start = first.markup.start;
+            // The line after the table, and where the table's last line ends.
+            let next = start_of(table.lines.end);
+            let end = if table.lines.end < lines.len() {
+                next.saturating_sub(1)
+            } else {
+                next
+            };
+            let edited = (start..=end).contains(&cursor)
+                || (!selection.is_empty() && selection.start <= end && start < selection.end);
+            let prefix = layout.prefix(&first.rest).to_vec();
+            // `│ ` before each cell, ` ` after it, and the closing `│`.
+            let boxed = prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>()
+                + table
+                    .widths
+                    .iter()
+                    .map(|&w| usize::from(w) + 3)
+                    .sum::<usize>()
+                + 1;
+            if edited || table.widths.is_empty() || boxed > width || !open(start) {
+                continue;
+            }
+            let pieces = &mut layout.pieces;
+            let top = border(pieces, &prefix, &table.widths, ["┌─", "─┬─", "─┐"]);
+            borders.push((start, top));
+            // Between two body rows, as the viewer draws them.
+            for &(row, _) in table.rows.iter().skip(2) {
+                let inner = border(pieces, &prefix, &table.widths, ["├─", "─┼─", "─┤"]);
+                borders.push((start_of(row), inner));
+            }
+            let mut at = next;
+            while let Some(skip) = skips.iter().find(|r| r.start == at) {
+                at = skip.end;
+            }
+            if open(at) {
+                let bottom = border(pieces, &prefix, &table.widths, ["└─", "─┴─", "─┘"]);
+                bottoms.push((at, bottom));
+            }
+        }
         // A link drawn as written is being edited: a click there places
         // the cursor.
         let links = parsed
@@ -454,12 +548,14 @@ impl Live {
             runs: parsed.runs,
             raw,
             hidden,
-            layout: parsed.layout,
+            layout,
             folds,
             links,
             skips,
             skip_end,
             gaps,
+            bottoms,
+            borders,
             code: parsed.code,
         }
     }
@@ -488,9 +584,46 @@ impl Live {
             }
         }
         let gone = at >= len && (folded || self.skip_end || !text.ends_with('\n'));
-        // The viewer's blank row first, if it has one there.
-        let at = if self.gap_before(at) { at | GAP } else { at };
-        (!gone).then_some(at)
+        // The rows before the line first, if it has any; a table's bottom
+        // border comes even after the last line.
+        let first = self.first_row(at);
+        (!gone || first & MARK != 0).then_some(first)
+    }
+
+    /// The first row of the line at `line`: the first marked row before
+    /// it (step LT2), or the line itself.
+    fn first_row(&self, line: usize) -> usize {
+        self.after(line, 0).unwrap_or(line)
+    }
+
+    /// The marked row after the one marked `mark` before the line at
+    /// `line` (0: the first), if any.
+    fn after(&self, line: usize, mark: usize) -> Option<usize> {
+        [BOTTOM, GAP, BORDER]
+            .into_iter()
+            .find(|&m| m > mark && self.marked(line | m))
+            .map(|m| line | m)
+    }
+
+    /// Whether the marked row `at` is there.
+    fn marked(&self, at: usize) -> bool {
+        match at & MARK {
+            GAP => self.gap_before(at & !MARK),
+            0 => false,
+            _ => self.border(at).is_some(),
+        }
+    }
+
+    /// A border row's pieces: the bottom border, or the top or inner
+    /// border, before the line of the row start `at`.
+    fn border(&self, at: usize) -> Option<&[Piece]> {
+        let rows = match at & MARK {
+            BOTTOM => &self.bottoms,
+            BORDER => &self.borders,
+            _ => return None,
+        };
+        let i = rows.binary_search_by_key(&(at & !MARK), |r| r.0).ok()?;
+        Some(self.layout.prefix(&rows[i].1))
     }
 
     /// The skipped lines `at` is in, if any.
@@ -600,18 +733,24 @@ struct Row {
     /// Columns left of its text for live mode's prefix (0 when the prefix
     /// would leave no room).
     indent: usize,
-    /// The viewer's added blank row (step LV2): no text; it holds no
-    /// position, a click there goes to the line below.
-    gap: bool,
+    /// A marked row (steps LV2, LT2), its mark: the viewer's blank row
+    /// or a table's border, no text of the note; it holds no position, a
+    /// click there goes to the line below. 0 for a row of text.
+    mark: usize,
 }
 
 impl Row {
     /// Whether the cursor at `at` is drawn on this row. At a wrap the
     /// position belongs to the next row; at a line break, to this one.
     fn contains(&self, at: usize) -> bool {
-        // The next row's start, without the gap mark (step LV2).
+        // The next row's start, without its mark (steps LV2, LT2). A row
+        // ending the text is followed by no line, at most a table's
+        // bottom border: the text's end is its own.
         let end = if self.ends_line {
-            self.next.map_or(usize::MAX, |next| next & !GAP)
+            match self.next.map(|next| next & !MARK) {
+                Some(next) if next > self.range.end => next,
+                _ => usize::MAX,
+            }
         } else {
             self.range.end
         };
@@ -622,14 +761,17 @@ impl Row {
 /// The row starting at `start` (a row start), `width` columns wide. A
 /// grapheme wider than a whole row gets a row of its own.
 fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
-    if start & GAP != 0 {
-        let line = (start & !GAP).min(text.len());
+    if start & MARK != 0 {
+        let line = (start & !MARK).min(text.len());
+        // The next marked row, else the line, unless past the text.
+        let gone = line >= text.len() && (live.skip_end || !text.ends_with('\n'));
+        let next = live.after(line, start & MARK);
         return Row {
             range: line..line,
-            next: Some(line),
+            next: next.or((!gone).then_some(line)),
             ends_line: false,
             indent: 0,
-            gap: true,
+            mark: start & MARK,
         };
     }
     // Live mode's prefix takes its columns first, if text still fits.
@@ -648,7 +790,7 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 next,
                 ends_line: true,
                 indent,
-                gap: false,
+                mark: 0,
             };
         }
         let w = live.width(at, grapheme, column);
@@ -658,17 +800,19 @@ fn row_at(text: &str, start: usize, width: usize, live: &Live) -> Row {
                 next: Some(at),
                 ends_line: false,
                 indent,
-                gap: false,
+                mark: 0,
             };
         }
         column += w;
     }
+    // A boxed table's bottom border may follow the last line.
+    let next = live.after(text.len(), 0).filter(|_| !text.ends_with('\n'));
     Row {
         range: start..text.len(),
-        next: None,
+        next,
         ends_line: true,
         indent,
-        gap: false,
+        mark: 0,
     }
 }
 
@@ -680,10 +824,10 @@ fn line_start(text: &str, at: usize) -> usize {
 
 /// The start of the row the cursor at `at` is drawn on.
 fn row_start(text: &str, at: usize, width: usize, live: &Live) -> usize {
-    // A gap row (a kept scroll position): itself while its gap is there.
-    if at & GAP != 0 {
-        let line = at & !GAP;
-        if live.gap_before(line) && text.is_char_boundary(line) {
+    // A marked row (a kept scroll position): itself while it is there.
+    if at & MARK != 0 {
+        let line = at & !MARK;
+        if live.marked(at) && text.is_char_boundary(line.min(text.len())) {
             return at;
         }
         return row_start(text, line.min(text.len()), width, live);
@@ -881,19 +1025,24 @@ impl View {
             let cursor = editor.cursor();
             let selection = editor.selection().unwrap_or(cursor..cursor);
             let parsed = live::parse(text);
-            self.look = Live::new(parsed, text, cursor, &selection, &mut self.folds);
+            self.look = Live::new(parsed, text, cursor, &selection, &mut self.folds, width);
         }
         self.scroll(text, editor.cursor(), width, rows);
         // The numbers given before the first row shown.
-        let mut number = lines::count(&text[..line_start(text, self.top & !GAP)]);
+        let mut number = lines::count(&text[..line_start(text, self.top & !MARK)]);
         let mut start = Some(self.top);
         self.heading_rows.clear();
         for y in area.y..area.bottom() {
             let Some(next) = start else { break };
             let row = row_at(text, next, width, &self.look);
             start = row.next;
-            // The viewer's added blank row: nothing to draw.
-            if row.gap {
+            // The viewer's added blank row: nothing to draw; a table's
+            // border: its pieces.
+            if row.mark != 0 {
+                let mut x = area.x;
+                for (piece, style) in self.look.border(next).unwrap_or(&[]) {
+                    x += grid.put_str(x, y, piece, *style, area.right().saturating_sub(x));
+                }
                 continue;
             }
             let row_start = row.range.start;
@@ -1048,7 +1197,7 @@ impl View {
         }
         let y = row.clamp(area.y, area.bottom() - 1);
         let width = usize::from(area.width - 1);
-        let top = if text.is_char_boundary(self.top & !GAP) {
+        let top = if text.is_char_boundary(self.top & !MARK) {
             row_start(text, self.top, width, &self.look)
         } else {
             0
@@ -1083,13 +1232,18 @@ impl View {
 
     /// Moves `top` so the cursor's row is on screen.
     fn scroll(&mut self, text: &str, cursor: usize, width: usize, rows: usize) {
-        if !text.is_char_boundary(self.top & !GAP) {
+        if !text.is_char_boundary(self.top & !MARK) {
             self.top = 0;
         }
-        // An edit or a new width may have moved the row starts.
+        // An edit or a new width may have moved the row starts. At the
+        // text's start, the rows before its first line show (a table's
+        // top border).
         let live = &self.look;
         self.top = row_start(text, self.top, width, live);
-        if cursor < self.top & !GAP {
+        if self.top == 0 {
+            self.top = live.first_row(0);
+        }
+        if cursor < self.top & !MARK {
             self.top = row_start(text, cursor, width, live);
             return;
         }
@@ -1124,12 +1278,8 @@ fn top_for(text: &str, cursor: usize, width: usize, rows: usize, live: &Live) ->
     let mut until = Some(cursor);
     loop {
         let mut last = VecDeque::with_capacity(need);
-        // A line's rows start with the viewer's blank row, if it has one.
-        let mut start = if live.gap_before(line) {
-            line | GAP
-        } else {
-            line
-        };
+        // A line's rows start with its marked rows, if it has any.
+        let mut start = live.first_row(line);
         loop {
             if last.len() == need {
                 last.pop_front();
@@ -2106,8 +2256,9 @@ mod tests {
         /// character.
         #[test]
         fn live_mode_always_draws_the_cursor(
-            // Fences, blank-line runs and underlines too (step LV1).
-            text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}|```\n|\n\n|==\n){0,60}",
+            // Fences, blank-line runs and underlines too (step LV1);
+            // tables and their `|---|` lines (step LT2).
+            text in "([*_`#\\[\\]()|>~!\\\\ a\n\t-]|\r\n|é|日|\u{202e}|\u{0}|```\n|\n\n|==\n|\\|a\\|b\\|\n\\|-\\|-\\|\n|\\|---\\|\n){0,60}",
             width in 3u16..30,
             height in 3u16..8,
             moves in prop::collection::vec(0u8..5, 0..12),
@@ -2680,6 +2831,121 @@ mod tests {
             shown(&mut ed, &mut view),
             (
                 vec!["  a".into(), String::new(), format!("  {h1}H")],
+                Some(1)
+            )
+        );
+    }
+
+    /// A table the cursor is not in gets the viewer's border rows (step
+    /// LT2): above it, between two body rows, below it (before a blank
+    /// line, at the text's end); a click on one goes to the line below;
+    /// the cursor entering the table, or a screen too narrow for the box,
+    /// leaves it as written.
+    #[test]
+    fn live_tables_get_border_rows() {
+        let mut clip = Clipboard::default();
+        let body = |grid: &Grid, rows_shown: usize| rows(grid)[1..=rows_shown].to_vec();
+        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nend";
+        let mut ed = Editor::new(text).unwrap();
+        for _ in 0..5 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let mut view = View::live();
+        let grid = drawn(&mut ed, &mut view, 30, 12);
+        assert_eq!(
+            body(&grid, 9),
+            [
+                "  ┌───┬───┐",
+                "  | a | b |",
+                "  |---|---|",
+                "  | 1 | 2 |",
+                "  ├───┼───┤",
+                "  | 3 | 4 |",
+                "  └───┴───┘",
+                "",
+                "  end"
+            ]
+        );
+        assert_eq!(view.position_at(text, 4, 1, false), Some(0));
+        assert_eq!(view.position_at(text, 4, 7, false), Some(40));
+        // The cursor in the table: as written.
+        ed.key(Key::Up, &mut clip);
+        ed.key(Key::Up, &mut clip);
+        let grid = drawn(&mut ed, &mut view, 30, 12);
+        assert_eq!(
+            body(&grid, 3),
+            ["  | a | b |", "  |---|---|", "  | 1 | 2 |"]
+        );
+        // Too narrow for the box: as written.
+        let mut ed = Editor::new(text).unwrap();
+        for _ in 0..5 {
+            ed.key(Key::Down, &mut clip);
+        }
+        // The box takes 9 columns, more than the row's 8.
+        let grid = drawn(&mut ed, &mut View::live(), 9, 12);
+        assert_eq!(body(&grid, 1), ["| a | b"]);
+
+        // After a heading (the viewer's blank row first), at the text's
+        // end with or without a line break.
+        let h1 = crate::md::render::heading_mark(pulldown_cmark::HeadingLevel::H1).0;
+        for text in ["# H\n| a |\n|---|\n| 1 |", "# H\n| a |\n|---|\n| 1 |\n"] {
+            let mut ed = Editor::new(text).unwrap();
+            ed.key(Key::End, &mut clip);
+            let grid = drawn(&mut ed, &mut View::live(), 30, 12);
+            assert_eq!(
+                body(&grid, 8),
+                [
+                    format!("  {h1}H").as_str(),
+                    "",
+                    "    ┌───┐",
+                    "    | a |",
+                    "    |---|",
+                    "    | 1 |",
+                    "    └───┘",
+                    ""
+                ],
+                "{text:?}"
+            );
+        }
+    }
+
+    /// Border rows scroll like rows (step LT2): the cursor's row last on
+    /// screen counts them; the cursor entering the table drops them.
+    #[test]
+    fn live_border_rows_scroll_like_rows() {
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new("| a |\n|---|\n| 1 |\n\nend").unwrap();
+        for _ in 0..4 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let mut view = View::live();
+        let shown = |ed: &mut Editor, view: &mut View| {
+            let grid = drawn(ed, view, 30, 5);
+            (
+                rows(&grid)[1..4].to_vec(),
+                cursor_cell(&grid).map(|(_, y)| y),
+            )
+        };
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (
+                vec!["  └───┘".into(), String::new(), "  end".into()],
+                Some(3)
+            )
+        );
+        ed.key(Key::Up, &mut clip);
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (
+                vec!["  └───┘".into(), String::new(), "  end".into()],
+                Some(2)
+            )
+        );
+        ed.key(Key::Up, &mut clip);
+        assert_eq!(
+            shown(&mut ed, &mut view),
+            (
+                vec!["  | 1 |".into(), String::new(), "  end".into()],
                 Some(1)
             )
         );
