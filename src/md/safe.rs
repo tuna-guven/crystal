@@ -58,7 +58,11 @@ assert_not_impl!(SafeText: std::fmt::Debug, std::fmt::Display, Clone, serde::Ser
 pub fn sanitize(raw: &str) -> SafeText {
     let hidden: usize = raw
         .graphemes(true)
-        .map(|g| g.chars().filter(|&c| spelled_out(g, c)).count())
+        .map(|g| match g {
+            "\n" | "\r\n" | "\t" => 0,
+            g if spelled_out_whole(g) => g.chars().count(),
+            g => g.chars().filter(|&c| is_forbidden(c)).count(),
+        })
         .sum();
     let tabs = raw.matches('\t').count();
     let capacity = raw.len() + hidden * MAX_ESCAPE_LEN + tabs * TAB.len();
@@ -69,8 +73,9 @@ pub fn sanitize(raw: &str) -> SafeText {
             "\n" | "\r\n" => text.push('\n'),
             "\t" => text.push_str(TAB),
             g => {
+                let whole = spelled_out_whole(g);
                 for c in g.chars() {
-                    if spelled_out(g, c) {
+                    if whole || is_forbidden(c) {
                         let start = text.len();
                         // Writing to a String cannot fail.
                         let _ = write!(text, "<U+{:04X}>", u32::from(c));
@@ -86,18 +91,22 @@ pub fn sanitize(raw: &str) -> SafeText {
     SafeText { text, escapes }
 }
 
-/// Whether `c`, in `grapheme`, is drawn as `<U+XXXX>`: a forbidden
-/// character, any character of a grapheme that hides one, and any of a
-/// grapheme of no width (a soft hyphen, a Mongolian vowel separator, a
-/// deprecated format character alone), which the grid would leave out, so
-/// `a`, one of them and `b` would look like `ab` (review SR5; the editor's
-/// rule, `editor::view::glyph`). The width is the grid's own. A line
-/// ending and a tab are handled before.
-fn spelled_out(grapheme: &str, c: char) -> bool {
-    match grapheme {
-        "\n" | "\r\n" | "\t" => false,
-        _ => is_forbidden(c) || hides_something(grapheme) || grapheme_width(grapheme) == 0,
+/// Whether every character of `grapheme` is drawn as `<U+XXXX>`: a
+/// grapheme that hides a character, or one of no width (a soft hyphen, a
+/// Mongolian vowel separator, a deprecated format character alone), which
+/// the grid would leave out, so `a`, one of them and `b` would look like
+/// `ab` (review SR5; the editor's rule, `editor::view::glyph`). The width
+/// is the grid's own. Otherwise only its forbidden characters are
+/// (`is_forbidden`, checked per character by the caller). A line ending
+/// and a tab are handled before. Asked once per grapheme, not per
+/// character: the deep-nesting test sanitizes about 4 million spaces.
+fn spelled_out_whole(grapheme: &str) -> bool {
+    // Printable ASCII alone (most of a note) is never forbidden, hidden or
+    // of no width: one column in the grid. A fast path, same answer.
+    if let [b' '..=b'~'] = grapheme.as_bytes() {
+        return false;
     }
+    hides_something(grapheme) || grapheme_width(grapheme) == 0
 }
 
 impl SafeText {
@@ -245,6 +254,16 @@ mod tests {
         assert_eq!(shown("a\r\nb\nc"), "a\nb\nc");
         assert_eq!(shown("\r\n\r\n"), "\n\n");
         assert_eq!(shown("a\r"), "a<U+000D>");
+    }
+
+    // The printable-ASCII fast path gives the full rule's answer.
+    #[test]
+    fn ascii_fast_path_matches_the_rule() {
+        for c in ' '..='~' {
+            let g = c.to_string();
+            assert!(!is_forbidden(c) && !hides_something(&g), "{c:?}");
+            assert_eq!(grapheme_width(&g), 1, "{c:?}");
+        }
     }
 
     #[test]
