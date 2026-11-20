@@ -251,13 +251,16 @@ impl View {
         self.list = None;
 
         let live = self.live && editor.text().len() <= LIVE_MAX;
-        // `[+]` and `live` stay visible however long the name.
+        // `[+]` and `live` stay visible however long the name. Laid out as
+        // the viewer's title (`pager.rs`): the name one column in, the
+        // marker ending one column before the edge, as `preview ` does.
         let unsaved = match (live, editor.is_dirty()) {
-            (true, true) => "live [+]",
-            (true, false) => "live",
-            (false, true) => "[+]",
+            (true, true) => "live [+] ",
+            (true, false) => "live ",
+            (false, true) => "[+] ",
             (false, false) => "",
         };
+        let title = Rect::new(title.x + 1, title.y, title.width.saturating_sub(1), 1);
         status_line(grid, title, name, unsaved, TITLE);
         let hints = match editor.suggestions().map(|list| list.source) {
             None => HINTS,
@@ -732,7 +735,7 @@ mod tests {
         let grid = drawn(&mut ed, &mut View::default(), 6, 7);
         assert_eq!(
             rows(&grid)[..6],
-            ["work/p", "abcde", "f", "    x", "日本", "語"]
+            [" work/", "abcde", "f", "    x", "日本", "語"]
         );
         assert_eq!(cursor_cell(&grid), Some((0, 1)));
     }
@@ -813,11 +816,11 @@ mod tests {
         ed.key(Key::End, &mut clip);
         ed.key(Key::Char('!'), &mut clip);
         let grid = drawn(&mut ed, &mut View::default(), 10, 4);
-        assert_eq!(rows(&grid)[0], "work/p [+]", "[+] kept, the name cut");
+        assert_eq!(rows(&grid)[0], " work [+]", "[+] kept, the name cut");
         assert_eq!(cursor_cell(&grid), Some((3, 2)), "after the last character");
         // Live mode says so in the title (step LE1).
         let grid = drawn(&mut ed, &mut View::live(), 20, 4);
-        assert_eq!(rows(&grid)[0], "work/plan   live [+]");
+        assert_eq!(rows(&grid)[0], " work/plan live [+]");
     }
 
     #[test]
