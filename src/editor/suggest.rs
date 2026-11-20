@@ -1,6 +1,8 @@
-//! Link suggestions in the editor (roadmap W1 to W6): the name typed
-//! after an open `[[`, the notes it matches, and the text that links to
-//! a chosen note, and the editor's list of them (`List`, `Editor::key_in`).
+//! Link suggestions in the editor (roadmap W1 to W6): the editor's list
+//! of the notes, headings or blocks matching the link typed after an
+//! open `[[` (`List`, `Editor::key_in`, `Editor::mouse_in`), and linking
+//! the chosen one. What the typed link asks for and what matches it is
+//! `query`'s (pure); a new `^id` for a chosen block is `ids`'s.
 //! Everything works on ranges of the text and note indexes, never on
 //! copies of names.
 //!

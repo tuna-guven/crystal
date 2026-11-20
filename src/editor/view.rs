@@ -45,6 +45,13 @@
 //! line, so typing in one line of megabytes is slow. Accepted: a cache of
 //! row starts would fix it at the cost of state kept in step with every
 //! edit, and real notes have short lines.
+//!
+//! Its parts, one job each (steps RF1 to RF5): `glyph` one grapheme (its
+//! width, the escapes of decision 0037); `rows` the row walk every
+//! drawing, scroll and click goes through; `look` live mode's look of a
+//! frame; `fold` folded sections; `table` boxed tables; `suggestions` the
+//! link list. This file keeps `View`: the state between frames, drawing
+//! a frame, scrolling, and the mouse.
 
 use std::ops::Range;
 

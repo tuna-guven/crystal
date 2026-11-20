@@ -32,7 +32,64 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
-## Steps RF1 to RF8 (refactor the editor's code before B)
+## Steps TB1 to TB6 (live editing: typing inside a boxed table)
+
+Asked for by the user (2026-11-20) after a complexity warning (option B,
+the highest-risk one; estimated then at 400 to 600 lines): in live mode
+a table stays boxed while the cursor or the selection is in it, as in
+Obsidian, and the cursor moves through its cells. Answers given before
+this roadmap:
+
+- Tab goes to the next cell, from a row's last cell to the next row's
+  first; Shift+Tab to the previous cell, from a row's first cell to the
+  row above's last. Tab in the last cell of the last row and Shift+Tab
+  in the first cell do nothing: they never add a row or a tab character
+  to a table. Outside a table, and in the plain editor, Tab types a tab
+  as now and Shift+Tab does nothing.
+- Only cell text holds the cursor: the hidden pipes and the padding
+  around the text never do. Right at a cell's end goes to the next
+  cell's start, Left at its start to the previous cell's end; past the
+  table's first or last cell they leave the table as now. Typing `|`
+  splits a cell as written Markdown does; the box is redrawn from the
+  text on the next frame. As a consequence of that rule, Home and End go
+  to the cell's start and end inside a table (the line's start is a
+  hidden pipe). The `|---|` line and a short row's missing cells hold no
+  cursor position: every move skips them.
+- A cell that wraps onto further rows holds the cursor on every one of
+  them: each grapheme keeps the row and column it is drawn at, so the
+  cursor, the selection and clicks land there.
+- Up and Down go to the same column's cell in the row above or below,
+  keeping the offset in the cell in graphemes (clamped to its length);
+  above the first row or below the last they leave the table as now.
+  Not done: moving between a wrapped cell's rows first. The editor moves
+  by line everywhere (a wrapped paragraph's rows too), since it does not
+  know the screen's width; that would make tables the one place where it
+  needs it (about 80 lines more, the view's wrapping given to the
+  editor). Up and Down go by table row instead.
+
+How it stays safe and simple: the editor finds the cells itself, on a
+key, from the same parse the view draws from (`live::parse`, its
+`Layout::tables`), only when live and when the cursor's line holds a
+`|`; nothing about tables is kept in step with edits. Every position it
+moves to is a cell's text start, end, or a grapheme boundary inside it,
+and still goes through `snap`. The element under the cursor inside a
+cell is drawn as written, as anywhere in live mode, so its column widens
+while it is edited (its written width counts in the column's fit); a box
+that no longer fits the screen is drawn as written, as now. A selection
+reaching outside the table draws the table as written, as now. No
+security benefit; about 450 lines of code and 300 of tests. No new
+decision: 0045 is updated in place, as for LT and LW.
+
+| Step | What | Check |
+| --- | --- | --- |
+| TB1 | The view: a boxed table no longer unboxes for the cursor or a selection inside it; its lines and wrapped rows hold positions (the row walk, `position_at`, `line_row`, scrolling to a cursor on a wrapped cell row); `draw_boxed` draws the cursor and the selection; revealed markup counts at its written width in its column's fit. About 160 lines | Unit tests: the cursor drawn in each cell, on a wrapped row, at an empty cell; scrolling to it; a click per row; the cursor property test with tables (drawn once, never on a pipe or padding) |
+| TB2 | `editor/cells.rs`: the cells around the cursor, pure, from `live::parse` (none unless live and the line holds a `|`): the cell the cursor is in, the next and previous cells, the cell above and below; the editor learns it is live (`set_live`, as `set_note`). About 110 lines | Unit tests: cells of a header row, a body row, a short row, escaped `\|`, a table in a quote and a list, a `|` outside a table, not live |
+| TB3 | Left, Right, Home, End in a table, with and without Shift (the selection grows across cells). About 60 lines | Unit tests per key at each cell edge and at the table's edges; selection across cells |
+| TB4 | Tab and Shift+Tab: next and previous cell, row to row, nothing at the ends; Tab in the suggestion list still links. About 40 lines | Unit tests: every cell in order and back, the ends, outside a table, the plain editor, an open suggestion list |
+| TB5 | Up and Down (with Shift): the same column's cell in the row above or below, the offset kept, leaving the table at its ends; the goal column for leaving is the cell offset. About 60 lines | Unit tests: across rows of different cell lengths, short rows, the `|---|` line skipped, leaving above and below |
+| TB6 | A property test: any table, any keys, live: the cursor is never on a hidden pipe or padding of a boxed table, and is drawn once; decision 0045 and the setup guide; fmt, clippy, test, deny, audit, mdbook; the live property tests with `PROPTEST_CASES=5000` | Review of the diff: positions always snapped, no note text in strings, no `unsafe`, syscalls or dependencies |
+
+## Steps RF1 to RF8 (refactor the editor's code before B; done)
 
 Asked for by the user (2026-11-20) before option B (editing inside a
 boxed table, as in Obsidian; its own roadmap follows): split the
@@ -59,7 +116,7 @@ becomes a directory of single-job modules under `src/editor/view/`:
 | RF5 (done) | `view/suggestions.rs`: the link suggestion list under the cursor and its mouse mapping; `view.rs` keeps `View` (state, `draw`, scrolling, the mouse) | Tests unchanged |
 | RF6 (done) | `editor.rs`: `editor/motion.rs` (cursor moves, words, lines, selection) and `editor/brackets.rs` (closing pairs) apart from the key dispatch | Tests unchanged |
 | RF7 (done) | `editor/suggest.rs`: `suggest/query.rs` (what is typed after `[[`, pure matching), `suggest/ids.rs` (new `^id`s and the block request), the list and its keys staying in `suggest.rs` | Tests unchanged |
-| RF8 | The architecture chapter's module map; every module's header says its one job and its invariants; fmt, clippy, test, deny, audit, mdbook | Review: no logic changed (diff of moved bodies), no new `unsafe`, syscalls or dependencies |
+| RF8 (done) | The architecture chapter's module map; every module's header says its one job and its invariants; fmt, clippy, test, deny, audit, mdbook | Review: no logic changed (diff of moved bodies), no new `unsafe`, syscalls or dependencies |
 
 ## Steps LW1 to LW4 (live editing: wide tables as in the viewer; done)
 

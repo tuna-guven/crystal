@@ -20,6 +20,13 @@
 //!
 //! Like the pager, it is terminal-free: keys in, an action out. The view
 //! draws it; the session saves, closes, or shows the viewer.
+//!
+//! Its parts, one job each (steps RF1 to RF8): this file holds the
+//! editor's state and the key and mouse dispatch; `buffer` the text and
+//! its undo log, wiped; `motion` where the cursor and the selection go;
+//! `brackets` the closing pairs; `suggest` the link list (`query` what a
+//! typed link matches, `ids` new block ids); `live` live mode's parse and
+//! line layout; `view` the screen.
 
 mod brackets;
 pub mod buffer;
