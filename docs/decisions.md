@@ -460,8 +460,8 @@ the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
-preview (no security benefit; about 1 900 lines of code, comments
-included, and 1 250 of tests, folding, link clicks and boxed tables
+preview (no security benefit; about 2 050 lines of code, comments
+included, and 1 300 of tests, folding, link clicks and boxed tables
 included), draws a Markdown note with its markup
 hidden and its text styled as in the viewer, without line numbers.
 Each line is indented as the viewer indents it (sections under their
@@ -475,14 +475,19 @@ after the last) get no row while the cursor is not on them, and the
 viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
 rows are the viewer's. A table the cursor and the selection are not in
-is boxed as in the viewer, if the box fits the screen: its cells
-styled, padded by their column's alignment between `│`s, `├─┼─┤` for
-its `|---|` line, and the border rows the note has no line for (above,
-between two body rows, below) drawn as rows with no text, like the
-blank row; a row start's two top bits say which of these rows comes
-before a line. With the cursor in it, or too wide, a table is drawn as
-written with its cells styled, so its columns never move while typing.
-Rows wrap by character. Drawn as written are only the elements the
+is boxed as in the viewer: its cells styled, padded by their column's
+alignment between `│`s, `├─┼─┤` for its `|---|` line; a table wider
+than the screen has its columns narrowed by the viewer's
+`fit_columns` and each cell wrapped inside its column by the viewer's
+`wrap_each`, a row as tall as its tallest cell. Each table line is one
+row drawn whole from its cells. The rows the note has no line for (a
+tall row's further rows, the borders above, between two body rows and
+below) are drawn rows like the blank row, kept as one ordered list per
+line; a row start's top bit and an ordinal say which. They hold no
+position, which is sound because the cursor is never in a boxed
+table. With the cursor in it, or a column narrower than 3, a table is
+drawn as written with its cells styled, so its columns never move
+while typing. Rows wrap by character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,
 its code staying yellow on gray in its box), a line's leading markup while
