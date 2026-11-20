@@ -92,7 +92,7 @@ the note not marked changed).
 | TP1 (done) | `editor/repad.rs`, pure: `repad(text, at)` gives the table's range, its padded text and a position map (a cell's offset kept, after the table shifted), or `None` (refused or already padded) | Unit tests: columns lined up, alignments, wide characters, escaped `\|`, a quote and a list, missing cells, CRLF, refusals (extra cells, a tab), already padded |
 | TP2 (done, with TP1: alone it is dead code) | Tab pads, in the same undo step as its move or added cells, the cursor mapped | Unit tests: Tab pads; one Ctrl+Z restores the table as written |
 | TP3 (done) | Leaving a table by a move, a click or the wheel pads it, its own undo step, the goal column kept (`table_here` before the move, `pad_left` after); two earlier motion tests start from padded tables | Unit tests: arrows and a click out pad; moves inside, Shift+arrows, a click inside and undo do not |
-| TP4 | A property test: padding keeps every cell's text and is idempotent, the cursor in its cell; decision 0045 and the setup guide (Tab, the new row, the padding); fmt, clippy, test, deny, audit, mdbook | Review: no note text outside `Zeroizing` strings, refusals cover every lossy case, no `unsafe`, syscalls or dependencies |
+| TP4 (done) | A property test: padding keeps every cell's text and is idempotent, the cursor in its cell; decision 0045 and the setup guide (Tab, the new row, the padding); fmt, clippy, test, deny, audit, mdbook | Review: no note text outside `Zeroizing` strings, refusals cover every lossy case, no `unsafe`, syscalls or dependencies |
 
 ## Steps TB1 to TB6 (live editing: typing inside a boxed table)
 

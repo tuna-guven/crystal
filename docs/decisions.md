@@ -496,8 +496,8 @@ for spaces typed at a cell's end, the cursor after them. In live mode
 the keys keep the cursor in cells' text, never on the hidden pipes or
 padding: Left and Right go cell to cell at a cell's edges, Home and
 End to its ends, Tab and Shift+Tab to the next and previous cell's
-start (past the last or first cell nothing happens: no row is added
-and no tab is typed into a table; elsewhere Tab types a tab), Up and
+start (no tab is typed into a table; elsewhere Tab types a tab; before
+the first cell Shift+Tab does nothing), Up and
 Down to the same column's cell a row away with the offset kept, and any
 move that would end on a pipe, the padding or the `|---|` line (from
 the lines around, or by a page) ends in the nearest cell instead; a
@@ -510,7 +510,25 @@ cursor on a pipe, the padding or the `|---|` line (a click can put it
 there), a selection reaching out of the table, a column narrower than
 3, and a cell holding a tab or a character spelled out ([0037](#0037)),
 which is drawn wider than a table measures it. A short row's missing
-cells are no place of it. Rows wrap by character. Drawn as written are only the elements the
+cells are no place of it. As in Obsidian, Tab in a short row's last
+cell adds its missing cells (`  |` each) and goes to the first, and Tab
+in the table's last cell adds a row of empty cells after it, in the
+last line's quote or list; an empty cell holds the cursor after its
+first space, so what is typed reads `| x |`. The table's Markdown is
+then padded, its pipes lined up as the Advanced Tables plugin does:
+each column as wide as its widest cell as written, cells padded by
+their alignment, the `|---|` line's dashes and colons to match, each
+line's own leading markup kept. This happens on Tab (one undo step
+with its move or added cells) and when a move, a click or the wheel
+takes the cursor out of the table without a selection (its own undo
+step; undo never pads, so Ctrl+Z goes back past it), never while
+typing. It is the one place the editor writes note text the user did
+not type, so it refuses and leaves the table as written wherever it
+could lose text: cells it cannot measure, cells past the header's (the
+parser ignores them), anything but pipes and spaces between cells; and
+the padded table is parsed again, every cell's text unchanged and in
+order, or nothing is written. The padded text is built in a
+`Zeroizing` string. Rows wrap by character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,
 its code staying yellow on gray in its box), a line's leading markup while

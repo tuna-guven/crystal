@@ -244,7 +244,10 @@ fn same_cells(text: &str, range: &Range<usize>, padded: &str, table: &Table) -> 
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::editor::cells::Cells;
 
     /// `text` with the table at `at` padded.
     fn padded(text: &str, at: usize) -> String {
@@ -317,5 +320,89 @@ mod tests {
         assert_eq!(repad.map(at("a|", text)), at("a ", &new));
         assert_eq!(repad.map(1), 1);
         assert_eq!(repad.map(text.len()), new.len());
+    }
+
+    /// A table note: 1 to 3 columns, any alignments, rows of 0 to 5 cells
+    /// (more than the header's: refused), cells short, empty, with
+    /// escaped pipes, markup, colons, dashes and wide characters, in a
+    /// quote, indented or not, `\r\n` breaks, text above and below.
+    fn table_note() -> impl Strategy<Value = String> {
+        let cell = "[a-c é日*`:-]{0,5}|a\\\\\\|b";
+        let align = prop::sample::select(vec!["---", ":--", "--:", ":-:", "-"]);
+        (
+            1usize..4,
+            prop::collection::vec(align, 3),
+            prop::collection::vec(prop::collection::vec(cell, 0..6), 0..4),
+            prop::collection::vec(cell, 3),
+            prop::sample::select(vec!["", "> ", "  "]),
+            prop::sample::select(vec!["\n", "\r\n"]),
+            prop::sample::select(vec!["", "before\n\n"]),
+            prop::sample::select(vec!["", "\n\nafter", "\nafter"]),
+        )
+            .prop_map(|(columns, aligns, rows, head, lead, eol, above, below)| {
+                let row = |cells: &[String]| {
+                    let mut line = String::from(lead);
+                    line.push('|');
+                    for cell in cells {
+                        line.push_str(cell);
+                        line.push('|');
+                    }
+                    line
+                };
+                let mut lines = vec![
+                    row(&head[..columns]),
+                    row(&aligns[..columns]
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()),
+                ];
+                lines.extend(rows.iter().map(|cells| row(cells)));
+                [above, &lines.join(eol), below].concat()
+            })
+    }
+
+    /// `text` without spaces, tabs, pipes, dashes and colons: what padding
+    /// may add or remove. The rest must stay, in order.
+    fn kept(text: &str) -> String {
+        text.chars().filter(|c| !" \t|-:".contains(*c)).collect()
+    }
+
+    proptest! {
+        /// Padding any table from any position (step TP4): the text around
+        /// the table unchanged, nothing but spaces, pipes, dashes and colons
+        /// added or removed, every line of the table as wide as the others
+        /// after its lead, a cursor in a cell still in a cell, and padding
+        /// again changes nothing.
+        #[test]
+        fn padding_keeps_every_cell(
+            text in table_note(),
+            start in any::<prop::sample::Index>(),
+        ) {
+            let mut at = start.index(text.len() + 1);
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            let Some(pad) = repad(&text, at) else {
+                return Ok(());
+            };
+            let edited = [&text[..pad.range.start], &pad.text, &text[pad.range.end..]].concat();
+            prop_assert_eq!(kept(&text[pad.range.clone()]), kept(&pad.text));
+            let widths: Vec<usize> = pad
+                .text
+                .split('\n')
+                .map(|line| {
+                    let line = line.trim_end_matches('\r');
+                    display_width(&line[lead(line).len()..])
+                })
+                .collect();
+            prop_assert!(widths.windows(2).all(|w| w[0] == w[1]), "{:?}", pad.text.as_str());
+            let in_cell = Cells::around(&text, at).is_some_and(|cells| cells.cell_at(at).is_some());
+            let to = pad.map(at);
+            if in_cell {
+                let cells = Cells::around(&edited, to);
+                prop_assert!(cells.is_some_and(|cells| cells.cell_at(to).is_some()));
+            }
+            prop_assert!(repad(&edited, to).is_none(), "{:?}", edited);
+        }
     }
 }
