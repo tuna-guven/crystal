@@ -5,7 +5,7 @@
 //! prints `sandbox-check: denied errno=N` or `sandbox-check: ALLOWED`.
 //! Enforcement cannot be undone, so every check is its own process.
 //!
-//! Needs a kernel with Landlock ABI 9 or newer, like Crystal itself, and
+//! Needs a kernel with Landlock ABI 10 or newer, like Crystal itself, and
 //! RLIMIT_MEMLOCK at the floor (docs/guide/setup.md).
 
 mod common;
@@ -178,11 +178,11 @@ fn landlock_alone_stops_network_signals_and_exec() {
     assert!(!home.join(".local/share/crystal/diary/sub").exists());
 }
 
-/// Decision 0010: without Landlock ABI 9, Crystal refuses to start, before
-/// any passphrase is asked, and names the ABI it needs. The debug-only
-/// `--hide-landlock-for-test` makes the kernel answer the crate's ABI
-/// query with ENOSYS, as a kernel without Landlock does, so the real
-/// refusal path runs. Positive control: the same vault without the option
+/// Decisions 0010, 0077: without Landlock ABI 10, Crystal refuses to
+/// start, before any passphrase is asked, and names the ABI it needs. The
+/// debug-only `--hide-landlock-for-test` makes the kernel answer the
+/// crate's ABI query with ENOSYS, as a kernel without Landlock does, so the
+/// real refusal path runs. Positive control: the same vault without the option
 /// reaches the prompt.
 #[test]
 #[cfg_attr(not(debug_assertions), ignore = "uses a debug-only test hook")]
@@ -193,7 +193,7 @@ fn refuses_to_start_without_landlock() {
     assert!(ok, "{output:?}");
     assert!(output.contains("exit=1"), "{output:?}");
     assert!(
-        output.contains("no Landlock ABI 9 or newer") && output.contains("section 5.4"),
+        output.contains("no Landlock ABI 10 or newer") && output.contains("section 5.4"),
         "{output:?}"
     );
     assert!(!output.contains(PROMPT), "asked anyway: {output:?}");

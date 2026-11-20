@@ -60,9 +60,9 @@ unicode-segmentation = "=1.13.3"
 # no getopts (its CLI) and no HTML writer; Crystal renders the events.
 pulldown-cmark = { version = "=0.13.6", default-features = false }
 # Phase 6 (decision 0059). Exact pins: these build the sandbox.
-# Landlock up to ABI 9 in hard-requirement mode (decision 0010); the crate
-# makes the raw Landlock syscalls, which would need `unsafe` here.
-landlock = "=0.4.7"
+# Landlock up to ABI 10 in hard-requirement mode (decisions 0010, 0077);
+# the crate makes the raw Landlock syscalls, which would need `unsafe` here.
+landlock = "=0.4.8"
 # seccomp-bpf allowlist, built in pure Rust (no C libseccomp). No default
 # features: no `json`, so no serde_json.
 seccompiler = { version = "=0.5.0", default-features = false }

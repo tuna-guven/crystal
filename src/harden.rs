@@ -42,7 +42,7 @@ pub enum HardenError {
         lowest: i32,
         count: usize,
     },
-    /// The kernel has no Landlock, has it turned off, or is below ABI 9
+    /// The kernel has no Landlock, has it turned off, or is below ABI 10
     /// (decision 0010). The crate cannot tell which without `unsafe`.
     LandlockTooOld,
     /// Creating, filling or enforcing the ruleset failed. The crate's

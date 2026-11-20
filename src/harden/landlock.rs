@@ -1,7 +1,7 @@
 //! Startup step 8: Landlock (docs/design/sandboxing.md, section 5;
-//! decisions 0010 and 0059). After this, the process reads and writes
-//! files only beneath the vault directory and the state directory, opens
-//! no TCP connection, reaches no pathname UNIX socket (D-Bus, Wayland) and
+//! decisions 0010, 0059 and 0077). After this, the process reads and
+//! writes files only beneath the vault directory and the state directory,
+//! binds and connects no TCP or UDP socket, sends no UDP datagram, reaches no pathname UNIX socket (D-Bus, Wayland) and
 //! no abstract one, and signals no process outside its own domain. Every
 //! fd opened before (the terminal, the signal pipes) keeps working:
 //! Landlock checks at open time.
@@ -15,10 +15,12 @@ use ::landlock::{
 
 use super::HardenError;
 
-/// ABI 9 brings `RESOLVE_UNIX`, which blocks pathname UNIX sockets; the
-/// scopes need 6. Below it Crystal refuses to start (decision 0010).
-pub const REQUIRED_ABI: u8 = 9;
-const REQUIRED: ABI = ABI::V9;
+/// ABI 10 brings the UDP rights (bind, connect and send), 9 `RESOLVE_UNIX`
+/// (pathname UNIX sockets), 6 the scopes. Below it Crystal refuses to
+/// start (decisions 0010, 0077). Audit quieting (also ABI 10) is never
+/// used: every denial is logged.
+pub const REQUIRED_ABI: u8 = 10;
+const REQUIRED: ABI = ABI::V10;
 
 /// What Crystal may do beneath the vault and the state directory: read,
 /// list, write and truncate files (always together), create a file (the
@@ -37,13 +39,14 @@ fn private_dir_rights() -> BitFlags<AccessFs> {
 
 /// Restricts the process for good. `vault` and `state` are the directory
 /// fds startup step 7 opened (no path is resolved again). Every right up
-/// to ABI 9 is handled, so everything not granted below is denied; TCP
-/// bind and connect are handled with no rule, so they are always denied.
+/// to ABI 10 is handled, so everything not granted below is denied; TCP
+/// bind and connect, UDP bind and connect/send are handled with no rule,
+/// so they are always denied.
 /// Hard-requirement mode: a right the kernel cannot enforce is an error,
 /// never silently dropped.
 pub fn restrict(vault: BorrowedFd<'_>, state: BorrowedFd<'_>) -> Result<(), HardenError> {
     // Only compatibility checks run here, no syscall but the ABI query:
-    // a failure means the kernel is older than ABI 9 or Landlock is off.
+    // a failure means the kernel is older than ABI 10 or Landlock is off.
     let handled = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(REQUIRED))
