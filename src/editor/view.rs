@@ -1931,6 +1931,31 @@ mod tests {
         }
     }
 
+    /// Typing a space at a cell's end (step TB6, found by the property
+    /// test) keeps the cursor in the cell, drawn after the space, and the
+    /// table boxed at every key.
+    #[test]
+    fn live_spaces_typed_in_a_cell_keep_it_boxed() {
+        let text = "| ab | c |\n|---|---|\n| d | e |\n\nend";
+        let mut clip = Clipboard::default();
+        let mut ed = Editor::new(text).unwrap();
+        ed.set_live(true);
+        let mut view = View::live();
+        ed.jump_to(text.find("ab").unwrap() + 2);
+        let (x, y) = cursor_cell(&drawn(&mut ed, &mut view, 30, 10)).unwrap();
+        for (c, shift) in [(' ', 1), ('x', 2)] {
+            ed.key(Key::Char(c), &mut clip);
+            let grid = drawn(&mut ed, &mut view, 30, 10);
+            assert!(
+                rows(&grid).concat().contains('┌'),
+                "{c:?}: {:#?}",
+                rows(&grid)
+            );
+            assert_eq!(cursor_cell(&grid), Some((x + shift, y)), "{c:?}");
+        }
+        assert!(ed.text().starts_with("| ab x | c |"));
+    }
+
     /// A short row's missing cell is no place in the row (steps TB1, TB5;
     /// found by the property test): the parser puts it past the row's
     /// line break, and the layout leaves it out, so the cursor there is on
@@ -2137,5 +2162,103 @@ mod tests {
         let row = rows(&grid).iter().position(|r| r.contains("`x`")).unwrap();
         let y = u16::try_from(row).unwrap();
         assert_eq!(style_at(&grid, 2, y), CODE, "the backtick");
+    }
+
+    /// A note with one table in it (step TB6): 1 to 3 columns, rows short
+    /// and long, empty cells, escaped pipes, markup and wide characters,
+    /// `\r\n` breaks, in a quote or not, text above and below (right
+    /// below: a lazy row).
+    fn table_note() -> impl Strategy<Value = String> {
+        let cell = "[a-c é日*`]{0,5}|\\*\\*b\\*\\*|a\\\\\\|b";
+        (
+            1usize..4,
+            prop::collection::vec(prop::collection::vec(cell, 0..5), 0..4),
+            prop::collection::vec(cell, 3),
+            prop::sample::select(vec!["", "> "]),
+            prop::sample::select(vec!["\n", "\r\n"]),
+            prop::sample::select(vec!["", "before\n\n", "before\n"]),
+            prop::sample::select(vec!["", "\n\nafter", "\nafter"]),
+        )
+            .prop_map(|(columns, rows, head, quote, eol, above, below)| {
+                let row = |cells: &[String]| {
+                    let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
+                    format!("{quote}| {} |", cells.join(" | "))
+                };
+                let mut lines = vec![
+                    row(&head[..columns]),
+                    format!("{quote}|{}", "---|".repeat(columns)),
+                ];
+                lines.extend(rows.iter().map(|cells| row(cells)));
+                format!("{above}{}{below}", lines.join(eol))
+            })
+    }
+
+    proptest! {
+        /// Typing inside boxed tables (step TB6): any table, any screen,
+        /// any moves from a cell or outside the table: after every key
+        /// that moves (keeps the text) the cursor is in a cell's text or
+        /// off the table's lines, never on a hidden pipe or padding; after
+        /// every key it is drawn exactly once.
+        #[test]
+        fn live_table_keys_keep_the_cursor_in_cells(
+            text in table_note(),
+            start in any::<prop::sample::Index>(),
+            width in 12u16..60,
+            height in 3u16..10,
+            keys in prop::collection::vec(0u8..14, 1..16),
+        ) {
+            use crate::editor::cells::Cells;
+            let mut clip = Clipboard::default();
+            let mut ed = Editor::new(&text).unwrap();
+            ed.set_live(true);
+            // The start: a char boundary, moved into a cell if it is on
+            // the table's lines.
+            let mut at = start.index(text.len() + 1);
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            if let Some(cells) = Cells::around(&text, at) {
+                at = cells
+                    .nearest(&text, at)
+                    .or_else(|| cells.cell_toward(at, true))
+                    .unwrap_or(at);
+            }
+            ed.jump_to(at);
+            let mut view = View::live();
+            for k in keys {
+                // `Key` is not `Clone` (a paste holds text): made here.
+                let key = match k {
+                    0 => Key::Left,
+                    1 => Key::Right,
+                    2 => Key::Up,
+                    3 => Key::Down,
+                    4 => Key::Home,
+                    5 => Key::End,
+                    6 => Key::Tab,
+                    7 => Key::BackTab,
+                    8 => Key::ShiftLeft,
+                    9 => Key::ShiftRight,
+                    10 => Key::ShiftUp,
+                    11 => Key::ShiftDown,
+                    12 => Key::PageUp,
+                    _ => Key::PageDown,
+                };
+                let before = ed.text().to_owned();
+                ed.key(key, &mut clip);
+                let text = ed.text();
+                let cursor = ed.cursor();
+                // A move, not typing (Tab outside a table types a tab, and
+                // typing may leave the cursor anywhere).
+                let moved = text == before;
+                if let Some(cells) = Cells::around(text, cursor).filter(|_| moved) {
+                    prop_assert!(
+                        cells.cell_at(cursor).is_some(),
+                        "key {k} left the cursor at {cursor} on a pipe or padding"
+                    );
+                }
+                let grid = drawn(&mut ed, &mut view, width, height);
+                prop_assert!(cursor_cell(&grid).is_some(), "key {k}: {:#?}", rows(&grid));
+            }
+        }
     }
 }

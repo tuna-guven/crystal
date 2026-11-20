@@ -15,3 +15,5 @@ cc 96bb41238ad22182c004385f6c14d25e1493075e833a6908062a98554b31e04c # shrinks to
 cc 98a8e3bcd4aeb0f531bd5d5585225a480e73f0aa34638600c8d113ba9091be24 # shrinks to text = "|a|b|\n|-|-|\n", width = 9, height = 3, moves = [0, 2, 0, 1, 2, 2]
 cc 705df6b1f0c8d1f10ad6fcb0cb893b33ddd2a7ccb12d49907b11835cf88d4859 # shrinks to text = "|a|b|\n|-|-|\né(é\r\n\n==\n", width = 11, height = 6, moves = [4, 1, 4, 1]
 cc 05b406fb258fa11971e5ebe555a5064a3674fe4a210fe0498778fb0fc6bc40f0 # shrinks to text = "|a|b|\n|-|-|\né```\n\u{202e}==\n", width = 11, height = 3, moves = [4, 1, 1, 0, 4, 3, 4]
+cc ed9039f40ca16efb28f2a34f5d1941b42055d237c33f57db9f95d1f23f2dd3c8 # shrinks to text = "> | **b** |\n> |---|\n> | **b** |\nafter", start = Index(12136015837966810274), width = 12, height = 3, keys = [11, 6]
+cc 35dc4942ad865c9712a18815fb956a0434a6f3dc4c82604ae99af4162ab79aaf # shrinks to text = "before\n\n|  |\n|---|\n|  |\n|  |\n|  |", start = Index(4340410370284600381), width = 12, height = 3, keys = [10, 8, 6, 5]

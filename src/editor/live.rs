@@ -352,6 +352,15 @@ pub fn line_end(text: &str, start: usize) -> usize {
     }
 }
 
+/// How far the cursor still counts as in a table cell whose text (without
+/// the spaces around it) is `cell` (steps TB1 to TB6): up to the spaces
+/// after the text, so a space typed at a cell's end leaves the cursor in
+/// the cell, drawn right after its text, and the table boxed.
+pub fn cell_reach(text: &str, cell: &Range<usize>) -> usize {
+    let after = text.get(cell.end..).unwrap_or("");
+    cell.end + after.bytes().take_while(|&b| b == b' ').count()
+}
+
 /// The columns `range` takes as `runs` draw it on one line: hidden bytes
 /// none, a fixed string its own width.
 pub fn drawn_width(text: &str, runs: &[Run], range: &Range<usize>) -> usize {

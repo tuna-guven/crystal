@@ -28,7 +28,7 @@ use super::rows::{Row, RowStart};
 use super::{drawn_style, put_grapheme};
 use crate::editor::Editor;
 use crate::editor::live::layout::{Layout, Piece, Table};
-use crate::editor::live::{self, Run, Show, line_end};
+use crate::editor::live::{self, Run, Show, cell_reach, line_end};
 use crate::md::render::{DASHES, QUOTE_BAR, fit_columns};
 use crate::ui::grid::{Grid, Style, display_width};
 use crate::ui::layout::Rect;
@@ -53,8 +53,9 @@ pub struct Boxed {
     /// where a cell has no more lines, or a short row lacks it). One row
     /// unless a cell wraps; none for the `|---|` line.
     rows: Vec<Vec<Range<usize>>>,
-    /// Each cell's text, without the spaces around it (`Table::rows`):
-    /// where the cursor may be; none for the `|---|` line.
+    /// Where the cursor may be in each cell: from its text's start to its
+    /// reach (`live::cell_reach`, the spaces after the text); none for the
+    /// `|---|` line.
     cells: Vec<Range<usize>>,
 }
 
@@ -74,8 +75,8 @@ impl Boxed {
         let k = (1..self.rows.len())
             .rev()
             .find(|&k| {
-                let line = &self.rows[k][c];
-                !line.is_empty() && line.start <= at
+                let line = self.rows[k].get(c);
+                line.is_some_and(|line| !line.is_empty() && line.start <= at)
             })
             .unwrap_or(0);
         Some((k, c))
@@ -83,12 +84,13 @@ impl Boxed {
 }
 
 /// Whether an edited table stays boxed (step TB1): the cursor is in the
-/// text of one of its cells and a selection, if any, stays inside its
+/// text of one of its cells, or the spaces after it (`live::cell_reach`:
+/// a space just typed there), and a selection, if any, stays inside its
 /// lines, from `start` to `end`. Anywhere else in it (a hidden pipe, the
 /// padding, the `|---|` line) the cursor would not be drawn, and a
 /// selection reaching out of it would show its hidden bytes as nothing,
 /// so the table is drawn as written then, as before step TB1.
-fn in_cells(table: &Table, editing: Editing, start: usize, end: usize) -> bool {
+fn in_cells(table: &Table, text: &str, editing: Editing, start: usize, end: usize) -> bool {
     let selection = editing.selection;
     let inside = selection.is_empty() || (start <= selection.start && selection.end <= end);
     inside
@@ -96,7 +98,7 @@ fn in_cells(table: &Table, editing: Editing, start: usize, end: usize) -> bool {
             .rows
             .iter()
             .flat_map(|(_, cells)| cells)
-            .any(|cell| (cell.start..=cell.end).contains(&editing.cursor))
+            .any(|cell| (cell.start..=cell_reach(text, cell)).contains(&editing.cursor))
 }
 
 /// Whether every grapheme of the table's cells is drawn as wide as it is
@@ -189,14 +191,25 @@ pub fn tables(
         // Edited: the last line's wrapped rows go before the line after
         // it, so without one (a fold right after) the cursor could be on
         // a row not drawn.
-        if edited && (!in_cells(table, editing, start, end) || after.is_none()) {
+        if edited && (!in_cells(table, text, editing, start, end) || after.is_none()) {
             continue;
         }
         if !measurable(text, table) {
             continue;
         }
         let prefix = layout.prefix(&first.rest).to_vec();
-        let natural = column_widths(text, runs, table);
+        let mut natural = column_widths(text, runs, table);
+        // The cursor after spaces typed at a cell's end (step TB6): its
+        // column widens to hold it, so it moves as each space goes in.
+        let cursor = editing.cursor;
+        for (_, cells) in &table.rows {
+            for (width, cell) in natural.iter_mut().zip(cells) {
+                if cell.end < cursor && cursor <= cell_reach(text, cell) {
+                    let wanted = live::drawn_width(text, runs, cell) + (cursor - cell.end);
+                    *width = (*width).max(u16::try_from(wanted).unwrap_or(u16::MAX));
+                }
+            }
+        }
         let Some(widths) = fit(&prefix, &natural, width).filter(|_| hiding.open(start)) else {
             continue;
         };
@@ -250,7 +263,10 @@ pub fn tables(
                 widths: widths.clone(),
                 aligns: table.aligns.clone(),
                 rows,
-                cells: cells.map(|(_, cells)| cells.clone()).unwrap_or_default(),
+                cells: cells.map_or_else(Vec::new, |(_, cells)| {
+                    let reach = |cell: &Range<usize>| cell.start..cell_reach(text, cell);
+                    cells.iter().map(reach).collect()
+                }),
             });
         }
     }
@@ -406,7 +422,14 @@ pub fn draw_boxed(
     let cells = boxed.rows.get(row)?;
     for (c, cell) in cells.iter().enumerate() {
         x += grid.put_str(x, y, if c == 0 { "│ " } else { " │ " }, QUOTE_BAR, room(x));
-        let (before, _) = pads(boxed, c, live::drawn_width(text, &live.runs, cell));
+        // Spaces typed after the text, the cursor after them, pad as text
+        // would (step TB6): a right-aligned cell moves left as they go in.
+        let typed = match spot {
+            Some(spot) if spot == (row, c) => cursor.saturating_sub(cell.end),
+            _ => 0,
+        };
+        let drawn = live::drawn_width(text, &live.runs, cell) + typed;
+        let (before, _) = pads(boxed, c, drawn);
         let start = x;
         x = x.saturating_add(before);
         let mut column = 0;

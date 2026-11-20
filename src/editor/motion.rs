@@ -145,15 +145,24 @@ impl Editor {
             },
         };
         // Entering a table from the line above or below lands on its
-        // first or last hidden pipe: on to the nearest cell that way.
-        let at = match self.cells_at(at) {
-            Some(cells) if cells.cell_at(at).is_none() => match cells.step(at, forward) {
-                Step::To(cell) => self.snap(cell),
-                _ => at,
-            },
-            _ => at,
-        };
+        // first or last hidden pipe.
+        let at = self.in_cell(at, forward);
         self.move_to(at, select);
+    }
+
+    /// `at`, unless in live mode it is on a table's hidden pipe, padding
+    /// or `|---|` line (steps TB3 to TB6): then the nearest cell's text on
+    /// its line (`Cells::nearest`), else the nearest cell `forward` or
+    /// back (`Cells::cell_toward`). Every move ends here, so no key leaves
+    /// the cursor where the box hides it, wherever it started.
+    fn in_cell(&self, at: usize, forward: bool) -> usize {
+        match self.cells_at(at) {
+            Some(cells) if cells.cell_at(at).is_none() => cells
+                .nearest(self.text(), at)
+                .or_else(|| cells.cell_toward(at, forward))
+                .map_or(at, |to| self.snap(to)),
+            _ => at,
+        }
     }
 
     /// Tab and Shift+Tab in a table in live mode (step TB4): to the next
@@ -179,6 +188,7 @@ impl Editor {
             (None, false) => self.line_start(self.cursor),
             (None, true) => self.line_end(self.cursor),
         };
+        let at = self.in_cell(at, end);
         self.move_to(at, select);
     }
 
@@ -232,19 +242,9 @@ impl Editor {
         let offset: usize = text.graphemes(true).take(goal).map(str::len).sum();
         self.move_to(line + offset, select);
         self.goal = Some(goal);
-        let cells = self.cells_at(self.cursor);
-        if let Some(cells) = cells.filter(|cells| cells.cell_at(self.cursor).is_none()) {
-            let to =
-                cells
-                    .nearest(self.text(), self.cursor)
-                    .or(match cells.step(self.cursor, down) {
-                        Step::To(to) => Some(to),
-                        _ => None,
-                    });
-            if let Some(to) = to {
-                let to = self.snap(to);
-                self.move_to(to, select);
-            }
+        let to = self.in_cell(self.cursor, down);
+        if to != self.cursor {
+            self.move_to(to, select);
         }
     }
 }

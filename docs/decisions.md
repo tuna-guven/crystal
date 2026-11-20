@@ -460,9 +460,9 @@ the list shows that note's headings or blocks instead, and choosing a
 block without an id gives it one ([0075](#0075)); while any list is
 open, the key line names what it lists and its keys.
 `edit --live NAME`, an experiment asked for to match Obsidian's live
-preview (no security benefit; about 2 050 lines of code, comments
-included, and 1 300 of tests, folding, link clicks and boxed tables
-included), draws a Markdown note with its markup
+preview (no security benefit; about 2 600 lines of code, comments
+included, and 1 750 of tests, folding, link clicks, boxed tables and
+typing in them included), draws a Markdown note with its markup
 hidden and its text styled as in the viewer, without line numbers.
 Each line is indented as the viewer indents it (sections under their
 heading, quote bars, list markers with wrapped rows hanging, heading
@@ -474,8 +474,7 @@ the viewer drops (a second one in a row, any before the first block or
 after the last) get no row while the cursor is not on them, and the
 viewer's blank row between two blocks the note does not separate is
 drawn as a row with no text (a click there goes to the line below), so
-rows are the viewer's. A table the cursor and the selection are not in
-is boxed as in the viewer: its cells styled, padded by their column's
+rows are the viewer's. A table is boxed as in the viewer: its cells styled, padded by their column's
 alignment between `│`s, `├─┼─┤` for its `|---|` line; a table wider
 than the screen has its columns narrowed by the viewer's
 `fit_columns` and each cell wrapped inside its column by the viewer's
@@ -483,11 +482,31 @@ than the screen has its columns narrowed by the viewer's
 row drawn whole from its cells. The rows the note has no line for (a
 tall row's further rows, the borders above, between two body rows and
 below) are drawn rows like the blank row, kept as one ordered list per
-line; a row start's top bit and an ordinal say which. They hold no
-position, which is sound because the cursor is never in a boxed
-table. With the cursor in it, or a column narrower than 3, a table is
-drawn as written with its cells styled, so its columns never move
-while typing. Rows wrap by character. Drawn as written are only the elements the
+line; a row start's top bit and an ordinal say which. A table stays
+boxed while the cursor is in a cell's text, as in Obsidian: the
+cursor, the selection and clicks land in its cells, on a tall row's
+further rows too, and one rule finds the row holding the cursor for
+drawing and scrolling alike; markup revealed in a cell counts at its
+written width, so its column widens while it is edited, as it does
+for spaces typed at a cell's end, the cursor after them. In live mode
+the keys keep the cursor in cells' text, never on the hidden pipes or
+padding: Left and Right go cell to cell at a cell's edges, Home and
+End to its ends, Tab and Shift+Tab to the next and previous cell's
+start (past the last or first cell nothing happens: no row is added
+and no tab is typed into a table; elsewhere Tab types a tab), Up and
+Down to the same column's cell a row away with the offset kept, and any
+move that would end on a pipe, the padding or the `|---|` line (from
+the lines around, or by a page) ends in the nearest cell instead; a
+property test presses random keys in random tables to hold this. The
+editor finds the cells on such a key from the same parse the view
+draws from, only when the cursor's line holds a `|`, so nothing about
+tables is kept in step with edits. Wherever the box could not show the
+cursor, the table is drawn as written with its cells styled: the
+cursor on a pipe, the padding or the `|---|` line (a click can put it
+there), a selection reaching out of the table, a column narrower than
+3, and a cell holding a tab or a character spelled out ([0037](#0037)),
+which is drawn wider than a table measures it. A short row's missing
+cells are no place of it. Rows wrap by character. Drawn as written are only the elements the
 cursor is in or beside (an inline tag, inline code, a rule, a heading's
 closing `#`s, a code block's fences while the cursor is in the block,
 its code staying yellow on gray in its box), a line's leading markup while

@@ -20,7 +20,7 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::live::{self, line_end};
+use super::live::{self, cell_reach, line_end};
 
 /// Where Left or Right goes from a position in a table (`Cells::step`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,9 +34,23 @@ pub enum Step {
     Leave,
 }
 
+/// One cell: its text, without the spaces around it, whose ends are the
+/// edges keys stop at, and how far the cursor still counts as in it
+/// (`live::cell_reach`: a space typed at its end).
+struct Cell {
+    text: Range<usize>,
+    reach: usize,
+}
+
+impl Cell {
+    fn holds(&self, at: usize) -> bool {
+        self.text.start <= at && at <= self.reach
+    }
+}
+
 /// A table's cells, row by row (the header first), each in its line.
 pub struct Cells {
-    rows: Vec<Vec<Range<usize>>>,
+    rows: Vec<Vec<Cell>>,
     /// The table's first line's start and its last line's end, before
     /// its line break.
     pub start: usize,
@@ -58,22 +72,36 @@ impl Cells {
             let first = line_start(table.lines.start);
             let end = line_end(text, line_start(table.lines.end.checked_sub(1)?));
             (first..=end).contains(&at).then(|| Self {
-                rows: table.rows.iter().map(|(_, cells)| cells.clone()).collect(),
+                rows: table
+                    .rows
+                    .iter()
+                    .map(|(_, cells)| {
+                        let cell = |range: &Range<usize>| Cell {
+                            text: range.clone(),
+                            reach: cell_reach(text, range),
+                        };
+                        cells.iter().map(cell).collect()
+                    })
+                    .collect(),
                 start: first,
                 end,
             })
         })
     }
 
-    /// Every cell, in the text's order.
+    /// Every cell's text, in the text's order.
     fn all(&self) -> impl DoubleEndedIterator<Item = &Range<usize>> {
-        self.rows.iter().flatten()
+        self.rows.iter().flatten().map(|cell| &cell.text)
     }
 
-    /// The cell whose text holds `at` (from its start to its end).
+    /// The text of the cell holding `at`: from its text's start to its
+    /// reach (the spaces after it).
     pub fn cell_at(&self, at: usize) -> Option<&Range<usize>> {
-        self.all()
-            .find(|cell| (cell.start..=cell.end).contains(&at))
+        self.rows
+            .iter()
+            .flatten()
+            .find(|cell| cell.holds(at))
+            .map(|cell| &cell.text)
     }
 
     /// Where Left (`forward` false) or Right goes from `at`: inside a
@@ -105,6 +133,18 @@ impl Cells {
         next.map_or(Step::Leave, Step::To)
     }
 
+    /// For `at` on a pipe, the padding or the `|---|` line: the nearest
+    /// cell's edge that way (`step`), else the other way. Every table has
+    /// a header with a cell, so there is one; `None` only for a table of
+    /// no cells at all.
+    pub fn cell_toward(&self, at: usize, forward: bool) -> Option<usize> {
+        let way = |forward| match self.step(at, forward) {
+            Step::To(to) => Some(to),
+            _ => None,
+        };
+        way(forward).or_else(|| way(!forward))
+    }
+
     /// Where Up (`down` false) or Down goes from `at` in a cell (step
     /// TB5): the same column's cell in the row above or below (that row's
     /// last cell if it is shorter), `goal` graphemes into its text, or as
@@ -120,12 +160,10 @@ impl Cells {
         goal: Option<usize>,
     ) -> Option<(usize, usize)> {
         let (r, c) = self.rows.iter().enumerate().find_map(|(r, row)| {
-            let c = row
-                .iter()
-                .position(|cell| (cell.start..=cell.end).contains(&at))?;
+            let c = row.iter().position(|cell| cell.holds(at))?;
             Some((r, c))
         })?;
-        let cell = &self.rows[r][c];
+        let cell = &self.rows[r][c].text;
         let goal = goal.unwrap_or_else(|| {
             text.get(cell.start..at)
                 .map_or(0, |s| s.graphemes(true).count())
@@ -133,7 +171,7 @@ impl Cells {
         let row = self
             .rows
             .get(if down { r + 1 } else { r.checked_sub(1)? })?;
-        let target = row.get(c).or(row.last())?;
+        let target = &row.get(c).or(row.last())?.text;
         let offset: usize = text
             .get(target.clone())?
             .graphemes(true)
@@ -162,9 +200,7 @@ impl Cells {
     /// line, the nearest cell's start that way. `None` past the last or
     /// the first cell: Tab never adds a row to a table.
     pub fn tab(&self, at: usize, forward: bool) -> Option<usize> {
-        let here = self
-            .all()
-            .position(|cell| (cell.start..=cell.end).contains(&at));
+        let here = self.rows.iter().flatten().position(|cell| cell.holds(at));
         let cell = match (here, forward) {
             (Some(i), true) => self.all().nth(i + 1),
             (Some(i), false) => self.all().nth(i.checked_sub(1)?),
@@ -185,7 +221,7 @@ mod tests {
         found
             .rows
             .iter()
-            .map(|row| row.iter().map(|cell| &text[cell.clone()]).collect())
+            .map(|row| row.iter().map(|cell| &text[cell.text.clone()]).collect())
             .collect()
     }
 
@@ -224,7 +260,7 @@ mod tests {
         let text = "| ab | c |\n|---|---|\n| d |  |\n| f | g |";
         let found = Cells::around(text, 0).unwrap();
         let at = |s: &str| text.find(s).unwrap();
-        let empty = found.rows[1][1].start;
+        let empty = found.rows[1][1].text.start;
         let starts = [at("ab"), at("c |"), at("d |"), empty, at("f |"), at("g |")];
         for pair in starts.windows(2) {
             assert_eq!(found.tab(pair[0], true), Some(pair[1]));
