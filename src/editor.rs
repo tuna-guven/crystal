@@ -33,6 +33,7 @@ pub mod buffer;
 mod cells;
 pub mod live;
 mod motion;
+mod repad;
 pub mod suggest;
 pub mod view;
 
@@ -217,6 +218,14 @@ impl Editor {
             .map(|at| at.min(self.text().len()))
             .filter(|&at| self.text().is_char_boundary(at))
             .map(|at| self.snap(at));
+        // A click or the wheel may take the cursor out of a table: padded
+        // then (step TP3).
+        let before = matches!(
+            event,
+            MouseEvent::Press | MouseEvent::WheelUp | MouseEvent::WheelDown
+        )
+        .then(|| self.table_here())
+        .flatten();
         match (event, at) {
             (MouseEvent::Press, Some(at)) => {
                 let count = match self.last_press {
@@ -245,6 +254,7 @@ impl Editor {
             (MouseEvent::Press | MouseEvent::Release, _) => self.pressed = false,
             (MouseEvent::Drag | MouseEvent::Move, _) => {}
         }
+        self.pad_left(before);
     }
 
     /// Shows `notice` until the next key (the session's save results).
@@ -272,6 +282,20 @@ impl Editor {
             Key::Tab | Key::BackTab => self.cells_at(self.cursor),
             _ => None,
         };
+        // A move without Shift may leave a table: padded then (step TP3).
+        let leaving = matches!(
+            key,
+            Key::Left
+                | Key::Right
+                | Key::Up
+                | Key::Down
+                | Key::PageUp
+                | Key::PageDown
+                | Key::Home
+                | Key::End
+        )
+        .then(|| self.table_here())
+        .flatten();
         let typing = cells.is_none()
             && matches!(
                 key,
@@ -369,6 +393,7 @@ impl Editor {
             Key::Ctrl('q') => return EditorAction::Close,
             _ => {}
         }
+        self.pad_left(leaving);
         EditorAction::Stay
     }
 

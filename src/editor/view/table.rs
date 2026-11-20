@@ -107,7 +107,7 @@ fn in_cells(table: &Table, text: &str, editing: Editing, start: usize, end: usiz
 /// `wrap_each` count it, so it would spill over its column and the next
 /// `│` would cover it, and the cursor beside it. Such a table is drawn as
 /// written, where the editor shows those characters as it does anywhere.
-fn measurable(text: &str, table: &Table) -> bool {
+pub(in crate::editor) fn measurable(text: &str, table: &Table) -> bool {
     table.rows.iter().flat_map(|(_, cells)| cells).all(|cell| {
         text.get(cell.clone()).is_some_and(|cell| {
             cell.graphemes(true)

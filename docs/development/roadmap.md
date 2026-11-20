@@ -32,6 +32,68 @@ scrolls; after `[[` it suggests notes to link, filtered as you type.
 `edit --live` (an experiment) shows the Markdown styled on every line
 but the cursor's, as in Obsidian's live preview.
 
+## Steps TC1 to TC3 (live editing: Tab fills a row and adds one, as in Obsidian)
+
+Asked for by the user (2026-11-20) after a complexity warning (about 65
+lines of code and 60 of tests, no security benefit): Tab in a live
+table now edits the text where TB4 did nothing, as Obsidian does. In a
+short row's last cell (a row written with fewer cells than the header,
+whose missing cells the box draws empty but hold no position), Tab adds
+the missing cells, `  |` each, after its closing `|` (or the `|` it
+lacks), and goes to the first of them. In the last row's last cell, Tab
+adds a row after the table, `  |` per column after the last line's own
+leading markup (a quote's `> `, a list's indent), and goes to its first
+cell. Each is one undo step. Shift+Tab is unchanged; Tab from a pipe or
+padding past the last cell still does nothing. Written in Obsidian's
+style (the user's choice over re-padding the whole table): an empty
+cell's cursor sits after its first space, so typing into `|  |` reads
+`| x |`, in hand-written empty cells too. No new decision: 0045 is
+updated in place.
+
+| Step | What | Check |
+| --- | --- | --- |
+| TC1 (done) | `Cells::tab` returns `Tab::To` (a move) or `Tab::Add` (text to insert, where, and the cursor after); `Cells` keeps the column count and each row's line end; the new row copies the last line's leading `>`s, spaces and tabs | Unit tests: a short row with and without its closing pipe, the last cell of a full last row, a header-only table, a table in a quote; the edited text's cells found again with the cursor in the new cell |
+| TC2 (done) | The editor applies `Tab::Add` as one undo step (a full note cannot get there: live mode ends at 1 MiB); empty cells hold the cursor after their first space (`layout::trimmed`); the live property test checks the cursor in a cell after Tab in a table too | Unit tests: Tab, typing `\| q \| r \|`, undo restores the table, a short row filled then a row added; the property test with 5000 cases |
+| TC3 | Merged into TP4 (one update of 0045 and the guide for both) | |
+
+## Steps TP1 to TP4 (live editing: re-padding a table's Markdown, as in Obsidian)
+
+Asked for by the user (2026-11-20) after a complexity warning (about 140
+lines of code and 115 of tests, no security benefit; "a non usable
+secure app means nothing"): a live table's Markdown is re-padded so its
+pipes line up in the source too, as the Advanced Tables plugin does in
+Obsidian. When: on Tab in a table (its move, filled row or new row and
+the padding are one undo step), and when a move (arrows, Home, End,
+PgUp, PgDn, a click, the wheel) takes the cursor out of a table, without a
+selection (its own undo step: Ctrl+Z after leaving takes the padding
+back first; undo itself never pads, so it can always go further back).
+Never while typing: text right of the cursor does not move.
+
+The padding: each line as `lead| cell | cell |`, its own leading markup
+kept (a quote's `> `, a list's marker or indent), each column as wide as
+its widest cell as written (at least 3), cells padded by their column's
+alignment (right-aligned on the left, centered on both sides), the
+`|---|` line as dashes of that width with the alignment's colons, a short
+row's missing cells added empty, trailing spaces in a cell dropped.
+
+Rewriting text the user did not type must never change a note's
+content, so the padding refuses (leaves the table as written) rather than
+guess: a table not `measurable` (a tab or a spelled-out character in a
+cell), a row with anything outside its cells but pipes, spaces and tabs
+(extra cells past the header's, which the parser ignores, so their text
+would be lost), a row of no cells; and after padding, the edited text is
+parsed again and every cell's text must come out the same, in the same
+order, or nothing is written. Built in a `Zeroizing` string: it holds
+note text. A table already padded is left alone (no empty undo step,
+the note not marked changed).
+
+| Step | What | Check |
+| --- | --- | --- |
+| TP1 (done) | `editor/repad.rs`, pure: `repad(text, at)` gives the table's range, its padded text and a position map (a cell's offset kept, after the table shifted), or `None` (refused or already padded) | Unit tests: columns lined up, alignments, wide characters, escaped `\|`, a quote and a list, missing cells, CRLF, refusals (extra cells, a tab), already padded |
+| TP2 (done, with TP1: alone it is dead code) | Tab pads, in the same undo step as its move or added cells, the cursor mapped | Unit tests: Tab pads; one Ctrl+Z restores the table as written |
+| TP3 (done) | Leaving a table by a move, a click or the wheel pads it, its own undo step, the goal column kept (`table_here` before the move, `pad_left` after); two earlier motion tests start from padded tables | Unit tests: arrows and a click out pad; moves inside, Shift+arrows, a click inside and undo do not |
+| TP4 | A property test: padding keeps every cell's text and is idempotent, the cursor in its cell; decision 0045 and the setup guide (Tab, the new row, the padding); fmt, clippy, test, deny, audit, mdbook | Review: no note text outside `Zeroizing` strings, refusals cover every lossy case, no `unsafe`, syscalls or dependencies |
+
 ## Steps TB1 to TB6 (live editing: typing inside a boxed table)
 
 Asked for by the user (2026-11-20) after a complexity warning (option B,

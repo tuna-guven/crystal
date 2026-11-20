@@ -552,7 +552,8 @@ mod tests {
     }
 
     /// In a live table's cell (step TB4), Tab still links while the list
-    /// is open; once it is closed, Tab and Shift+Tab move between cells.
+    /// is open; once it is closed, Tab and Shift+Tab move between cells
+    /// (in the last cell Tab adds a row, step TC1, and pads, step TP2).
     #[test]
     fn tab_links_in_a_live_table_cell_while_the_list_is_open() {
         let n = sample();
@@ -562,10 +563,18 @@ mod tests {
         assert!(ed.suggestions().is_some());
         send(&mut ed, &mut clip, &n, [Key::Tab]);
         assert_eq!(ed.text(), "| a | b |\n|---|---|\n| x | [[Garden plan]]");
-        // The last cell: Tab stays; Shift+Tab goes to `x`.
+        // The last cell: Tab adds a row and pads the table; Shift+Tab
+        // goes back to the link's cell, then to `x`.
         send(&mut ed, &mut clip, &n, [Key::Tab]);
-        assert_eq!(ed.cursor(), ed.text().len());
-        send(&mut ed, &mut clip, &n, [Key::BackTab]);
+        let want = concat!(
+            "| a   | b               |\n",
+            "| --- | --------------- |\n",
+            "| x   | [[Garden plan]] |\n",
+            "|     |                 |",
+        );
+        assert_eq!(ed.text(), want);
+        assert_eq!(ed.cursor(), want.rfind('\n').unwrap() + 3);
+        send(&mut ed, &mut clip, &n, [Key::BackTab, Key::BackTab]);
         assert_eq!(ed.cursor(), ed.text().find('x').unwrap());
     }
 

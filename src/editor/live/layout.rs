@@ -510,11 +510,18 @@ impl<'a> Builder<'a> {
 }
 
 /// `range` without the spaces and tabs around its text (a table cell).
+/// An empty cell's text is empty, after its first space when it starts
+/// with one (step TC1): the cursor sits there, so what is typed into
+/// `|  |` reads `| x |`, as in a table written by hand.
 fn trimmed(text: &str, range: &Range<usize>) -> Range<usize> {
     let cell = &text[range.clone()];
+    if cell.trim_matches([' ', '\t']).is_empty() {
+        let at = range.start + usize::from(cell.starts_with(' '));
+        return at..at;
+    }
     let start = range.start + (cell.len() - cell.trim_start_matches([' ', '\t']).len());
     let end = range.end - (cell.len() - cell.trim_end_matches([' ', '\t']).len());
-    start..end.max(start)
+    start..end
 }
 
 /// `width` spaces (at most `SPACES`).

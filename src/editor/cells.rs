@@ -15,6 +15,9 @@
 //! The editor applies what these functions say only in live mode (the
 //! view boxes tables there), and still snaps every position to a grapheme
 //! boundary; outside a table they say nothing and keys work as always.
+//! Only Tab edits (steps TC1, TC2): the text it adds is pipes, spaces and
+//! a line break, after a copy of the last line's leading `>`s, spaces
+//! and tabs, never a cell's text.
 
 use std::ops::Range;
 
@@ -34,6 +37,21 @@ pub enum Step {
     Leave,
 }
 
+/// What Tab does in a table (`Cells::tab`, steps TB4 and TC1).
+#[cfg_attr(test, derive(Debug))]
+#[derive(PartialEq, Eq)]
+pub enum Tab {
+    /// Moves the cursor to this position: a cell's start.
+    To(usize),
+    /// Inserts `text` at `at` (empty cells, or a new row), then puts the
+    /// cursor at `cursor`: the first new cell, in the edited text.
+    Add {
+        at: usize,
+        text: String,
+        cursor: usize,
+    },
+}
+
 /// One cell: its text, without the spaces around it, whose ends are the
 /// edges keys stop at, and how far the cursor still counts as in it
 /// (`live::cell_reach`: a space typed at its end).
@@ -51,6 +69,10 @@ impl Cell {
 /// A table's cells, row by row (the header first), each in its line.
 pub struct Cells {
     rows: Vec<Vec<Cell>>,
+    /// Each row's line end, before its line break (as `rows`).
+    ends: Vec<usize>,
+    /// The table's columns: the header's cells.
+    columns: usize,
     /// The table's first line's start and its last line's end, before
     /// its line break.
     pub start: usize,
@@ -72,6 +94,12 @@ impl Cells {
             let first = line_start(table.lines.start);
             let end = line_end(text, line_start(table.lines.end.checked_sub(1)?));
             (first..=end).contains(&at).then(|| Self {
+                ends: table
+                    .rows
+                    .iter()
+                    .map(|&(line, _)| line_end(text, line_start(line)))
+                    .collect(),
+                columns: table.aligns.len(),
                 rows: table
                     .rows
                     .iter()
@@ -197,17 +225,76 @@ impl Cells {
     /// Where Tab (`forward`) or Shift+Tab goes from `at` (step TB4): the
     /// next or the previous cell's start, from a row's last cell to the
     /// next row's first and back; from a pipe, the padding or the `|---|`
-    /// line, the nearest cell's start that way. `None` past the last or
-    /// the first cell: Tab never adds a row to a table.
-    pub fn tab(&self, at: usize, forward: bool) -> Option<usize> {
-        let here = self.rows.iter().flatten().position(|cell| cell.holds(at));
-        let cell = match (here, forward) {
+    /// line, the nearest cell's start that way. As in Obsidian (step
+    /// TC1), Tab in a short row's last cell adds its missing cells, and
+    /// in the table's last cell a row; `None` from the first cell back,
+    /// and from a pipe or the padding past the last cell.
+    pub fn tab(&self, text: &str, at: usize, forward: bool) -> Option<Tab> {
+        let here = self.rows.iter().enumerate().find_map(|(r, row)| {
+            let c = row.iter().position(|cell| cell.holds(at))?;
+            Some((r, c))
+        });
+        if let (Some((r, c)), true) = (here, forward) {
+            let row = &self.rows[r];
+            if c + 1 == row.len() && row.len() < self.columns {
+                return Some(self.fill(text, r));
+            }
+        }
+        let i = here.map(|(r, c)| self.rows[..r].iter().map(Vec::len).sum::<usize>() + c);
+        let cell = match (i, forward) {
             (Some(i), true) => self.all().nth(i + 1),
             (Some(i), false) => self.all().nth(i.checked_sub(1)?),
             (None, true) => self.all().find(|cell| cell.start > at),
             (None, false) => self.all().rev().find(|cell| cell.end < at),
         };
-        cell.map(|cell| cell.start)
+        match (cell, i, forward) {
+            (Some(cell), ..) => Some(Tab::To(cell.start)),
+            (None, Some(_), true) => Some(self.new_row(text)),
+            _ => None,
+        }
+    }
+
+    /// Row `r`'s missing cells, `  |` each, after its closing `|`, or at
+    /// its line's end after the closing `|` it lacks; the cursor in the first of them,
+    /// between its spaces (`layout::trimmed`).
+    fn fill(&self, text: &str, r: usize) -> Tab {
+        let end = self.ends[r];
+        let after = self.rows[r].last().map_or(end, |cell| cell.reach);
+        // Right after the closing pipe, if the row has one (spaces after
+        // it stay at the line's end), else at the line's end.
+        let pipe = text.get(after..end).and_then(|tail| tail.rfind('|'));
+        let closed = pipe.is_some();
+        let at = pipe.map_or(end, |i| after + i + 1);
+        let mut add = String::from(if closed { "" } else { " |" });
+        let cursor = at + add.len() + 1;
+        add.push_str(&"  |".repeat(self.columns - self.rows[r].len()));
+        Tab::Add {
+            at,
+            text: add,
+            cursor,
+        }
+    }
+
+    /// A row of empty cells after the table's last line, behind a copy of
+    /// that line's leading `>`s, spaces and tabs (a quote's or a list's
+    /// markup) so it stays in the same container; the cursor in its
+    /// first cell.
+    fn new_row(&self, text: &str) -> Tab {
+        let last = text
+            .get(..self.end)
+            .map_or(0, |s| s.rfind('\n').map_or(0, |i| i + 1));
+        let lead = text.get(last..self.end).unwrap_or("");
+        let lead = &lead[..lead.len() - lead.trim_start_matches([' ', '\t', '>']).len()];
+        let mut add = String::from("\n");
+        add.push_str(lead);
+        add.push('|');
+        let cursor = self.end + add.len() + 1;
+        add.push_str(&"  |".repeat(self.columns));
+        Tab::Add {
+            at: self.end,
+            text: add,
+            cursor,
+        }
     }
 }
 
@@ -253,26 +340,90 @@ mod tests {
     }
 
     /// Tab and Shift+Tab: every cell's start in order, row to row, and
-    /// back; nothing past the ends; from pipes and the `|---|` line the
-    /// nearest cell that way.
+    /// back; nothing before the first cell; from pipes and the `|---|`
+    /// line the nearest cell that way.
     #[test]
     fn tabs_go_cell_to_cell() {
         let text = "| ab | c |\n|---|---|\n| d |  |\n| f | g |";
         let found = Cells::around(text, 0).unwrap();
         let at = |s: &str| text.find(s).unwrap();
+        let tab = |at, forward| found.tab(text, at, forward);
         let empty = found.rows[1][1].text.start;
         let starts = [at("ab"), at("c |"), at("d |"), empty, at("f |"), at("g |")];
         for pair in starts.windows(2) {
-            assert_eq!(found.tab(pair[0], true), Some(pair[1]));
-            assert_eq!(found.tab(pair[1], false), Some(pair[0]));
+            assert_eq!(tab(pair[0], true), Some(Tab::To(pair[1])));
+            assert_eq!(tab(pair[1], false), Some(Tab::To(pair[0])));
         }
         // From the middle or the end of a cell too.
-        assert_eq!(found.tab(at("ab") + 2, true), Some(at("c |")));
-        assert_eq!(found.tab(at("ab") + 1, false), None);
-        assert_eq!(found.tab(at("g |") + 1, true), None);
-        assert_eq!(found.tab(0, true), Some(at("ab")));
-        assert_eq!(found.tab(at("|---"), true), Some(at("d |")));
-        assert_eq!(found.tab(at("|---"), false), Some(at("c |")));
+        assert_eq!(tab(at("ab") + 2, true), Some(Tab::To(at("c |"))));
+        assert_eq!(tab(at("ab") + 1, false), None);
+        assert_eq!(tab(0, true), Some(Tab::To(at("ab"))));
+        assert_eq!(tab(at("|---"), true), Some(Tab::To(at("d |"))));
+        assert_eq!(tab(at("|---"), false), Some(Tab::To(at("c |"))));
+        // From the closing pipe, past the last cell: nothing.
+        assert_eq!(tab(text.len(), true), None);
+    }
+
+    /// `text` after Tab at `at`'s `Tab::Add`, and the new cursor, which
+    /// is in a cell of the edited text's table.
+    fn added(text: &str, at: usize) -> (String, usize) {
+        let found = Cells::around(text, at).unwrap();
+        let Some(Tab::Add {
+            at,
+            text: add,
+            cursor,
+        }) = found.tab(text, at, true)
+        else {
+            panic!("no Tab::Add");
+        };
+        let mut edited = text.to_owned();
+        edited.insert_str(at, &add);
+        let cells = Cells::around(&edited, cursor).unwrap();
+        assert!(cells.cell_at(cursor).is_some(), "{edited:?} {cursor}");
+        (edited, cursor)
+    }
+
+    /// As in Obsidian (step TC1): Tab in a short row's last cell adds its
+    /// missing cells (and the closing pipe it lacks) and goes to the
+    /// first; in the table's last cell it adds a row of empty cells, in
+    /// the last line's quote or list, and goes to its first cell; the
+    /// row is the table's (found from the cursor, as many cells as the
+    /// header).
+    #[test]
+    fn tab_fills_a_short_row_and_adds_a_row() {
+        let head = "| a | b | c |\n|---|---|---|\n";
+        for (row, filled) in [
+            ("| x", "| x |  |  |"),
+            ("| x |", "| x |  |  |"),
+            ("| x | y |  ", "| x | y |  |  "),
+        ] {
+            let text = [head, row, "\n\nafter"].concat();
+            let last = text.rfind(['x', 'y']).unwrap() + 1;
+            let (edited, cursor) = added(&text, last);
+            assert_eq!(edited, [head, filled, "\n\nafter"].concat());
+            let first_new = if row.contains('y') { 2 } else { 1 };
+            let cells = Cells::around(&edited, cursor).unwrap();
+            assert_eq!(cells.rows[1].len(), 3);
+            assert_eq!(cells.rows[1][first_new].text.start, cursor);
+        }
+        for (text, row) in [
+            ("| a | b |\n|---|---|\n| x | y |\n\nafter", "\n|  |  |"),
+            ("| a | b |\n|---|---|", "\n|  |  |"),
+            ("> | a |\n> |---|\n> | x |\n", "\n> |  |"),
+            ("- item\n\n  | a |\n  |---|\n  | x |", "\n  |  |"),
+        ] {
+            let end = Cells::around(text, text.find('a').unwrap()).unwrap().end;
+            let last = text[..end].rfind(char::is_alphabetic).unwrap() + 1;
+            let (edited, cursor) = added(text, last);
+            assert_eq!(
+                edited,
+                [&text[..end], row, &text[end..]].concat(),
+                "{text:?}"
+            );
+            let cells = Cells::around(&edited, cursor).unwrap();
+            let new = cells.rows.last().unwrap();
+            assert_eq!((new.len(), new[0].text.start), (cells.columns, cursor));
+        }
     }
 
     /// Up and Down: the same column's cell a row away (the `|---|` line

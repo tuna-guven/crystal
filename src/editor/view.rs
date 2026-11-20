@@ -64,6 +64,8 @@ mod rows;
 mod suggestions;
 mod table;
 
+pub(super) use table::measurable;
+
 use fold::shift;
 use look::{Drawn, Look};
 use rows::{Row, RowStart, line_start, row_start, rows, top_for};
@@ -2244,12 +2246,14 @@ mod tests {
                     _ => Key::PageDown,
                 };
                 let before = ed.text().to_owned();
+                let tab_in_table = k == 6 && Cells::around(&before, ed.cursor()).is_some();
                 ed.key(key, &mut clip);
                 let text = ed.text();
                 let cursor = ed.cursor();
-                // A move, not typing (Tab outside a table types a tab, and
-                // typing may leave the cursor anywhere).
-                let moved = text == before;
+                // A move, or Tab in a table, which may add cells or a row
+                // (step TC1); not typing (Tab outside a table types a tab,
+                // and typing may leave the cursor anywhere).
+                let moved = text == before || tab_in_table;
                 if let Some(cells) = Cells::around(text, cursor).filter(|_| moved) {
                     prop_assert!(
                         cells.cell_at(cursor).is_some(),

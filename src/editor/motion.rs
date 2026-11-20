@@ -14,7 +14,8 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::Editor;
-use super::cells::{Cells, Step};
+use super::cells::{Cells, Step, Tab};
+use super::repad::repad;
 use super::view::LIVE_MAX;
 
 impl Editor {
@@ -167,13 +168,73 @@ impl Editor {
 
     /// Tab and Shift+Tab in a table in live mode (step TB4): to the next
     /// or the previous cell's start (`Cells::tab`), the selection dropped;
-    /// past the last or the first cell nothing happens, so a table never
-    /// gets a tab character or a new row from them.
+    /// before the first cell nothing happens, so a table never gets a tab
+    /// character from them. Tab's missing cells or new row (step TC1) go
+    /// in, then the cursor into the first new cell; then the table is
+    /// padded (step TP2). All of it is one undo step. If the edit fails,
+    /// nothing changes and the cursor stays (a full note cannot get here:
+    /// live mode ends at `LIVE_MAX`, far below the size limit).
     pub(super) fn tab_cell(&mut self, cells: &Cells, forward: bool) {
-        if let Some(at) = cells.tab(self.cursor, forward) {
-            let at = self.snap(at);
-            self.move_to(at, false);
+        match cells.tab(self.text(), self.cursor, forward) {
+            Some(Tab::To(at)) => {
+                let at = self.snap(at);
+                self.move_to(at, false);
+            }
+            Some(Tab::Add { at, text, cursor }) => {
+                let back = self.cursor;
+                self.move_to(at, false);
+                if !self.replace_selection(&text) {
+                    self.move_to(back, false);
+                    return;
+                }
+                self.collapse(cursor);
+            }
+            None => return,
         }
+        self.pad_table(self.cursor);
+        self.buffer.commit();
+    }
+
+    /// Pads the live table whose lines hold `at` (`repad`, steps TP1 to
+    /// TP3), the cursor kept at its offset in its cell or where it was
+    /// around the table; not committed, so the caller decides the undo
+    /// step. Nothing happens for a table refused or already padded, or if
+    /// the padding would overfill the note.
+    pub(super) fn pad_table(&mut self, at: usize) {
+        if !self.live || self.text().len() > LIVE_MAX {
+            return;
+        }
+        let Some(pad) = repad(self.text(), at) else {
+            return;
+        };
+        let cursor = pad.map(self.cursor);
+        if self.buffer.replace(pad.range.clone(), &pad.text).is_ok() {
+            self.dirty = true;
+            self.collapse(cursor);
+        }
+    }
+
+    /// The live table the cursor is in, by its first line's start: noted
+    /// before a move, to pad it if the move leaves it (step TP3).
+    pub(super) fn table_here(&self) -> Option<usize> {
+        self.cells_at(self.cursor).map(|cells| cells.start)
+    }
+
+    /// After a move from the table starting at `before` (`table_here`):
+    /// if the cursor is out of it and selects nothing, the table is
+    /// padded, its own undo step, the goal column kept. Only moves call
+    /// this, never undo, so Ctrl+Z can always go back past a padding.
+    pub(super) fn pad_left(&mut self, before: Option<usize>) {
+        let Some(start) = before else {
+            return;
+        };
+        if self.anchor.is_some() || self.table_here() == Some(start) {
+            return;
+        }
+        let goal = self.goal;
+        self.pad_table(start);
+        self.buffer.commit();
+        self.goal = goal;
     }
 
     /// Home and End: the line's start or end; in a table's cell in live
@@ -329,7 +390,8 @@ mod tests {
     fn arrows_move_through_live_table_cells() {
         // A blank line ends the table: `after` right below it would be
         // one more row.
-        let text = "before\n| ab | c |\n|---|---|\n| d | é |\n\nafter";
+        // Padded already (step TP3 pads a table the cursor leaves).
+        let text = "before\n| ab  | c   |\n| --- | --- |\n| d   | é   |\n\nafter";
         let at = |s: &str| text.find(s).unwrap();
         let (mut ed, mut clip) = editor(text);
         ed.set_live(true);
@@ -339,7 +401,7 @@ mod tests {
             ed.key(Key::Right, &mut clip);
             seen.push(ed.cursor());
         }
-        let (ab, c, d, e) = (at("ab"), at("c |"), at("d |"), at("é"));
+        let (ab, c, d, e) = (at("ab"), at("c "), at("d "), at("é"));
         let after = at("\n\nafter") + 1;
         let way = [ab, ab + 1, ab + 2, c, c + 1, d, d + 1, e, e + 2, after];
         assert_eq!(seen, way);
@@ -361,7 +423,7 @@ mod tests {
         ed.jump_to(ab + 1);
         ed.key(Key::ShiftRight, &mut clip);
         ed.key(Key::ShiftRight, &mut clip);
-        assert_eq!(selected(&ed), "b | ");
+        assert_eq!(selected(&ed), "b  | ");
         // Not live: graphemes and lines, pipes included.
         let (mut ed, mut clip) = editor(text);
         ed.jump_to(ab + 2);
@@ -387,33 +449,43 @@ mod tests {
     }
 
     /// Tab and Shift+Tab in a live table (step TB4): cell to cell, row to
-    /// row, nothing at the ends, and undo still takes typing in a cell
-    /// back on its own. Outside a table, and not live, Tab types a tab;
-    /// Shift+Tab does nothing there.
+    /// row, Shift+Tab nothing at the first cell, and undo still takes
+    /// typing in a cell back on its own. Outside a table, and not live,
+    /// Tab types a tab; Shift+Tab does nothing there. (The table is
+    /// padded already, so Tab only moves.)
     #[test]
     fn tabs_move_between_live_table_cells() {
-        let text = "| ab | c |\n|---|---|\n| d | e |\n\nafter";
+        let text = "| ab  | c   |\n| --- | --- |\n| d   | e   |\n\nafter";
         let at = |s: &str| text.find(s).unwrap();
         let (mut ed, mut clip) = editor(text);
         ed.set_live(true);
         ed.jump_to(at("ab") + 1);
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..3 {
             ed.key(Key::Tab, &mut clip);
             seen.push(ed.cursor());
         }
-        assert_eq!(seen, [at("c |"), at("d |"), at("e |"), at("e |")]);
+        assert_eq!(seen, [at("c "), at("d "), at("e ")]);
         for _ in 0..4 {
             ed.key(Key::BackTab, &mut clip);
         }
         assert_eq!(ed.cursor(), at("ab"));
         assert_eq!(ed.text(), text);
-        // Typing, a Tab, more typing: two undo steps.
+        // Typing, a Tab (which pads `xab` narrower), more typing: three
+        // undo steps.
         typed(&mut ed, &mut clip, "x");
         ed.key(Key::Tab, &mut clip);
         typed(&mut ed, &mut clip, "y");
-        ed.key(Key::Ctrl('z'), &mut clip);
-        assert_eq!(ed.text(), text.replacen("ab", "xab", 1));
+        let undo = |ed: &mut super::Editor, clip: &mut crate::ui::clipboard::Clipboard| {
+            ed.key(Key::Ctrl('z'), clip);
+            ed.text().to_owned()
+        };
+        assert_eq!(
+            undo(&mut ed, &mut clip),
+            text.replacen("| ab  |", "| xab |", 1)
+        );
+        assert_eq!(undo(&mut ed, &mut clip), text.replacen("ab", "xab", 1));
+        assert_eq!(undo(&mut ed, &mut clip), text);
         // Outside the table: a tab; Shift+Tab nothing.
         let (mut ed, mut clip) = editor(text);
         ed.set_live(true);
@@ -427,6 +499,107 @@ mod tests {
         ed.jump_to(at("ab"));
         ed.key(Key::Tab, &mut clip);
         assert!(ed.text().starts_with("| \tab"));
+    }
+
+    /// As in Obsidian (step TC1): Tab in the last cell adds a row of
+    /// empty cells, the cursor after the first one's first space so
+    /// typing reads `| q |`; in a short row's last cell it adds the
+    /// missing cells first. Each Tab is one undo step with its padding.
+    #[test]
+    fn tab_in_the_last_cell_adds_a_row() {
+        let text = "| ab  | c   |\n| --- | --- |\n| d   | e   |\n\nafter";
+        let end = text.find("\n\nafter").unwrap();
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(text.find("e ").unwrap());
+        ed.key(Key::Tab, &mut clip);
+        let added = [&text[..end], "\n|     |     |", &text[end..]].concat();
+        assert_eq!((ed.text(), ed.cursor()), (added.as_str(), end + 3));
+        typed(&mut ed, &mut clip, "q");
+        ed.key(Key::Tab, &mut clip);
+        typed(&mut ed, &mut clip, "r");
+        assert!(ed.text().contains("\n| q   | r"), "{:?}", ed.text());
+        for _ in 0..4 {
+            ed.key(Key::Ctrl('z'), &mut clip);
+        }
+        assert_eq!(ed.text(), text);
+
+        // A short row, without its closing pipe: filled, then a new row.
+        let text = "| a   | b   |\n| --- | --- |\n| d\n\nafter";
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(text.find('d').unwrap() + 1);
+        ed.key(Key::Tab, &mut clip);
+        let filled = text.replacen("| d\n", "| d   |     |\n", 1);
+        assert_eq!(ed.text(), filled);
+        assert_eq!(ed.cursor(), filled.find("| d   | ").unwrap() + 8);
+        ed.key(Key::Tab, &mut clip);
+        let added = filled.replacen("|     |\n", "|     |\n|     |     |\n", 1);
+        assert_eq!(ed.text(), added);
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), filled);
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), text);
+    }
+
+    /// Leaving a table by a move pads it (step TP3), its own undo step,
+    /// the cursor where the move put it; moves inside, Shift+arrows out,
+    /// and undo do not pad. A click out pads too; a click in does not.
+    #[test]
+    fn leaving_a_table_pads_it() {
+        use crate::shell::keys::MouseEvent;
+        let text = "|a|bb|\n|-|-|\n|c|d|\n\nafter";
+        let padded = "| a   | bb  |\n| --- | --- |\n| c   | d   |\n\nafter";
+        let blank = |t: &str| t.find("\n\nafter").unwrap() + 1;
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(1);
+        keys(&mut ed, &mut clip, [Key::Right, Key::Right, Key::Down]);
+        assert_eq!(ed.text(), text, "moves inside: as written");
+        ed.key(Key::Down, &mut clip);
+        assert_eq!((ed.text(), ed.cursor()), (padded, blank(padded)));
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), text, "undo: as written, and not padded again");
+
+        // Selecting out of the table: as written.
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(text.find('c').unwrap());
+        ed.key(Key::ShiftDown, &mut clip);
+        assert_eq!((ed.text(), ed.cursor()), (text, blank(text)));
+
+        // A click: in the table nothing, out of it padded.
+        let (mut ed, _) = editor(text);
+        ed.set_live(true);
+        let now = std::time::Instant::now();
+        ed.mouse(MouseEvent::Press, Some(1), now);
+        ed.mouse(MouseEvent::Press, Some(text.find('d').unwrap()), now);
+        assert_eq!(ed.text(), text);
+        ed.mouse(MouseEvent::Press, Some(text.len()), now);
+        assert_eq!((ed.text(), ed.cursor()), (padded, padded.len()));
+    }
+
+    /// Tab pads the table (step TP2): pipes lined up, the cursor in the
+    /// cell Tab went to; one Ctrl+Z gives the table back as written.
+    /// Not live: Tab types a tab, nothing is padded.
+    #[test]
+    fn tab_pads_the_table() {
+        let text = "|a|bb|\n|-|-|\n|c|d|\n";
+        let padded = "| a   | bb  |\n| --- | --- |\n| c   | d   |\n";
+        let (mut ed, mut clip) = editor(text);
+        ed.set_live(true);
+        ed.jump_to(1);
+        ed.key(Key::Tab, &mut clip);
+        assert_eq!(
+            (ed.text(), ed.cursor()),
+            (padded, padded.find("bb").unwrap())
+        );
+        ed.key(Key::Ctrl('z'), &mut clip);
+        assert_eq!(ed.text(), text);
+        let (mut ed, mut clip) = editor(text);
+        ed.jump_to(1);
+        ed.key(Key::Tab, &mut clip);
+        assert_eq!(ed.text(), "|\ta|bb|\n|-|-|\n|c|d|\n");
     }
 
     /// Up and Down in a live table (step TB5): the same column's cell a row
@@ -451,6 +624,12 @@ mod tests {
         // The short row's only cell is column 0, so Up from it goes to
         // `f`, then `ab`; the offset 2 is kept throughout.
         assert_eq!(seen, [g + 1, h + 2, f + 1, at("ab") + 2, 2]);
+        // Leaving padded the table, its short row filled (step TP3): the
+        // rest runs on the padded text.
+        let text = "before\n| ab  | cde |\n| --- | --- |\n| f   | g   |\n| hij |     |\n\nafter";
+        assert_eq!(ed.text(), text);
+        let at = |s: &str| text.find(s).unwrap();
+        let (f, h) = (at("f "), at("hij"));
         // Entering from above at column 0: the first cell, not the pipe.
         ed.jump_to(0);
         ed.key(Key::Down, &mut clip);
@@ -472,12 +651,12 @@ mod tests {
         // Shift selects across rows.
         ed.jump_to(at("ab"));
         ed.key(Key::ShiftDown, &mut clip);
-        assert_eq!(selected(&ed), &text[at("ab")..at("f |")]);
+        assert_eq!(selected(&ed), &text[at("ab")..f]);
         // A page landing in the table: in a cell.
         ed.set_page(2);
         ed.jump_to(0);
         ed.key(Key::PageDown, &mut clip);
-        assert!(ed.cursor() == at("f |"), "{}", ed.cursor());
+        assert!(ed.cursor() == f, "{}", ed.cursor());
         // Not live: the line's start, a pipe.
         let (mut ed, mut clip) = editor(text);
         ed.key(Key::Down, &mut clip);
