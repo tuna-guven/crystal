@@ -1378,6 +1378,37 @@ impl View {
         Some(if row.ends_line { row.range.end } else { last })
     }
 
+    /// The screen row, from the text's first (0), the line holding `at`
+    /// starts on as last drawn; negative when it starts above the screen
+    /// (the cursor on a wrapped row of a long line). For Ctrl+E: the
+    /// preview puts the line on the same row. `None` before the first
+    /// frame or when the line is not on screen.
+    pub fn line_row(&self, text: &str, at: usize) -> Option<isize> {
+        let area = self.area?;
+        let width = usize::from(area.width - 1);
+        if !text.is_char_boundary(self.top & !MARK) || !text.is_char_boundary(at) {
+            return None;
+        }
+        let line = line_start(text, at);
+        let mut start = Some(self.top);
+        for y in 0..area.height {
+            let row = row_at(text, start?, width, &self.look);
+            if row.mark == 0 && row.range.start == line {
+                return isize::try_from(y).ok();
+            }
+            start = row.next;
+        }
+        // Above the screen: its rows down to the first one shown.
+        let mut start = line;
+        for above in 1..=isize::try_from(area.height).ok()? {
+            start = row_at(text, start, width, &self.look).next?;
+            if start == self.top {
+                return Some(-above);
+            }
+        }
+        None
+    }
+
     /// Moves `top` so the cursor's row is on screen.
     fn scroll(&mut self, text: &str, cursor: usize, width: usize, rows: usize) {
         if !text.is_char_boundary(self.top & !MARK) {
@@ -3138,6 +3169,32 @@ mod tests {
                 "  └───┴───┘"
             ]
         );
+    }
+
+    /// Ctrl+E's anchor: the screen row the cursor's line starts on, as
+    /// last drawn; negative when a long line starts above the screen.
+    #[test]
+    fn line_row_is_where_the_line_starts() {
+        let mut clip = Clipboard::default();
+        let text = "a\nb\nc\nd\ne\nf\ng";
+        let mut ed = Editor::new(text).unwrap();
+        for _ in 0..6 {
+            ed.key(Key::Down, &mut clip);
+        }
+        let mut view = View::default();
+        assert_eq!(view.line_row(text, 0), None, "before a frame");
+        drawn(&mut ed, &mut view, 30, 5);
+        assert_eq!(view.line_row(text, ed.cursor()), Some(2));
+        assert_eq!(view.line_row(text, 8), Some(0));
+        assert_eq!(view.line_row(text, 0), None, "off screen");
+        // 100 columns in rows of 19: the cursor's row is the sixth, the
+        // last of three shown.
+        let long = "x".repeat(100);
+        let mut ed = Editor::new(&long).unwrap();
+        ed.jump_to(100);
+        let mut view = View::default();
+        drawn(&mut ed, &mut view, 22, 5);
+        assert_eq!(view.line_row(&long, 100), Some(-3));
     }
 
     /// Border rows scroll like rows (step LT2): the cursor's row last on

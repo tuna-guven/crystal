@@ -74,9 +74,10 @@ pub enum PagerAction {
 enum Jump {
     Heading(Zeroizing<String>),
     Block(Zeroizing<String>),
-    /// The first row showing this note line or a later one (the editor's
-    /// Ctrl+E: its cursor's block).
-    Line(usize),
+    /// The first row showing this note line or a later one, put on this
+    /// screen row of the note (negative: above the screen), so the
+    /// editor's Ctrl+E shows its cursor's line where it was.
+    Line(usize, isize),
 }
 
 /// The list `b` shows: the notes linking here, and which is selected.
@@ -138,12 +139,12 @@ impl Pager {
 
     /// From the editor: shows `note` with the text `draw` is given, the
     /// editor's, instead of the saved one.
-    /// The editor's preview of `note`, its note line `line` (from 1) at
-    /// the top, or as near as the page's end allows.
-    pub fn preview(note: usize, line: usize) -> Self {
+    /// The editor's preview of `note`, its note line `line` (from 1) on
+    /// screen row `row` of the note, or as near as the page's ends allow.
+    pub fn preview(note: usize, line: usize, row: isize) -> Self {
         Self {
             preview: Some(note),
-            jump: Some(Jump::Line(line)),
+            jump: Some(Jump::Line(line, row)),
             ..Self::open(note)
         }
     }
@@ -502,17 +503,20 @@ impl Pager {
             let line = match &jump {
                 Jump::Heading(h) => page.heading_line(h),
                 Jump::Block(id) => page.block_line(id),
-                Jump::Line(n) => (0..page.line_count())
+                Jump::Line(n, _) => (0..page.line_count())
                     .find(|&i| page.note_line(i).is_some_and(|l| l as usize >= *n)),
             };
-            match line {
-                Some(line) => {
+            match (line, &jump) {
+                (Some(line), Jump::Line(_, row)) => {
+                    self.scroll = line.saturating_add_signed(-row);
+                }
+                (Some(line), _) => {
                     self.unfold_to(line);
                     self.scroll = line;
                 }
                 // Past the last line: the page's end, without a word.
-                None if matches!(jump, Jump::Line(_)) => self.scroll = usize::MAX,
-                None => self.notice = Some("That heading or block is not on the page."),
+                (None, Jump::Line(..)) => self.scroll = usize::MAX,
+                (None, _) => self.notice = Some("That heading or block is not on the page."),
             }
         }
         // After a resize or re-render, the top row is a shown line, and
@@ -644,7 +648,7 @@ mod tests {
         let n = sample();
         let draft = "# Draft\n\nNot saved yet, see [[c]].";
         let mut grid = Grid::new(60, 8);
-        let mut p = Pager::preview(0, 1);
+        let mut p = Pager::preview(0, 1, 0);
         p.draw(&mut grid, &n, Some(draft));
         let shown = |grid: &Grid, y| -> String {
             (0..60).map(|x| grid.cell(x, y).unwrap().symbol()).collect()
@@ -667,16 +671,17 @@ mod tests {
         assert_eq!(p.key(Key::Ctrl('e'), &n), PagerAction::Edit(0));
     }
 
-    /// The editor's Ctrl+E: the preview starts at the cursor's block (its
-    /// note line on the top row); past the last line, at the page's end.
+    /// The editor's Ctrl+E: the cursor's line on the screen row it had
+    /// in the editor; as near as the page's ends allow; past the last
+    /// line, the page's end.
     #[test]
-    fn preview_starts_at_the_given_line() {
+    fn preview_keeps_the_line_on_its_row() {
         let n = sample();
         let draft: String = (1..=30).map(|i| format!("para {i}\n\n")).collect();
         // The note's rows (6), trimmed.
-        let rows = |line| -> Vec<String> {
+        let rows = |line, row| -> Vec<String> {
             let mut grid = Grid::new(40, 8);
-            let mut p = Pager::preview(0, line);
+            let mut p = Pager::preview(0, line, row);
             p.draw(&mut grid, &n, Some(&draft));
             (1..7)
                 .map(|y| {
@@ -685,10 +690,15 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(rows(1)[0], "para 1");
-        assert_eq!(rows(12)[0], "para 12");
+        assert_eq!(rows(1, 0)[0], "para 1");
+        assert_eq!(rows(12, 0)[0], "para 12");
+        assert_eq!(rows(12, 4)[4], "para 12");
+        // Above the screen: its rows hidden above the top.
+        assert_eq!(rows(12, -2)[0], "para 13");
+        // Near the start: the page cannot start before its first line.
+        assert_eq!(rows(2, 5)[2], "para 2");
         // Past the last line: the last screen, full.
-        let end = rows(99);
+        let end = rows(99, 3);
         assert_eq!(end.last().map(String::as_str), Some("para 30"));
         assert!(!end.contains(&"para 27".to_owned()));
     }

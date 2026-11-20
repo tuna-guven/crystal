@@ -435,8 +435,8 @@ plaintext. It has one mode and the keys most editors share: arrows,
 Home, End, PgUp and PgDn move, with Shift they select, Ctrl+A selects all,
 Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste Crystal's clipboard, Ctrl+Z
 and Ctrl+Y undo and redo, Ctrl+S saves, Ctrl+E saves and switches to
-the rendered view, its top row at the start of the cursor's block (a
-paragraph, a list item, a heading, a code block, a table), and back, and
+the rendered view, the cursor's line on the screen row it had (as near
+as the page's ends allow, so nothing jumps), and back, and
 Ctrl+Q saves and closes (if that save fails, it stays and says so, and
 Ctrl+Q right after closes without saving); there is no saving on every
 change, which would seal and write the whole vault per key and race a
