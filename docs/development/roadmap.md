@@ -24,8 +24,8 @@ into the Crystal shell, which knows `ls`, `tags`, `find`, `search`,
 `view`, `links`, `edit`, `mv`, `rm`, `help`, `clear`, `lock` and
 `quit`. Crystal locks by itself after 5 minutes without a key, and when
 suspended.
-`edit` opens the editor (Ctrl+S saves, Ctrl+E shows the note
-rendered, Ctrl+Q closes), creating a missing note after asking for its
+`edit` opens the editor (Ctrl+S saves, Ctrl+E saves and shows the
+note rendered from the cursor's block, Ctrl+Q saves and closes), creating a missing note after asking for its
 type (Markdown or text), shown dimmed after every name. In the editor the
 mouse places the cursor, selects (drag, double and triple click) and
 scrolls; after `[[` it suggests notes to link, filtered as you type.

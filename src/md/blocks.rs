@@ -161,6 +161,40 @@ fn block(body: &str, range: Range<usize>) -> Option<Block> {
 }
 
 /// Tags that live inside a block's text.
+/// The note line (from 1, numbered as the viewer numbers them,
+/// `model::lines`) where the block holding `at` starts: the innermost
+/// paragraph, heading, list item, code block, table, quote, HTML block or
+/// rule around it, as the viewer parses the note. Ctrl+E shows the
+/// preview from there. Between blocks: the next line with text.
+pub fn block_line(body: &str, at: usize) -> usize {
+    let mut start = at.min(body.len());
+    for (event, range) in Parser::new_ext(body, super::render::OPTIONS).into_offset_iter() {
+        if range.start > at {
+            break;
+        }
+        let block = match event {
+            Event::Start(tag) => matches!(
+                tag,
+                Tag::Paragraph
+                    | Tag::Heading { .. }
+                    | Tag::Item
+                    | Tag::CodeBlock(_)
+                    | Tag::Table(_)
+                    | Tag::BlockQuote(_)
+                    | Tag::HtmlBlock
+            ),
+            Event::Rule => true,
+            _ => false,
+        };
+        // The text's end is the last block's.
+        if block && (at < range.end || at == body.len()) {
+            start = range.start;
+        }
+    }
+    let line = body[..start].rfind('\n').map_or(0, |i| i + 1);
+    crate::model::lines::count(&body[..line]) + 1
+}
+
 fn is_inline(tag: &Tag<'_>) -> bool {
     matches!(
         tag,
@@ -190,6 +224,25 @@ fn is_inline_end(tag: TagEnd) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ctrl+E's top line: the start of the block the cursor is in, counted
+    /// as the viewer counts lines (blank lines and fences have none).
+    #[test]
+    fn block_line_is_the_blocks_first() {
+        let body = "# Head\n\nfirst line\nsecond line\n\n- a\n- b\n  more\n\n```\ncode\n```\n\n| t |\n|---|\n| r |\n";
+        let at = |part: &str| block_line(body, body.find(part).unwrap());
+        assert_eq!(at("Head"), 1);
+        assert_eq!(at("second"), 2);
+        assert_eq!(at("more"), 5);
+        // The fence has no number: the code's line.
+        assert_eq!(at("code"), 7);
+        assert_eq!(at("| r"), 8);
+        // Between blocks: the next line with text; past the end, the last
+        // block's.
+        assert_eq!(block_line(body, body.find("\n\n- a").unwrap() + 1), 4);
+        assert_eq!(block_line(body, body.len()), 8);
+        assert_eq!(block_line("", 0), 1);
+    }
     use crate::notes::tests::{note, notes};
     use proptest::prelude::*;
 

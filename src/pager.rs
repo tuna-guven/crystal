@@ -74,6 +74,9 @@ pub enum PagerAction {
 enum Jump {
     Heading(Zeroizing<String>),
     Block(Zeroizing<String>),
+    /// The first row showing this note line or a later one (the editor's
+    /// Ctrl+E: its cursor's block).
+    Line(usize),
 }
 
 /// The list `b` shows: the notes linking here, and which is selected.
@@ -135,9 +138,12 @@ impl Pager {
 
     /// From the editor: shows `note` with the text `draw` is given, the
     /// editor's, instead of the saved one.
-    pub fn preview(note: usize) -> Self {
+    /// The editor's preview of `note`, its note line `line` (from 1) at
+    /// the top, or as near as the page's end allows.
+    pub fn preview(note: usize, line: usize) -> Self {
         Self {
             preview: Some(note),
+            jump: Some(Jump::Line(line)),
             ..Self::open(note)
         }
     }
@@ -496,12 +502,16 @@ impl Pager {
             let line = match &jump {
                 Jump::Heading(h) => page.heading_line(h),
                 Jump::Block(id) => page.block_line(id),
+                Jump::Line(n) => (0..page.line_count())
+                    .find(|&i| page.note_line(i).is_some_and(|l| l as usize >= *n)),
             };
             match line {
                 Some(line) => {
                     self.unfold_to(line);
                     self.scroll = line;
                 }
+                // Past the last line: the page's end, without a word.
+                None if matches!(jump, Jump::Line(_)) => self.scroll = usize::MAX,
                 None => self.notice = Some("That heading or block is not on the page."),
             }
         }
@@ -634,7 +644,7 @@ mod tests {
         let n = sample();
         let draft = "# Draft\n\nNot saved yet, see [[c]].";
         let mut grid = Grid::new(60, 8);
-        let mut p = Pager::preview(0);
+        let mut p = Pager::preview(0, 1);
         p.draw(&mut grid, &n, Some(draft));
         let shown = |grid: &Grid, y| -> String {
             (0..60).map(|x| grid.cell(x, y).unwrap().symbol()).collect()
@@ -655,6 +665,32 @@ mod tests {
         p.draw(&mut grid, &n, Some(draft));
         assert!(!(1..7).any(|y| shown(&grid, y).contains("Not saved yet")));
         assert_eq!(p.key(Key::Ctrl('e'), &n), PagerAction::Edit(0));
+    }
+
+    /// The editor's Ctrl+E: the preview starts at the cursor's block (its
+    /// note line on the top row); past the last line, at the page's end.
+    #[test]
+    fn preview_starts_at_the_given_line() {
+        let n = sample();
+        let draft: String = (1..=30).map(|i| format!("para {i}\n\n")).collect();
+        // The note's rows (6), trimmed.
+        let rows = |line| -> Vec<String> {
+            let mut grid = Grid::new(40, 8);
+            let mut p = Pager::preview(0, line);
+            p.draw(&mut grid, &n, Some(&draft));
+            (1..7)
+                .map(|y| {
+                    let row: String = (0..40).map(|x| grid.cell(x, y).unwrap().symbol()).collect();
+                    row.trim().to_owned()
+                })
+                .collect()
+        };
+        assert_eq!(rows(1)[0], "para 1");
+        assert_eq!(rows(12)[0], "para 12");
+        // Past the last line: the last screen, full.
+        let end = rows(99);
+        assert_eq!(end.last().map(String::as_str), Some("para 30"));
+        assert!(!end.contains(&"para 27".to_owned()));
     }
 
     /// Keys scroll the page, row by row or a screen at a time, never past

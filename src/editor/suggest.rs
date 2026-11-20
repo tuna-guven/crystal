@@ -1789,18 +1789,24 @@ mod tests {
         let n = sample();
         let (mut ed, mut clip) = at_end("");
         send(&mut ed, &mut clip, &n, chars("[[p"));
-        // Ctrl+Q with unsaved changes arms and closes the list...
-        send(&mut ed, &mut clip, &n, [Key::Ctrl('q')]);
-        assert!(ed.notice().is_some());
+        // Ctrl+Q with unsaved changes asks to save and close, and arms
+        // (for a failed save)...
+        assert_eq!(
+            ed.key_in(Key::Ctrl('q'), &mut clip, &n),
+            EditorAction::SaveAndClose
+        );
         send(
             &mut ed,
             &mut clip,
             &n,
             [Key::Backspace, Key::Char('p'), Key::Down],
         );
-        // ...and a list key disarmed it: Ctrl+Q only warns again.
+        // ...and a list key disarmed it: Ctrl+Q saves again first.
         assert!(ed.notice().is_none());
-        assert_eq!(ed.key_in(Key::Ctrl('q'), &mut clip, &n), EditorAction::Stay);
+        assert_eq!(
+            ed.key_in(Key::Ctrl('q'), &mut clip, &n),
+            EditorAction::SaveAndClose
+        );
     }
 
     proptest! {

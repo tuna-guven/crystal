@@ -434,9 +434,13 @@ because an external `$EDITOR` writes temp, swap and undo files in
 plaintext. It has one mode and the keys most editors share: arrows,
 Home, End, PgUp and PgDn move, with Shift they select, Ctrl+A selects all,
 Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste Crystal's clipboard, Ctrl+Z
-and Ctrl+Y undo and redo, Ctrl+S saves, Ctrl+E switches to the rendered
-view of the unsaved text and back, and Ctrl+Q closes (twice to discard
-changes); any other key does nothing. The brackets `()`, `[]` and `{}`
+and Ctrl+Y undo and redo, Ctrl+S saves, Ctrl+E saves and switches to
+the rendered view, its top row at the start of the cursor's block (a
+paragraph, a list item, a heading, a code block, a table), and back, and
+Ctrl+Q saves and closes (if that save fails, it stays and says so, and
+Ctrl+Q right after closes without saving); there is no saving on every
+change, which would seal and write the whole vault per key and race a
+sync tool. Any other key does nothing. The brackets `()`, `[]` and `{}`
 close as you type: an opening one brings its closer when whitespace, a
 closing bracket or the end follows (so `[[` gives `[[]]`) and wraps a
 selection, a typed closer steps over the same one, and Backspace in an

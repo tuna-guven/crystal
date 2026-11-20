@@ -43,8 +43,12 @@ pub enum EditorAction {
     Stay,
     /// Ctrl+S.
     Save,
-    /// Ctrl+Q: close, discarding unsaved changes (the editor has warned).
+    /// Ctrl+Q: close, discarding unsaved changes (none, or their save
+    /// failed and Ctrl+Q came again).
     Close,
+    /// Ctrl+Q with unsaved changes: save them, then close; if the save
+    /// fails, stay (`UNSAVED`), and Ctrl+Q right after closes.
+    SaveAndClose,
     /// Ctrl+E: show the current text in the viewer.
     View,
     /// A block of another note without an id was chosen: the session
@@ -66,7 +70,10 @@ const FULL: &str = "The note is at its size limit (8 MiB).";
 const PASTE_TOO_LARGE: &str = "Not pasted: it is larger than a note can hold (8 MiB).";
 /// After a paste the cleaning changed (decision 0047).
 pub const PASTE_CLEANED: &str = "Untrusted input sanitized and pasted safely.";
-const UNSAVED: &str = "Unsaved changes: Ctrl+S saves, Ctrl+Q again discards them.";
+/// Ctrl+Q's save failed: the editor stays, armed (the full error is in
+/// the shell).
+pub const UNSAVED: &str = "Not saved (why: in the shell after Ctrl+Q). Ctrl+Q again closes \
+                           without saving.";
 
 /// The brackets the editor closes as you type (decision 0045). Each is
 /// two ASCII bytes, so the cursor fits between them. Quotes are left out:
@@ -348,7 +355,7 @@ impl Editor {
             Key::Ctrl('e') => return EditorAction::View,
             Key::Ctrl('q') if self.dirty && !quit_armed => {
                 self.quit_armed = true;
-                self.notice = Some(UNSAVED);
+                return EditorAction::SaveAndClose;
             }
             Key::Ctrl('q') => return EditorAction::Close,
             _ => {}
@@ -874,9 +881,11 @@ mod tests {
         keys(&mut ed, &mut clip, [Key::Ctrl('z')]);
         assert!(ed.text().starts_with("oab"), "only the c undone");
         keys(&mut ed, &mut clip, [Key::Ctrl('q')]);
-        assert!(ed.notice().is_some());
         ed.mouse(MouseEvent::WheelDown, None, Instant::now());
-        assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Stay);
+        assert_eq!(
+            ed.key(Key::Ctrl('q'), &mut clip),
+            EditorAction::SaveAndClose
+        );
     }
 
     /// Double and triple clicks (decision 0073): a second press at the
@@ -1014,12 +1023,19 @@ mod tests {
         let (mut ed, mut clip) = editor("x");
         assert_eq!(ed.key(Key::Ctrl('e'), &mut clip), EditorAction::View);
         assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Close);
+        // Unsaved: Ctrl+Q saves first; if that fails, Ctrl+Q right after
+        // closes.
         typed(&mut ed, &mut clip, "y");
-        assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Stay);
-        assert_eq!(ed.notice(), Some(UNSAVED));
+        assert_eq!(
+            ed.key(Key::Ctrl('q'), &mut clip),
+            EditorAction::SaveAndClose
+        );
         // Any other key disarms it.
         ed.key(Key::Left, &mut clip);
-        assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Stay);
+        assert_eq!(
+            ed.key(Key::Ctrl('q'), &mut clip),
+            EditorAction::SaveAndClose
+        );
         assert_eq!(ed.key(Key::Ctrl('q'), &mut clip), EditorAction::Close);
         assert_eq!(ed.key(Key::Ctrl('s'), &mut clip), EditorAction::Save);
         ed.saved();

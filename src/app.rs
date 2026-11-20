@@ -4,9 +4,9 @@
 //!
 //! Draw, wait, handle keys; a resize or resume redraws everything. `view`
 //! opens the pager until `q`; `edit` and `new` open the editor until
-//! Ctrl+Q. In the editor, Ctrl+S saves through the session and Ctrl+E
-//! shows the text rendered, unsaved changes included, until Ctrl+E, `q`
-//! or Esc. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal,
+//! Ctrl+Q. In the editor, Ctrl+S saves through the session; Ctrl+Q and
+//! Ctrl+E save first too, then close or show the text rendered (from the
+//! cursor's block) until Ctrl+E, `q` or Esc. Ends on `quit`, Ctrl+D, an exit signal or a closed terminal,
 //! and locks on `lock` or after `AUTO_LOCK` without a key or paste
 //! (decision 0048); Crystal's own clipboard is
 //! wiped on the way out.
@@ -20,8 +20,8 @@ use crate::commands::{self, Open};
 use crate::editor::live::fragment_at;
 use crate::editor::suggest::{ID_FULL, ID_REFUSED};
 use crate::editor::view::{Click, LIVE_MAX, View};
-use crate::editor::{Editor, EditorAction};
-use crate::md::blocks::{add_id, blocks};
+use crate::editor::{Editor, EditorAction, UNSAVED};
+use crate::md::blocks::{add_id, block_line, blocks};
 use crate::md::render::{Kind, kind_of, shown};
 use crate::model::{NoteText, lines};
 use crate::notes::Notes;
@@ -514,12 +514,33 @@ fn run_loop(
                             match action {
                                 EditorAction::Stay => {}
                                 EditorAction::Close => mode = Mode::Shell,
-                                EditorAction::View => match e.target {
-                                    Target::Note(note) => e.preview = Some(Pager::preview(note)),
-                                    Target::New { .. } => e
-                                        .editor
-                                        .tell("A new note is shown rendered once Ctrl+S saved it."),
-                                },
+                                // Leaving saves first; a failed save stays
+                                // (Ctrl+Q right after closes).
+                                EditorAction::SaveAndClose => {
+                                    save(session, e, shell, demo);
+                                    if e.editor.is_dirty() {
+                                        e.editor.tell(UNSAVED);
+                                    } else {
+                                        mode = Mode::Shell;
+                                    }
+                                }
+                                EditorAction::View => {
+                                    // Demo notes are never saved: shown
+                                    // unsaved.
+                                    if e.editor.is_dirty() && !demo {
+                                        save(session, e, shell, demo);
+                                    }
+                                    let line = block_line(e.editor.text(), e.editor.cursor());
+                                    match e.target {
+                                        _ if e.editor.is_dirty() && !demo => {}
+                                        Target::Note(note) => {
+                                            e.preview = Some(Pager::preview(note, line));
+                                        }
+                                        Target::New { .. } => e.editor.tell(
+                                            "A new note is shown rendered once Ctrl+S saved it.",
+                                        ),
+                                    }
+                                }
                                 EditorAction::Save => save(session, e, shell, demo),
                                 EditorAction::LinkBlock => link_block(session, e, shell, demo),
                             }

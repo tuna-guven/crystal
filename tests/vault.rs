@@ -1300,10 +1300,10 @@ fn new_note_is_saved_and_opens_again() {
     assert!(output.contains(hex), "{output}");
 }
 
-/// `edit` changes a saved note; Ctrl+E shows the unsaved text rendered and
-/// returns; Ctrl+Q with unsaved changes warns before it discards them.
+/// `edit` changes a saved note; Ctrl+E saves it, shows it rendered and
+/// returns; Ctrl+Q with unsaved changes saves them, then closes.
 #[test]
-fn edit_previews_saves_and_guards_unsaved_changes() {
+fn edit_saves_when_leaving_and_previews() {
     let (home, _) = home_with_vault("editor_edit");
     let mut steps = pass_step(PASS);
     steps.push((SHELL_READY, b"edit plan\r".to_vec()));
@@ -1311,26 +1311,22 @@ fn edit_previews_saves_and_guards_unsaved_changes() {
     steps.push(("Markdown", b"\r".to_vec()));
     steps.push(("Ctrl+S save", b"# Plan\x13\x11".to_vec()));
     steps.push((SHELL_READY, b"edit plan\r".to_vec()));
-    // End of the text, a new line, unsaved; then the preview.
+    // End of the text, a new line; Ctrl+E saves it, then the preview.
     steps.push(("Ctrl+S save", b"\x1b[B\x1b[F\rdraft-line\x05".to_vec()));
     steps.push(("preview", b"\x05".to_vec()));
-    // Back in the editor (its title shows unsaved changes): save, change
-    // again, and try to leave.
-    steps.push(("[+]", b"\x13".to_vec()));
+    // Back in the editor, saved: change again and leave, which saves.
     steps.push(("Saved.", b"!\x11".to_vec()));
-    steps.push(("again", b"\x11".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
 
-    // Saved: the new line. Discarded: the "!" typed after the save.
+    // Saved: the new line and the "!" typed after it.
     let mut steps = pass_step(PASS);
     steps.push(("unlocked.", b"view plan\r".to_vec()));
-    steps.push(("draft-line", b"q".to_vec()));
+    steps.push(("draft-line!", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
-    assert!(!visible(&output).contains("draft-line!"), "{output:?}");
 }
 
 /// `edit --live` (step LE6): the title says `live`, a line away from the
@@ -1375,8 +1371,8 @@ fn live_edit_styles_and_saves_the_markdown() {
 }
 
 /// In the editor's Ctrl+E preview, Ctrl+E on a note a link led to edits
-/// that note; with unsaved changes it goes back to the first editor and
-/// asks to save first.
+/// that note; the first note's changes were saved by the Ctrl+E that
+/// opened the preview.
 #[test]
 fn preview_edits_the_note_a_link_led_to() {
     let (home, _) = home_with_vault("editor_preview_link");
@@ -1401,12 +1397,14 @@ fn preview_edits_the_note_a_link_led_to() {
     steps.push(("zz", b"\x05".to_vec()));
     steps.push(("Ctrl+S save", b"!\x13".to_vec()));
     steps.push(("Saved.", b"\x11".to_vec()));
-    // Unsaved: back in alpha's editor, asked to save first.
+    // A change in alpha: Ctrl+E saves it, so Ctrl+E on omega edits it.
     steps.push((SHELL_READY, b"edit alpha\r".to_vec()));
     steps.push(("Ctrl+S save", b"x\x05".to_vec()));
     steps.push(("preview", b"n\r".to_vec()));
     steps.push(("!zz", b"\x05".to_vec()));
-    steps.push(("Unsaved changes here", b"\x11\x11".to_vec()));
+    steps.push(("Ctrl+S save", b"\x11".to_vec()));
+    steps.push((SHELL_READY, b"view alpha\r".to_vec()));
+    steps.push(("xsee", b"q".to_vec()));
     steps.push((SHELL_READY, b"quit\r".to_vec()));
     let (ok, output) = dialog(&format!("'{BIN}' unlock diary"), &home, &steps);
     assert!(ok, "{output}");
