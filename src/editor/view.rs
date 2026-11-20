@@ -62,7 +62,7 @@ use super::buffer::Change;
 use super::live::layout::{Layout, Piece};
 use super::live::{self, Link, Parsed, Run, Show};
 use super::suggest::{ROWS, Source};
-use crate::md::render::{CODE, DASHES, QUOTE_BAR};
+use crate::md::render::{CODE, DASHES, QUOTE_BAR, fit_columns};
 use crate::model::lines;
 use crate::notes::Notes;
 use crate::pager::{GUTTER, MARKER};
@@ -73,6 +73,7 @@ use crate::ui::grid::{
 };
 use crate::ui::layout::Rect;
 use crate::ui::widgets::status_line;
+use crate::ui::wrap::{Span, wrap_each};
 
 /// The title bar: the note's name in bold on the terminal's background.
 const TITLE: Style = Style::PLAIN.mods(Mods::BOLD);
@@ -253,14 +254,17 @@ struct Boxed {
     start: usize,
     end: usize,
     /// The prefix of its first row: the line's own, then for the `|---|`
-    /// line its `├─┼─┤` (and no cells).
+    /// line its `├─┼─┤` (and no cells); of its other rows: the line's.
     first: Range<u32>,
+    rest: Range<u32>,
     /// Each column's width and alignment.
     widths: Vec<u16>,
     aligns: Vec<Alignment>,
-    /// Each column's cell text, without the spaces around it (empty for a
-    /// cell a short row lacks).
-    cells: Vec<Range<usize>>,
+    /// Each screen row's text in each column (step LW3): its cells
+    /// wrapped into their columns, without the spaces around them (empty
+    /// where a cell has no more lines, or a short row lacks it). One row
+    /// unless a cell wraps; none for the `|---|` line.
+    rows: Vec<Vec<Range<usize>>>,
 }
 
 /// A row the note has no line for (steps LV2, LT2, LW1).
@@ -270,6 +274,9 @@ enum Drawn {
     Gap,
     /// A table's border: pieces of `Layout::pieces`, its prefix first.
     Pieces(Range<u32>),
+    /// Row `row` (from 1) of the boxed table line `boxed` (an index of
+    /// `Live::boxed`), whose cells wrap (step LW3).
+    Cells { boxed: usize, row: usize },
 }
 
 /// Indents are slices of this.
@@ -365,6 +372,66 @@ fn skipped(
         }
     }
     (skips, skip_end)
+}
+
+/// A table row's cells wrapped into their columns `widths` wide (step
+/// LW3), as the viewer wraps them (`wrap_each` over the text as drawn,
+/// trailing spaces dropped): each screen row's text per column, as many
+/// rows as the tallest cell has lines, at least one. `end` is the line's
+/// end, where a missing cell's empty range goes.
+fn wrapped(
+    text: &str,
+    runs: &[Run],
+    cells: &[Range<usize>],
+    widths: &[u16],
+    end: usize,
+) -> Vec<Vec<Range<usize>>> {
+    let columns: Vec<Vec<Range<usize>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(c, &width)| {
+            let cell = cells.get(c).cloned().unwrap_or(end..end);
+            if cell.is_empty() {
+                return Vec::new();
+            }
+            // The cell's shown parts, each with where it starts.
+            let first = runs.partition_point(|run| run.range.end <= cell.start);
+            let (mut starts, mut spans) = (Vec::new(), Vec::new());
+            for run in runs[first..]
+                .iter()
+                .take_while(|run| run.range.start < cell.end)
+            {
+                if run.show == Show::Text {
+                    let part = run.range.start.max(cell.start)..run.range.end.min(cell.end);
+                    starts.push(part.start);
+                    spans.push(Span {
+                        text: &text[part],
+                        style: run.style,
+                    });
+                }
+            }
+            let mut lines = Vec::new();
+            wrap_each(&spans, width, |line| {
+                let (Some(a), Some(b)) = (line.first(), line.last()) else {
+                    lines.push(cell.end..cell.end);
+                    return;
+                };
+                let start = starts[a.span] + a.range.start;
+                let stop = starts[b.span] + b.range.end;
+                lines.push(start..start + text[start..stop].trim_end_matches(' ').len());
+            });
+            lines
+        })
+        .collect();
+    let height = columns.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    (0..height)
+        .map(|k| {
+            columns
+                .iter()
+                .map(|lines| lines.get(k).cloned().unwrap_or(end..end))
+                .collect()
+        })
+        .collect()
 }
 
 /// The drawn rows grouped by the line they go before, in their order
@@ -553,9 +620,10 @@ impl Live {
         // drawn row: its line, its place among that line's, the row.
         let mut drawn: Vec<(usize, u8, Drawn)> = Vec::new();
         // Their order before one line.
-        const BOTTOM: u8 = 0;
-        const GAP: u8 = 1;
-        const BORDER: u8 = 2;
+        const CONTINUED: u8 = 0;
+        const BOTTOM: u8 = 1;
+        const GAP: u8 = 2;
+        const BORDER: u8 = 3;
         for line in parsed.layout.lines.iter().filter(|line| line.gap) {
             let mut at = line.markup.start;
             while let Some(skip) = skips.iter().find(|r| r.start == at) {
@@ -596,18 +664,27 @@ impl Live {
             let edited = (start..=end).contains(&cursor)
                 || (!selection.is_empty() && selection.start <= end && start < selection.end);
             let prefix = layout.prefix(&first.rest).to_vec();
-            // `│ ` before each cell, ` ` after it, and the closing `│`.
-            let needed = prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>()
-                + table
-                    .widths
-                    .iter()
-                    .map(|&w| usize::from(w) + 3)
-                    .sum::<usize>()
-                + 1;
-            if edited || table.widths.is_empty() || needed > width || !open(start) {
+            // The columns as the viewer fits them in the screen's width
+            // (the cursor's column too: never in a boxed table), less the
+            // prefix and `│ ` before each cell, ` ` after it, the closing
+            // `│` (step LW3); none fit: drawn as written.
+            let screen = width + 1;
+            let screen = match prefix.iter().map(|(s, _)| display_width(s)).sum::<usize>() {
+                w if w >= screen => screen,
+                w => screen - w,
+            };
+            let natural: Vec<usize> = table.widths.iter().map(|&w| usize::from(w)).collect();
+            let fitted = screen
+                .checked_sub(3 * natural.len() + 1)
+                .and_then(|room| fit_columns(&natural, room));
+            let Some(fitted) = fitted.filter(|_| !edited && !natural.is_empty() && open(start))
+            else {
                 continue;
-            }
-            let widths = &table.widths;
+            };
+            let widths: &Vec<u16> = &fitted
+                .iter()
+                .map(|&w| u16::try_from(w).unwrap_or(u16::MAX))
+                .collect();
             let top = border(&mut layout.pieces, &prefix, widths, ["┌─", "─┬─", "─┐"]);
             drawn.push((start, BORDER, Drawn::Pieces(top)));
             // Between two body rows, as the viewer draws them.
@@ -619,7 +696,8 @@ impl Live {
             while let Some(skip) = skips.iter().find(|r| r.start == at) {
                 at = skip.end;
             }
-            if open(at) {
+            let after = open(at).then_some(at);
+            if after.is_some() {
                 let bottom = border(&mut layout.pieces, &prefix, widths, ["└─", "─┴─", "─┘"]);
                 drawn.push((at, BOTTOM, Drawn::Pieces(bottom)));
             }
@@ -630,22 +708,37 @@ impl Live {
                 let cells = table.rows.iter().find(|(row, _)| *row == i);
                 let mut first = layout.prefix(&line.first).to_vec();
                 let end = line_end(text, line.markup.start);
-                let cells: Vec<Range<usize>> = match cells {
-                    Some((_, cells)) => (0..widths.len())
-                        .map(|c| cells.get(c).cloned().unwrap_or(end..end))
-                        .collect(),
+                let rows = match cells {
+                    Some((_, cells)) => wrapped(text, &parsed.runs, cells, widths, end),
                     None => {
                         border_row(&mut first, widths, ["├─", "─┼─", "─┤"]);
                         Vec::new()
                     }
                 };
+                // A row taller than one line: its other rows go before the
+                // next line, ahead of its border (step LW3).
+                let next = if i + 1 < table.lines.end {
+                    Some(start_of(i + 1))
+                } else {
+                    after
+                };
+                for row in 1..rows.len() {
+                    if let Some(next) = next {
+                        let row = Drawn::Cells {
+                            boxed: boxed.len(),
+                            row,
+                        };
+                        drawn.push((next, CONTINUED, row));
+                    }
+                }
                 boxed.push(Boxed {
                     start: line.markup.start,
                     end,
                     first: store(&mut layout.pieces, &first),
+                    rest: line.rest.clone(),
                     widths: widths.clone(),
                     aligns: table.aligns.clone(),
-                    cells,
+                    rows,
                 });
             }
         }
@@ -824,7 +917,10 @@ impl Live {
     /// Where a click `x` columns into a boxed table line lands (step LW2):
     /// on the grapheme drawn there in the cell under it, else at that
     /// cell's text's end; on the `|---|` line, its start.
-    fn click_boxed(&self, text: &str, boxed: &Boxed, x: usize) -> usize {
+    fn click_boxed(&self, text: &str, boxed: &Boxed, row: usize, x: usize) -> usize {
+        let Some(cells) = boxed.rows.get(row) else {
+            return boxed.start;
+        };
         let prefix: usize = self
             .layout
             .prefix(&boxed.first)
@@ -832,12 +928,12 @@ impl Live {
             .map(|(s, _)| display_width(s))
             .sum();
         let mut left = prefix;
-        for (c, cell) in boxed.cells.iter().enumerate() {
+        for (c, cell) in cells.iter().enumerate() {
             // `│ ` or ` │ ` before it: 2 columns of the first, 1 of the
             // others belong to the cell before.
             let width = usize::from(boxed.widths[c]);
             let span = width + if c == 0 { 2 } else { 3 };
-            if x < left + span || c + 1 == boxed.cells.len() {
+            if x < left + span || c + 1 == cells.len() {
                 let (before, _) = pads(boxed, c, live::drawn_width(text, &self.runs, cell));
                 let start = left + span - width + usize::from(before);
                 let mut column = 0;
@@ -1203,6 +1299,12 @@ impl View {
             start = row.next;
             // The viewer's added blank row: nothing to draw; a table's
             // border: its pieces.
+            if let Some(&Drawn::Cells { boxed, row }) = self.look.drawn_row(next) {
+                let row_area = Rect::new(area.x, y, area.width, 1);
+                let boxed = &self.look.boxed[boxed];
+                draw_boxed(grid, row_area, text, &self.look, boxed, row);
+                continue;
+            }
             if row.drawn {
                 let mut x = area.x;
                 for (piece, style) in self.look.pieces(next) {
@@ -1376,9 +1478,13 @@ impl View {
         }
         let row = row_at(text, start, width, &self.look);
         // A boxed table's line: the cell under the click (step LW2).
+        let x = usize::from(column.saturating_sub(area.x));
         if let Some(boxed) = self.look.boxed_at(row.range.start).filter(|_| !row.drawn) {
-            let x = usize::from(column.saturating_sub(area.x));
-            return Some(self.look.click_boxed(text, boxed, x));
+            return Some(self.look.click_boxed(text, boxed, 0, x));
+        }
+        // A wrapped table row's other rows (step LW3).
+        if let Some(&Drawn::Cells { boxed, row }) = self.look.drawn_row(start) {
+            return Some(self.look.click_boxed(text, &self.look.boxed[boxed], row, x));
         }
         // Live mode's prefix: a click there lands on the row's first
         // grapheme shown.
@@ -1579,28 +1685,22 @@ fn pads(boxed: &Boxed, c: usize, drawn: usize) -> (u16, u16) {
     (before, room - before)
 }
 
-/// Draws a boxed table's line in `area`'s row (step LW2): `prefix`, then
-/// each cell between `│`s, padded by its column's alignment, its text as
+/// Draws screen row `row` of a boxed table's line in `area`'s row (steps
+/// LW2, LW3): its prefix, then each cell's text on that row between `│`s, padded by its column's alignment, its text as
 /// `live` draws it (styled, markup hidden); the `|---|` line is its
 /// prefix alone (its `├─┼─┤`).
-fn draw_boxed(
-    grid: &mut Grid,
-    area: Rect,
-    text: &str,
-    live: &Live,
-    boxed: &Boxed,
-    prefix: &[Piece],
-) {
+fn draw_boxed(grid: &mut Grid, area: Rect, text: &str, live: &Live, boxed: &Boxed, row: usize) {
     let y = area.y;
     let mut x = area.x;
     let room = |x: u16| area.right().saturating_sub(x);
-    for (piece, style) in prefix {
+    let prefix = if row == 0 { &boxed.first } else { &boxed.rest };
+    for (piece, style) in live.layout.prefix(prefix) {
         x += grid.put_str(x, y, piece, *style, room(x));
     }
-    if boxed.cells.is_empty() {
+    let Some(cells) = boxed.rows.get(row) else {
         return;
-    }
-    for (c, cell) in boxed.cells.iter().enumerate() {
+    };
+    for (c, cell) in cells.iter().enumerate() {
         x += grid.put_str(x, y, if c == 0 { "│ " } else { " │ " }, QUOTE_BAR, room(x));
         let (before, _) = pads(boxed, c, live::drawn_width(text, &live.runs, cell));
         let start = x;
@@ -1632,8 +1732,7 @@ fn draw_boxed(
 fn draw_row(grid: &mut Grid, area: Rect, editor: &Editor, row: &Row, live: &Live) -> Option<u16> {
     // A boxed table's line: drawn whole, never holding the cursor.
     if let Some(boxed) = live.boxed_at(row.range.start).filter(|_| !row.drawn) {
-        let prefix = live.layout.prefix(&boxed.first);
-        draw_boxed(grid, area, editor.text(), live, boxed, prefix);
+        draw_boxed(grid, area, editor.text(), live, boxed, 0);
         return None;
     }
     // Live mode's prefix, then the text right of it.
@@ -3163,8 +3262,11 @@ mod tests {
         for _ in 0..5 {
             ed.key(Key::Down, &mut clip);
         }
-        // The box takes 9 columns, more than the row's 8.
+        // The box takes 9 columns: as in the viewer, it fits 9 (the
+        // cursor's column too); in 8, a column would keep fewer than 3.
         let grid = drawn(&mut ed, &mut View::live(), 9, 12);
+        assert_eq!(body(&grid, 1), ["┌───┬───┐"]);
+        let grid = drawn(&mut ed, &mut View::live(), 8, 12);
         assert_eq!(body(&grid, 1), ["| a | b"]);
 
         // After a heading (the viewer's blank row first), at the text's
@@ -3287,6 +3389,42 @@ mod tests {
         let mut view = View::default();
         drawn(&mut ed, &mut view, 22, 5);
         assert_eq!(view.line_row(&long, 100), Some(-3));
+    }
+
+    /// A table wider than the screen (step LW3): rows as the viewer draws
+    /// them, its columns narrowed and its cells wrapped inside them; the
+    /// view scrolls over a row's extra rows like any other; a click on
+    /// one lands on the word drawn there.
+    #[test]
+    fn live_wide_tables_wrap_cells_as_the_viewer() {
+        let text = "| Situation | What to do |\n|---|:-:|\n| A check fails | Fix it on \
+                    **main**, commit, and redo section three. Nothing is tagged yet. |\n\
+                    | Hashes differ | Nothing was signed. |\n\nend";
+        // The viewer's page 40 wide; the editor's text area too, right of
+        // the gutter.
+        let page = crate::md::render::render(text, crate::md::render::Kind::Markdown, 40);
+        let mut viewer = Grid::new(40, 20);
+        page.draw(&mut viewer, Rect::new(0, 0, 40, 20), 0);
+        let mut ed = Editor::new(text).unwrap();
+        ed.jump_to(text.len());
+        let mut view = View::live();
+        let live = drawn(&mut ed, &mut view, 42, 22);
+        let seen: Vec<String> = rows(&viewer).into_iter().take(13).collect();
+        let shown: Vec<String> = rows(&live)[1..14]
+            .iter()
+            .map(|row| row.get(2..).unwrap_or("").to_owned())
+            .collect();
+        assert_eq!(shown, seen);
+        assert!(seen.iter().any(|row| row.contains("tagged")), "{seen:#?}");
+        // A click on a word in a cell's third line.
+        let (x, y) = find(&live, "tagged").unwrap();
+        assert_eq!(view.position_at(text, x, y, false), text.find("tagged"));
+        // Fewer rows: the last ones, whatever row the top is.
+        for height in 4..14usize {
+            let grid = drawn(&mut ed, &mut View::live(), 42, height as u16 + 2);
+            let tail = &rows(&live)[14 - height..14];
+            assert_eq!(rows(&grid)[1..=height], *tail, "{height}");
+        }
     }
 
     /// Border rows scroll like rows (step LT2): the cursor's row last on

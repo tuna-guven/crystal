@@ -508,7 +508,7 @@ const MIN_CELL: usize = 3;
 /// its width. Else the columns that fit their share of what is left keep
 /// theirs, and the wider ones split the rest evenly (the widest getting the
 /// odd columns). `None` if that leaves one of them fewer than `MIN_CELL`.
-fn fit_columns(natural: &[usize], room: usize) -> Option<Vec<usize>> {
+pub fn fit_columns(natural: &[usize], room: usize) -> Option<Vec<usize>> {
     if natural.iter().sum::<usize>() <= room {
         return Some(natural.to_vec());
     }
